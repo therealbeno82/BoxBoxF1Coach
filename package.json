@@ -1,0 +1,37 @@
+{
+  "name": "f1-coach",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "EA F1 driving coach — compares your telemetry against Esports reference traces and coaches you with a local LLM.",
+  "scripts": {
+    "copy-ort": "node scripts/copy-ort.mjs",
+    "predev": "node scripts/copy-ort.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/copy-ort.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "bridge": "node bridge/f1-bridge.cjs",
+    "bridge:fake": "node bridge/f1-bridge.cjs --fake",
+    "build:bridge": "pkg bridge/f1-bridge.cjs --targets node22-win-x64 --output src-tauri/binaries/f1-bridge-x86_64-pc-windows-msvc.exe",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@deltazeroproduction/f1-udp-parser": "^1.2.2",
+    "@huggingface/transformers": "^3.8.1",
+    "@tauri-apps/api": "^2.11.1",
+    "kokoro-js": "^1.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@yao-pkg/pkg": "^6.20.0",
+    "vite": "^6.0.7"
+  }
+}

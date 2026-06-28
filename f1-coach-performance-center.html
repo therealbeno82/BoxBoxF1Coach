@@ -1,0 +1,360 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PERF_CENTER // F1 COACH</title>
+    <style>
+        :root {
+            --bg: #0A0A0B;
+            --surface: #141416;
+            --border: #222224;
+            --border-bright: #333336;
+            --accent: #2F6FEB;
+            --purple: #B35BFF;
+            --green: #17A34A;
+            --yellow: #EAB308;
+            --fg: #E5E5E5;
+            --muted: #6B6B6B;
+            
+            --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            background-image: 
+                linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size: 20px 20px;
+            color: var(--fg);
+            font-family: var(--font-display);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Command Strip --- */
+        header {
+            height: 50px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(10, 10, 11, 0.9);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .cmd-group { display: flex; gap: 24px; }
+        .cmd-item { display: flex; gap: 8px; align-items: center; }
+        .cmd-label { color: var(--muted); }
+        .cmd-value { font-weight: 600; }
+
+        /* --- Layout Grid --- */
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            grid-template-rows: repeat(12, 1fr);
+            gap: 12px;
+            padding: 20px;
+        }
+
+        .module {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .module::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; width: 6px; height: 6px;
+            border-top: 1px solid var(--muted);
+            border-left: 1px solid var(--muted);
+        }
+
+        .module-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .module-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 16px 0;
+            text-transform: uppercase;
+            letter-spacing: -0.01em;
+        }
+
+        /* --- Consistency Matrix --- */
+        .matrix {
+            display: grid;
+            grid-template-columns: 60px repeat(3, 1fr);
+            gap: 4px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .matrix-cell {
+            background: #1a1a1c;
+            padding: 6px;
+            text-align: center;
+            border: 1px solid var(--border);
+            border-radius: 1px;
+            transition: all 0.1s ease;
+        }
+
+        .matrix-header {
+            background: #1d1d20;
+            font-weight: 600;
+            color: var(--muted);
+        }
+
+        .val-purple { color: var(--purple); background: rgba(179, 91, 255, 0.1); }
+        .val-green { color: var(--green); background: rgba(23, 163, 74, 0.1); }
+        .val-yellow { color: var(--yellow); background: rgba(234, 179, 8, 0.1); }
+
+        /* --- Tire Deg Plot --- */
+        .plot-container {
+            flex: 1;
+            position: relative;
+            border-left: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            margin-top: 20px;
+            padding: 10px 0 0 10px;
+        }
+
+        .trace-line {
+            position: absolute;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+        }
+
+        /* --- Focus Alert --- */
+        .alert-module {
+            border-color: var(--yellow);
+            animation: pulse-border 2s infinite;
+        }
+
+        @keyframes pulse-border {
+            0% { border-color: var(--border); }
+            50% { border-color: var(--yellow); }
+            100% { border-color: var(--border); }
+        }
+
+        .alert-content {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .alert-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--yellow);
+            color: black;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-family: var(--font-mono);
+            border-radius: 2px;
+        }
+
+        /* --- Positioning --- */
+        .span-main { grid-area: 1 / 1 / 9 / 9; }
+        .span-side { grid-area: 1 / 9 / 6 / 13; }
+        .span-bottom { grid-area: 6 / 9 / 13 / 13; }
+        .span-footer { grid-area: 9 / 1 / 13 / 9; }
+
+        .data-point { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="cmd-group">
+            <div class="cmd-item">
+                <span class="cmd-label">TRACK:</span>
+                <span class="cmd-value">QATAR / LUSAIL</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">Tire:</span>
+                <span class="cmd-value" style="color: var(--yellow);">C3_MED</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">SESS:</span>
+                <span class="cmd-value">QUALIFYING</span>
+            </div>
+        </div>
+        <div class="cmd-group">
+            <div class="cmd-item">
+                <span class="cmd-label">LAP:</span>
+                <span class="cmd-value">12 / 18</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">SENSORS:</span>
+                <span class="cmd-value" style="color: var(--green);">NOMINAL</span>
+            </div>
+            <div style="cursor: pointer;" onclick="location.href='../f1-coach-launcher.html'">
+                <span class="cmd-value">SESS_EXIT ◀</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Consistency Matrix -->
+        <div class="module span-main">
+            <div class="module-label">
+                <span>PERF_CONSISTENCY_MATRIX</span>
+                <span>REF: LAPS_10_HIST</span>
+            </div>
+            <h2 class="module-title">SECTOR_DELTAS</h2>
+            
+            <div class="matrix">
+                <div class="matrix-cell matrix-header">LAP</div>
+                <div class="matrix-cell matrix-header">S1</div>
+                <div class="matrix-cell matrix-header">S2</div>
+                <div class="matrix-cell matrix-header">S3</div>
+                
+                <!-- Generated Data Rows -->
+                <div class="matrix-cell">08</div>
+                <div class="matrix-cell val-green">-0.042</div>
+                <div class="matrix-cell val-yellow">+0.012</div>
+                <div class="matrix-cell val-green">-0.021</div>
+                
+                <div class="matrix-cell">09</div>
+                <div class="matrix-cell val-green">-0.033</div>
+                <div class="matrix-cell val-green">-0.004</div>
+                <div class="matrix-cell val-purple">-0.112</div>
+                
+                <div class="matrix-cell">10</div>
+                <div class="matrix-cell val-purple">-0.088</div>
+                <div class="matrix-cell val-green">-0.015</div>
+                <div class="matrix-cell val-green">-0.024</div>
+                
+                <div class="matrix-cell">11</div>
+                <div class="matrix-cell val-green">-0.041</div>
+                <div class="matrix-cell val-yellow">+0.045</div>
+                <div class="matrix-green val-green">-0.031</div>
+                
+                <div class="matrix-cell" style="background: var(--accent); color: white;">12</div>
+                <div class="matrix-cell val-green">-0.051</div>
+                <div class="matrix-cell val-green">-0.022</div>
+                <div class="matrix-cell val-purple">-0.128</div>
+            </div>
+
+            <div style="margin-top: 24px; display: flex; gap: 12px;">
+                <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); font-family: var(--font-mono);">
+                    <div style="width: 8px; height: 8px; background: var(--purple);"></div> PB
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); font-family: var(--font-mono);">
+                    <div style="width: 8px; height: 8px; background: var(--green);"></div> IMPROVE
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); font-family: var(--font-mono);">
+                    <div style="width: 8px; height: 8px; background: var(--yellow);"></div> LOSS
+                </div>
+            </div>
+        </div>
+
+        <!-- Tire Deg Plot -->
+        <div class="module span-side">
+            <div class="module-label"><span>SENS_DEGRADATION</span></div>
+            <h2 class="module-title">TIRE_LIFE</h2>
+            
+            <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px; margin-bottom: 8px;">
+                <span class="cmd-label">S_LIFE:</span>
+                <span class="data-point">62%</span>
+            </div>
+
+            <div class="plot-container">
+                <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
+                    <!-- Expected Line -->
+                    <path d="M 0 20 L 100 80" stroke="#333" stroke-dasharray="4 2" fill="none" />
+                    <!-- Actual Line -->
+                    <path d="M 0 20 L 20 25 L 40 40 L 60 55 L 80 75 L 100 95" stroke="var(--accent)" stroke-width="2" fill="none" />
+                </svg>
+                <div style="position: absolute; top: 0; right: 0; font-size: 8px; color: var(--muted); font-family: var(--font-mono);">SAMP_L12</div>
+            </div>
+            
+            <div style="margin-top: 12px; font-size: 11px; color: var(--yellow); font-family: var(--font-mono);">
+                ⚠ WARNING: RL_DEG_HIGH
+            </div>
+        </div>
+
+        <!-- Coaching Focus Alert -->
+        <div class="module span-bottom alert-module">
+            <div class="module-label"><span>COACH_PRIORITY</span></div>
+            <h2 class="module-title">CRITICAL_FOCUS</h2>
+            
+            <div class="alert-content">
+                <div class="alert-icon">!</div>
+                <div>
+                    <div style="font-weight: 600; font-size: 14px;">S2 TURN 14: OVER-BRAKING</div>
+                    <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                        Losing 0.04s on exit. Delay brake point by 2.5m to maintain minimum corner speed.
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: auto; display: flex; justify-content: flex-end;">
+                <button style="background: var(--yellow); color: black; border: none; padding: 6px 12px; font-family: var(--font-mono); font-size: 10px; font-weight: 800; cursor: pointer;">MARK_RESOLVED</button>
+            </div>
+        </div>
+
+        <!-- Footer: Overall Lap State -->
+        <div class="module span-footer">
+            <div class="module-label"><span>LAP_SUMMARY</span></div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 40px;">
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Total_Lap_Time</div>
+                        <div class="data-point" style="font-size: 32px; font-weight: 600;">1:23.412 <span style="font-size: 14px; color: var(--purple);">PB</span></div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">S1_Delta</div>
+                        <div class="data-point" style="font-size: 24px; color: var(--green);">-0.051s</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">S2_Delta</div>
+                        <div class="data-point" style="font-size: 24px; color: var(--green);">-0.022s</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">S3_Delta</div>
+                        <div class="data-point" style="font-size: 24px; color: var(--purple);">-0.128s</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button style="background: #222; color: var(--fg); border: 1px solid var(--border); padding: 8px 16px; font-family: var(--font-mono); font-size: 11px; cursor: pointer;">HIST_LOG</button>
+                    <button style="background: var(--accent); color: white; border: none; padding: 8px 16px; font-family: var(--font-mono); font-size: 11px; cursor: pointer; font-weight: 600;">FULL_DIVE ➔</button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

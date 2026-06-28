@@ -1,0 +1,23 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+*.local
+
+# Rust / Tauri (added when we wrap the native shell)
+src-tauri/target
+
+# Bundled bridge sidecar — a 55 MB generated artifact; rebuild with `npm run build:bridge`
+src-tauri/binaries/*.exe
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# Claude Code local config — contains secrets (API keys); never commit
+.claude/settings.json
+.claude/settings.local.json

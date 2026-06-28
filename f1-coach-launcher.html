@@ -1,0 +1,297 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>F1 COACH // SYSTEM_BOOT</title>
+    <style>
+        :root {
+            --bg: #0A0A0B;
+            --surface: #141416;
+            --border: #222224;
+            --border-bright: #333336;
+            --accent: #2F6FEB;
+            --purple: #B35BFF;
+            --green: #17A34A;
+            --yellow: #EAB308;
+            --fg: #E5E5E5;
+            --muted: #6B6B6B;
+            
+            --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            /* Technical Blueprint Grid */
+            background-image: 
+                linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size: 20px 20px;
+            color: var(--fg);
+            font-family: var(--font-display);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Header / Command Strip --- */
+        header {
+            height: 60px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(10, 10, 11, 0.8);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            z-index: 100;
+            letter-spacing: 0.05em;
+        }
+
+        .system-status {
+            display: flex;
+            gap: 20px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 4px var(--green);
+        }
+
+        /* --- Main Grid --- */
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            grid-template-rows: repeat(12, 1fr);
+            gap: 12px;
+            padding: 24px;
+        }
+
+        .module {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            position: relative;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            overflow: hidden;
+        }
+
+        .module:hover {
+            border-color: var(--border-bright);
+            background: #1a1a1c;
+        }
+
+        .module::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; width: 8px; height: 8px;
+            border-top: 1px solid var(--muted);
+            border-left: 1px solid var(--muted);
+        }
+
+        .module::after {
+            content: "";
+            position: absolute;
+            bottom: 0; right: 0; width: 8px; height: 8px;
+            border-bottom: 1px solid var(--muted);
+            border-right: 1px solid var(--muted);
+        }
+
+        .module-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .module-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+            letter-spacing: -0.02em;
+        }
+
+        .module-meta {
+            margin-top: auto;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        .data-point {
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* --- Specific Grid Placements --- */
+        .hero-module { grid-area: 1 / 1 / 5 / 9; }
+        .status-module { grid-area: 1 / 9 / 5 / 13; }
+        .nav-module-1 { grid-area: 5 / 1 / 9 / 5; }
+        .nav-module-2 { grid-area: 5 / 5 / 9 / 9; }
+        .nav-module-3 { grid-area: 5 / 9 / 9 / 13; }
+        .footer-module { grid-area: 9 / 1 / 13 / 13; }
+
+        /* --- Accents --- */
+        .accent-cobalt { color: var(--accent); }
+        .accent-purple { color: var(--purple); }
+        .accent-green { color: var(--green); }
+
+        .btn-launch {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            text-transform: uppercase;
+            cursor: pointer;
+            margin-top: 12px;
+            font-weight: 600;
+        }
+
+        /* Animations */
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .blink { animation: blink 1s infinite; }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div style="font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 10px;">
+            <span style="color: var(--accent);">■</span> F1 COACH // SYSTEM_v2.0
+        </div>
+        <div class="system-status">
+            <div class="status-item">
+                <div class="indicator"></div>
+                <span>SENSORS: NOMINAL</span>
+            </div>
+            <div class="status-item">
+                <span style="color: var(--muted);">TRACK:</span>
+                <span class="data-point">QATAR / LUSAIL</span>
+            </div>
+            <div class="status-item">
+                <span style="color: var(--muted);">SESS:</span>
+                <span class="data-point">QUALIFYING</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Hero: Session Summary -->
+        <div class="module hero-module">
+            <div class="module-label">
+                <span>SESS_OVERVIEW</span>
+                <span>REF: 2024.01</span>
+            </div>
+            <h1 class="module-title">SESS_SUMMARY</h1>
+            <p style="color: var(--muted); font-size: 14px; max-width: 400px; line-height: 1.6;">
+                Current lap consistency is within 0.04s of target. Peak velocity achieved in Sector 2. Tire deg on Rear-Left is higher than predicted.
+            </p>
+            <div class="module-meta">
+                <div style="display: flex; gap: 30px;">
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted);">BEST_LAP</div>
+                        <div class="data-point" style="font-size: 20px; font-weight: 600;" class="accent-purple">1:23.412</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: var(--muted);">AVG_DELTA</div>
+                        <div class="data-point" style="font-size: 20px; font-weight: 600;" class="accent-green">-0.114s</div>
+                    </div>
+                </div>
+                <div class="blink" style="font-size: 10px; color: var(--accent);">● SYSTEM_READY</div>
+            </div>
+        </div>
+
+        <!-- Side: Quick Status -->
+        <div class="module status-module">
+            <div class="module-label"><span>DRV_STATUS</span></div>
+            <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
+                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px;">
+                    <span style="color: var(--muted);">HR_BPM</span>
+                    <span class="data-point">142</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px;">
+                    <span style="color: var(--muted);">G_FORCE</span>
+                    <span class="data-point">4.2g</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px;">
+                    <span style="color: var(--muted);">TEMP_C</span>
+                    <span class="data-point">34.5</span>
+                </div>
+            </div>
+            <div class="module-meta" style="justify-content: center; margin-top: 20px;">
+                <div style="font-size: 10px; color: var(--muted); text-align: center;">SENSORS_ACTIVE</div>
+            </div>
+        </div>
+
+        <!-- Nav: Performance Center -->
+        <div class="module nav-module-1" onclick="location.href='screens/performance-center.html'">
+            <div class="module-label"><span>MOD_01</span></div>
+            <h2 class="module-title" style="font-size: 18px;">PERF_CENTER</h2>
+            <p style="font-size: 12px; color: var(--muted); margin: 8px 0;">Consistency matrix, tire deg, and KPI overview.</p>
+            <button class="btn-launch">LAUNCH</button>
+        </div>
+
+        <!-- Nav: Telemetry Dive -->
+        <div class="module nav-module-2" onclick="location.href='screens/telemetry-dive.html'">
+            <div class="module-label"><span>MOD_02</span></div>
+            <h2 class="module-title" style="font-size: 18px;">TELEMETRY_DIVE</h2>
+            <p style="font-size: 12px; color: var(--muted); margin: 8px 0;">S-curves, track mapping, and sector water-falls.</p>
+            <button class="btn-launch">LAUNCH</button>
+        </div>
+
+        <!-- Nav: Coach Log -->
+        <div class="module nav-module-3" onclick="location.href='screens/coach-log.html'">
+            <div class="module-label"><span>MOD_03</span></div>
+            <h2 class="module-title" style="font-size: 18px;">COACH_LOG</h2>
+            <p style="font-size: 12px; color: var(--muted); margin: 8px 0;">Timestamped radio transcripts and action items.</p>
+            <button class="btn-launch">LAUNCH</button>
+        </div>
+
+        <!-- Footer: Session Meta -->
+        <div class="module footer-module">
+            <div class="module-label">
+                <span>SYS_LOG_STREAM</span>
+                <span>UTC: 14:22:01</span>
+            </div>
+            <div style="display: flex; gap: 20px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap;">
+                <span class="accent-green">[14:21:01] SESS_START: LUSAIL_CIRCUIT</span>
+                <span>[14:21:45] TIRE_SET: C3_MEDIUM</span>
+                <span>[14:22:10] DATA_SYNC: COMPLETE</span>
+                <span class="accent-cobalt">[14:22:30] COACH_READY: LINKED</span>
+                <span class="blink">_</span>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

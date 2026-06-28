@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "F1 Coach // Telemetry Dive",
+  "entry": "f1-coach-telemetry-dive.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "primary": true,
+  "createdAt": "2026-06-15T12:51:26.178Z",
+  "updatedAt": "2026-06-15T12:51:26.224Z",
+  "sourceSkillId": "agent-browser",
+  "designSystemId": "default",
+  "metadata": {
+    "identifier": "f1-coach-telemetry-dive",
+    "artifactType": "text/html",
+    "inferred": false
+  }
+}

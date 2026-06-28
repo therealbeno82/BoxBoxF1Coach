@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "F1 Coach // Performance Center",
+  "entry": "f1-coach-performance-center.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "primary": true,
+  "createdAt": "2026-06-15T12:45:17.667Z",
+  "updatedAt": "2026-06-15T12:45:17.670Z",
+  "sourceSkillId": "agent-browser",
+  "designSystemId": "default",
+  "metadata": {
+    "identifier": "f1-coach-performance-center",
+    "artifactType": "text/html",
+    "inferred": false
+  }
+}

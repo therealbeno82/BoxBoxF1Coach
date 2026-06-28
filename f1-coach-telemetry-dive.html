@@ -1,0 +1,345 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TELEMETRY_DIVE // F1 COACH</title>
+    <style>
+        :root {
+            --bg: #0A0A0B;
+            --surface: #141416;
+            --border: #222224;
+            --border-bright: #333336;
+            --accent: #2F6FEB;
+            --purple: #B35BFF;
+            --green: #17A34A;
+            --yellow: #EAB308;
+            --fg: #E5E5E5;
+            --muted: #6B6B6B;
+            
+            --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            background-image: 
+                linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size: 20px 20px;
+            color: var(--fg);
+            font-family: var(--font-display);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            height: 50px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(10, 10, 11, 0.9);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .cmd-group { display: flex; gap: 24px; }
+        .cmd-item { display: flex; gap: 8px; align-items: center; }
+        .cmd-label { color: var(--muted); }
+        .cmd-value { font-weight: 600; }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: 1fr 300px;
+            gap: 12px;
+            padding: 20px;
+        }
+
+        .module {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .module-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* --- Track Map Section --- */
+        .map-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            background: radial-gradient(circle, #1a1a1c 0%, var(--surface) 100%);
+        }
+
+        .track-svg {
+            width: 80%;
+            height: 80%;
+            filter: drop-shadow(0 0 10px rgba(0,0,0,0.5));
+        }
+
+        .ghost-car {
+            width: 12px;
+            height: 12px;
+            background: var(--accent);
+            border: 2px solid white;
+            border-radius: 2px;
+            position: absolute;
+            box-shadow: 0 0 15px var(--accent);
+            transition: all 0.1s linear;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        /* --- Telemetry Trace --- */
+        .trace-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            border-left: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            margin-top: 20px;
+        }
+
+        .trace-svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .trace-line {
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+        }
+
+        /* --- Waterfall / Sector Readout --- */
+        .waterfall {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .waterfall-row {
+            display: grid;
+            grid-template-columns: 80px 1fr 80px;
+            align-items: center;
+            padding: 8px;
+            background: #1a1a1c;
+            border: 1px solid var(--border);
+            border-radius: 1px;
+        }
+
+        .row-label { color: var(--muted); font-size: 10px; }
+        .row-bar {
+            height: 4px;
+            background: #222;
+            position: relative;
+            margin: 0 10px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .row-fill {
+            position: absolute;
+            height: 100%;
+            left: 0;
+            top: 0;
+        }
+
+        /* Layout Areas */
+        .span-map { grid-area: 1 / 1 / 2 / 2; }
+        .span-sidebar { grid-area: 1 / 2 / 3 / 3; }
+        .span-trace { grid-area: 2 / 1 / 3 / 2; }
+
+        .data-point { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="cmd-group">
+            <div class="cmd-item">
+                <span class="cmd-label">TRACK:</span>
+                <span class="cmd-value">QATAR / LUSAIL</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">SESS:</span>
+                <span class="cmd-value">QUALIFYING</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">LAP:</span>
+                <span class="cmd-value">12 / 18</span>
+            </div>
+        </div>
+        <div class="cmd-group">
+            <div style="cursor: pointer;" onclick="location.href='performance-center.html'">
+                <span class="cmd-value">PERF_CENTER ◀</span>
+            </div>
+            <div style="cursor: pointer;" onclick="location.href='../f1-coach-launcher.html'">
+                <span class="cmd-value">SESS_EXIT ◀</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Map View -->
+        <div class="module span-map">
+            <div class="module-label">
+                <span>Spatio_Temporal_Map</span>
+                <span>COORD_REF: LUSAIL_S1</span>
+            </div>
+            <div class="map-container" id="mapArea">
+                <div class="ghost-car" id="ghostCar"></div>
+                <!-- Using a placeholder SVG track that mimics F1 style -->
+                <svg class="track-svg" viewBox="0 0 200 200">
+                    <path d="M 40 40 C 160 40, 160 160, 40 160 C 20 160, 20 40, 40 40" 
+                          stroke="#333" stroke-width="4" fill="none" />
+                    <!-- Performance Trace Layer -->
+                    <path d="M 40 40 C 160 40, 160 160, 40 160" 
+                          stroke="url(#grad1)" stroke-width="3" fill="none" />
+                    <defs>
+                        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" style="stop-color:var(--purple);stop-opacity:1" />
+                            <stop offset="50%" style="stop-color:var(--green);stop-opacity:1" />
+                            <stop offset="80%" style="stop-color:var(--yellow);stop-opacity:1" />
+                            <stop offset="100%" style="stop-color:var(--purple);stop-opacity:1" />
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+        </div>
+
+        <!-- Telemetry S-Curves -->
+        <div class="module span-trace">
+            <div class="module-label">
+                <span>Telemetry_S-Curve</span>
+                <span>REF: SPEED_THROTTLE_BRAKE</span>
+            </div>
+            <div class="trace-container" id="traceArea">
+                <svg class="trace-svg" viewBox="0 0 1000 100" preserveAspectRatio="none">
+                    <!-- Brake Line (Yellow) -->
+                    <path class="trace-line" d="M 0 100 L 200 100 L 250 20 L 300 100 L 500 100 L 550 10 L 600 100 L 800 100 L 850 30 L 900 100 L 1000 100" 
+                          stroke="var(--yellow)" />
+                    <!-- Throttle Line (Green) -->
+                    <path class="trace-line" d="M 0 20 L 200 20 L 250 90 L 300 20 L 500 20 L 550 90 L 600 20 L 800 20 L 850 70 L 900 20 L 1000 20" 
+                          stroke="var(--green)" />
+                    <!-- Speed Line (Cobalt) -->
+                    <path class="trace-line" d="M 0 40 L 200 40 L 250 70 L 300 40 L 500 40 L 550 80 L 600 40 L 800 40 L 850 60 L 900 40 L 1000 40" 
+                          stroke="var(--accent)" stroke-width="3" />
+                </svg>
+            </div>
+        </div>
+
+        <!-- Sector Waterfall -->
+        <div class="module span-sidebar">
+            <div class="module-label">
+                <span>Sector_Waterfall</span>
+                <span>DELTA_T_SAMP</span>
+            </div>
+            <div class="waterfall">
+                <div class="waterfall-row">
+                    <span class="row-label">S1_T1</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 80%; background: var(--purple);"></div></div>
+                    <span class="data-point" style="color: var(--purple);">-0.04s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S1_T2</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 60%; background: var(--green);"></div></div>
+                    <span class="data-point" style="color: var(--green);">-0.02s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S1_T3</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 40%; background: var(--yellow);"></div></div>
+                    <span class="data-point" style="color: var(--yellow);">+0.08s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S2_T1</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 90%; background: var(--purple);"></div></div>
+                    <span class="data-point" style="color: var(--purple);">-0.11s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S2_T2</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 70%; background: var(--green);"></div></div>
+                    <span class="data-point" style="color: var(--green);">-0.03s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S2_T3</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 30%; background: var(--yellow);"></div></div>
+                    <span class="data-point" style="color: var(--yellow);">+0.15s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S3_T1</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 85%; background: var(--purple);"></div></div>
+                    <span class="data-point" style="color: var(--purple);">-0.09s</span>
+                </div>
+                <div class="waterfall-row">
+                    <span class="row-label">S3_T2</span>
+                    <div class="row-bar"><div class="row-fill" style="width: 65%; background: var(--green);"></div></div>
+                    <span class="data-point" style="color: var(--green);">-0.04s</span>
+                </div>
+            </div>
+            
+            <div style="margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border);">
+                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px;">
+                    <span class="cmd-label">AVG_LAP_SKEW:</span>
+                    <span class="data-point" style="color: var(--yellow);">+0.012s</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const traceArea = document.getElementById('traceArea');
+        const ghostCar = document.getElementById('ghostCar');
+        const mapArea = document.getElementById('mapArea');
+
+        // Simple simulation of the scrub interaction
+        traceArea.addEventListener('mousemove', (e) => {
+            const rect = traceArea.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width;
+            
+            // Map X coordinate to a simple orbital path for the ghost car
+            const angle = x * Math.PI * 2;
+            const centerX = mapArea.offsetWidth / 2;
+            const centerY = mapArea.offsetHeight / 2;
+            const radius = 60;
+            
+            const posX = centerX + Math.cos(angle) * radius;
+            const posY = centerY + Math.sin(angle) * radius;
+            
+            ghostCar.style.left = `${posX}px`;
+            ghostCar.style.top = `${posY}px`;
+        });
+    </script>
+</body>
+</html>

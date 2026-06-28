@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "F1 Coach System Launcher",
+  "entry": "f1-coach-launcher.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "primary": true,
+  "createdAt": "2026-06-15T12:43:19.801Z",
+  "updatedAt": "2026-06-15T12:43:19.805Z",
+  "sourceSkillId": "agent-browser",
+  "designSystemId": "default",
+  "metadata": {
+    "identifier": "f1-coach-launcher",
+    "artifactType": "text/html",
+    "inferred": false
+  }
+}

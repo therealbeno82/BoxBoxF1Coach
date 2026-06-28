@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "F1 Coach // Strategy Room",
+  "entry": "f1-coach-strategy-room.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "primary": true,
+  "createdAt": "2026-06-15T12:54:28.552Z",
+  "updatedAt": "2026-06-15T12:54:28.554Z",
+  "sourceSkillId": "agent-browser",
+  "designSystemId": "default",
+  "metadata": {
+    "identifier": "f1-coach-strategy-room",
+    "artifactType": "text/html",
+    "inferred": false
+  }
+}

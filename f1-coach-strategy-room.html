@@ -1,0 +1,337 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COACH_LOG // F1 COACH</title>
+    <style>
+        :root {
+            --bg: #0A0A0B;
+            --surface: #141416;
+            --border: #222224;
+            --border-bright: #333336;
+            --accent: #2F6FEB;
+            --purple: #B35BFF;
+            --green: #17A34A;
+            --yellow: #EAB308;
+            --fg: #E5E5E5;
+            --muted: #6B6B6B;
+            
+            --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            background-image: 
+                linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size: 20px 20px;
+            color: var(--fg);
+            font-family: var(--font-display);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            height: 50px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(10, 10, 11, 0.9);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .cmd-group { display: flex; gap: 24px; }
+        .cmd-item { display: flex; gap: 8px; align-items: center; }
+        .cmd-label { color: var(--muted); }
+        .cmd-value { font-weight: 600; }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 12px;
+            padding: 20px;
+            overflow: hidden;
+        }
+
+        .module {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .module-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* --- Strategy Board --- */
+        .objective-item {
+            background: #1a1a1c;
+            border: 1px solid var(--border);
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 1px;
+        }
+
+        .obj-header {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--accent);
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .obj-text {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        /* --- Coaching Log Feed --- */
+        .log-container {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding-right: 8px;
+        }
+
+        .log-container::-webkit-scrollbar { width: 4px; }
+        .log-container::-webkit-scrollbar-thumb { background: var(--border); }
+
+        .log-entry {
+            display: grid;
+            grid-template-columns: 100px 1fr;
+            gap: 16px;
+            padding: 12px;
+            background: #1a1a1c;
+            border-left: 3px solid var(--border);
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .log-entry:hover {
+            background: #202023;
+            border-left-color: var(--accent);
+        }
+
+        .log-time {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .log-body {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .log-tag {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            padding: 2px 6px;
+            background: #000;
+            border: 1px solid var(--border);
+            width: fit-content;
+            text-transform: uppercase;
+        }
+
+        .log-text {
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .tag-braking { color: var(--yellow); border-color: var(--yellow); }
+        .tag-line { color: var(--green); border-color: var(--green); }
+        .tag-gear { color: var(--purple); border-color: var(--purple); }
+
+        .log-action {
+            margin-top: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .target-delta {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .checkbox-resolved {
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            border: 1px solid var(--border);
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .checkbox-resolved:checked {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .checkbox-resolved:checked::after {
+            content: "✓";
+            position: absolute;
+            top: -2px; left: 2px;
+            font-size: 10px;
+            color: white;
+        }
+
+        /* Layout Areas */
+        .span-board { grid-area: 1 / 1 / 2 / 2; }
+        .span-feed { grid-area: 1 / 2 / 2 / 3; }
+
+        .data-point { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="cmd-group">
+            <div class="cmd-item">
+                <span class="cmd-label">SESS:</span>
+                <span class="cmd-value">QUALIFYING</span>
+            </div>
+            <div class="cmd-item">
+                <span class="cmd-label">SAMP_REF:</span>
+                <span class="cmd-value">LAP_12_S2</span>
+            </div>
+        </div>
+        <div class="cmd-group">
+            <div style="cursor: pointer;" onclick="location.href='telemetry-dive.html'">
+                <span class="cmd-value">TELEMETRY_DIVE ◀</span>
+            </div>
+            <div style="cursor: pointer;" onclick="location.href='../f1-coach-launcher.html'">
+                <span class="cmd-value">SESS_EXIT ◀</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Session Strategy Board -->
+        <div class="module span-board">
+            <div class="module-label">
+                <span>SESS_OBJECTIVES</span>
+                <span>REF: STRAT_01</span>
+            </div>
+            <h2 style="font-size: 18px; margin-bottom: 20px; text-transform: uppercase;">Strategy_Board</h2>
+            
+            <div class="objective-item">
+                <div class="obj-header"><span>OBJ_01</span> <span>S2_APEX</span></div>
+                <div class="obj-text">Optimize minimum corner speed at Turn 14. Avoid over-braking on entry.</div>
+            </div>
+            <div class="objective-item">
+                <div class="obj-header"><span>OBJ_02</span> <span>S1_EXIT</span></div>
+                <div class="obj-text">Increase traction out of T2. Shift to 3rd gear 10m earlier.</div>
+            </div>
+            <div class="objective-item">
+                <div class="obj-header"><span>OBJ_03</span> <span>Tire_Mgmt</span></div>
+                <div class="obj-text">Manage RL degradation. Avoid excessive sliding in S3 high-speeds.</div>
+            </div>
+
+            <div style="margin-top: auto; padding: 16px; background: rgba(47, 111, 235, 0.1); border: 1px dashed var(--accent);">
+                <div style="font-family: var(--font-mono); font-size: 11px; color: var(--accent);">
+                    COACH_NOTE: "Focus on the rhythm of S2. Don't fight the car, flow with it."
+                </div>
+            </div>
+        </div>
+
+        <!-- Coaching Log Feed -->
+        <div class="module span-feed">
+            <div class="module-label">
+                <span>RADIO_TRANSCRIPT_LOG</span>
+                <span>SYNC: LIVE_SAMP</span>
+            </div>
+            <h2 style="font-size: 18px; margin-bottom: 20px; text-transform: uppercase;">Coaching_Feed</h2>
+            
+            <div class="log-container">
+                <!-- Entry 1 -->
+                <div class="log-entry">
+                    <div class="log-time">14:22:45</div>
+                    <div class="log-body">
+                        <div class="log-tag tag-braking">[BRAKING]</div>
+                        <div class="log-text">S2 Turn 14: Over-braking on entry. You're scrubbing too much speed. Trust the aero and delay the hit.</div>
+                        <div class="log-action">
+                            <span class="target-delta">TARGET: -0.04s</span>
+                            <input type="checkbox" class="checkbox-resolved">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entry 2 -->
+                <div class="log-entry">
+                    <div class="log-time">14:23:12</div>
+                    <div class="log-body">
+                        <div class="log-tag tag-line">[LINE]</div>
+                        <div class="log-text">S1 Turn 2: Too wide on apex. You're leaving the door open for a tighter rotation. Clip the curb harder.</div>
+                        <div class="log-action">
+                            <span class="target-delta">TARGET: -0.02s</span>
+                            <input type="checkbox" class="checkbox-resolved" checked>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entry 3 -->
+                <div class="log-entry">
+                    <div class="log-time">14:24:05</div>
+                    <div class="log-body">
+                        <div class="log-tag tag-gear">[GEAR]</div>
+                        <div class="log-text">S3 High Speed: Shift to 6th too early. You're hitting the limiter before the straight. Delay shift by 0.5s.</div>
+                        <div class="log-action">
+                            <span class="target-delta">TARGET: -0.01s</span>
+                            <input type="checkbox" class="checkbox-resolved">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entry 4 -->
+                <div class="log-entry">
+                    <div class="log-time">14:25:30</div>
+                    <div class="log-body">
+                        <div class="log-tag tag-line">[LINE]</div>
+                        <div class="log-text">Overall Lap Rhythm: The flow in S1 is improving. Focus now on the transition from T10 to T11.</div>
+                        <div class="log-action">
+                            <span class="target-delta">SESS_SAMP</span>
+                            <input type="checkbox" class="checkbox-resolved" checked>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

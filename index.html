@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>F1 Coach</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=Saira+Condensed:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ─── COCKPIT DESIGN TOKENS ───────────────────────────────────────────
+         The redesigned GUI ("Cockpit") is a single committed dark palette — no
+         light theme, no per-team skins. Structural colours live here as CSS
+         custom properties so any inline style referencing var(--token) inherits
+         the design. Screens also import the same palette from src/lib/ui/tokens.js
+         for the many design-specific accents (purple/cyan/teal/…). Data-semantic
+         colours (reference purple, driven cyan, sector + telemetry-channel
+         colours) are fixed constants and read the same everywhere. */
+      :root {
+        --bg:             #0b0e14;  /* app background */
+        --surface:        #11151d;  /* primary card */
+        --panel:          #0d1119;  /* inset / well / nested tile */
+        --elevated:       #16243f;  /* active / selected (blue-tinted) */
+        --modal:          #0e121b;  /* overlay cards */
+        --line:           #1c2230;  /* hairline card border */
+        --border:         #1c2230;
+        --border-input:   #232a3a;
+        --border-strong:  #2b3346;
+        --text:           #ffffff;
+        --text-dim:       #d6dbe8;
+        --text-mid:       #aeb6c6;
+        --text-muted:     #8b94a8;
+        --text-faint:     #6b7488;
+        --text-faintest:  #5b6478;
+        --accent:         #3671C6;  /* brand blue — CTAs, active nav, car dot */
+        --accent-contrast:#ffffff;
+        --secondary:      #b45bff;  /* reference / coach purple */
+        --logo-bar:       #3671C6;
+        --livery-mix:     85%;
+        --tint-mix:       10%;
+      }
+
+      * { box-sizing: border-box; }
+      html,
+      body,
+      #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+      }
+      body {
+        font-family: "Archivo", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ─── Animations (from the handoff) ─────────────────────────────────── */
+      @keyframes blink { 0%,60%{opacity:1} 61%,100%{opacity:.25} }
+      @keyframes sweep { from{transform:translateX(-100%)} to{transform:translateX(300%)} }
+      @keyframes coachPulse { 0%,100%{opacity:.3;transform:translateY(0)} 50%{opacity:1;transform:translateY(-2px)} }
+
+      /* ─── Thin custom scrollbars ────────────────────────────────────────── */
+      * { scrollbar-width: thin; scrollbar-color: #2a3346 transparent; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #2a3346; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+      ::-webkit-scrollbar-thumb:hover { background: #3a4761; background-clip: padding-box; }
+      ::-webkit-scrollbar-corner { background: transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
