@@ -20,11 +20,44 @@ const conditionOf = (l) => tyreCondition(l?.tyre) ?? "dry";
 
 // Session types we always want to surface as their own slot, in this order, even
 // when other types also have laps. Matches sessionTypeName's coarse buckets.
-export const FEATURED_SESSION_TYPES = ["Time Trial", "Qualifying"];
+export const FEATURED_SESSION_TYPES = ["Time Trial", "Qualifying", "Race"];
+
+// Whether a lap may count toward bests, PBs, records or coaching. A game-
+// invalidated lap (track limits / corner cut) stays visible in history, tagged,
+// but never ranks. THE single definition of that rule — every screen and the
+// coach filter through this so the exclusion can't drift per panel.
+export const isRankable = (l) => !l?.invalid;
+
+// The laps to SHOW in a drive's Session-Laps panel and the Compare reference /
+// driven-lap dropdowns: this drive's laps, never archived ("Reset Session Laps"
+// hides them for good). THE single definition of that scope so the Live and
+// Analytics panels can't drift apart.
+//   • With a live sessionId (bridge connected) → exactly that session's laps.
+//   • With none (app just booted, no live bridge yet) → we do NOT fall back to
+//     the driver's entire history across every track and session. We show only
+//     the most recently driven session's laps, so a fresh launch opens on the
+//     last drive rather than a career-spanning grab-bag of mixed tracks.
+// Falls back to all visible laps only when no lap carries a sessionId (legacy
+// history predating session tagging). Order follows the input; callers sort.
+export function visibleSessionLaps(laps = [], sessionId = null) {
+  const visible = laps.filter((l) => !l?.archived);
+  if (sessionId) return visible.filter((l) => l.meta?.sessionId === sessionId);
+  // No live session: scope to the session of the most-recently-recorded lap.
+  let latest = null;
+  for (const l of visible) {
+    if (!l.meta?.sessionId) continue;
+    if (!latest || (l.recordedAt || 0) > (latest.recordedAt || 0)) latest = l;
+  }
+  const latestSid = latest?.meta?.sessionId ?? null;
+  return latestSid ? visible.filter((l) => l.meta?.sessionId === latestSid) : visible;
+}
 
 export function computeDriverStats(laps = [], opts = {}) {
   const recentCount = opts.recent || 10;
-  const valid = laps.filter(hasTime);
+  // Bests, PBs and theoretical-optimal sectors ignore game-invalidated laps — see
+  // isRankable. The recent list below still spans every lap (it maps `laps`, not
+  // `valid`) so invalidated laps remain visible in history, just never ranked.
+  const valid = laps.filter((l) => hasTime(l) && isRankable(l));
   const byTimeAsc = [...valid].sort((a, b) => a.lapTime - b.lapTime);
 
   const fastestOverall = byTimeAsc[0] || null;
@@ -69,7 +102,7 @@ export function computeDriverStats(laps = [], opts = {}) {
   const perTrackBest = [...trackMap.values()].sort((a, b) => a.best.lapTime - b.best.lapTime);
 
   // Per-track personal best within each featured session type, for the
-  // dashboard's category PB tables (Time Trial / Qualifying). One best lap per
+  // dashboard's category PB tables (Time Trial / Qualifying / Race). One best lap per
   // track per category, fastest-first; the lap itself is carried so the row can
   // show its sectors, tyre and date.
   const catMaps = new Map(FEATURED_SESSION_TYPES.map((t) => [t, new Map()]));

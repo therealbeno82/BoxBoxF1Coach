@@ -1,12 +1,12 @@
 // ─── LAP HISTORY ──────────────────────────────────────────────────────────────
-// Two history-wide views of the driver's completed laps for the coaching LLM —
-// the driver's ENTIRE saved lap history (all sessions, from lapStore), not just
-// the current drive — so it can reason beyond the single most-recent lap that
-// buildLapEvidence sees:
+// History views of the driver's completed laps for the coaching LLM, so it can
+// reason beyond the single most-recent lap that buildLapEvidence sees:
 //
 //   buildLapLog — a compact per-lap table (time, sector splits, gap to the
-//     personal best) so the driver can ask about a specific earlier lap
-//     ("what was my lap 3?", "which lap was quickest?").
+//     personal best), partitioned by session so a bare "lap N" question is
+//     never ambiguous: lap numbers restart at 1 every session, so the current
+//     (or last) session is the authoritative block and older same-track
+//     sessions are listed separately as trends-only material.
 //   buildTrends — cross-lap pattern detection: issues that recur across MOST of
 //     the laps rather than appearing once, which is what makes "you KEEP doing
 //     X in turn 3" coaching honest. Detects consistently-slow corners, a wrong
@@ -18,6 +18,7 @@
 import { formatLapTime } from "./format.js";
 import { tyreLabel, tyreCondition } from "./tyres.js";
 import { cornerLabel } from "./cornerData.js";
+import { isRankable } from "./driverStats.js";
 
 // Nearest sample by track distance (samples are sorted by dist). Local copy so
 // this module stays independent of lapEvidence.js (which keeps its own).
@@ -56,49 +57,123 @@ function topSpeedOf(lap) {
 }
 
 // ── Per-lap log ───────────────────────────────────────────────────────────────
-export function buildLapLog(laps, opts = {}) {
-  const rows = (laps || []).filter((l) => typeof l.lapTime === "number" && l.lapTime > 0);
-  if (!rows.length) return null;
+// Short human date for a session sub-header ("28 Jun"); null when the lap has no
+// usable recordedAt.
+function shortDate(ts) {
+  const d = ts != null ? new Date(ts) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+    : null;
+}
+
+// Two-block log: the AUTHORITATIVE session (live now, or the last session on this
+// track when reviewing offline) followed by older same-track sessions. Lap numbers
+// restart at 1 every session, so the split — plus explicit wording — is what lets
+// the model answer "what was my lap 2?" without picking between namesakes.
+// opts: { live: boolean — a game session is currently active, max: current-lap cap }
+export function buildLapLog(currentLaps, previousLaps, opts = {}) {
+  // Game-invalidated laps (see isRankable) are never fed to the coach — no
+  // advice or history recall should be grounded in a deleted lap.
+  const usable = (laps) => (laps || []).filter((l) => isRankable(l) && typeof l.lapTime === "number" && l.lapTime > 0);
+  const current = usable(currentLaps).slice(-(opts.max || 15)); // cap tokens on a long session
+  const previous = usable(previousLaps);
+  if (!current.length && !previous.length) return null;
 
   // Personal best per condition so a wet/inter lap is judged against other wet
   // laps, not the (unbeatable-in-the-wet) dry best. Untagged laps fold into dry.
-  const bestFor = (cond) => {
+  const bestFor = (rows, cond) => {
     const t = rows.filter((l) => (tyreCondition(l.tyre) ?? "dry") === cond);
     return t.length ? Math.min(...t.map((l) => l.lapTime)) : null;
   };
-  const bestDry = bestFor("dry");
-  const bestWet = bestFor("wet");
-  const recent = rows.slice(-(opts.max || 15)); // cap tokens on a long history
-  const lines = recent.map((l) => {
+  const bestSummary = (dry, wet) => [
+    dry != null ? `dry ${formatLapTime(dry)}` : null,
+    wet != null ? `wet ${formatLapTime(wet)}` : null,
+  ].filter(Boolean).join(", ");
+
+  const curDry = bestFor(current, "dry"), curWet = bestFor(current, "wet");
+  // All-time bests across everything shown — quoted in the previous block's header
+  // and tagged on the lap that holds them.
+  const all = current.concat(previous);
+  const allDry = bestFor(all, "dry"), allWet = bestFor(all, "wet");
+
+  // gaps: current block quotes each lap against the SESSION best; previous laps
+  // carry no per-lap gap (their yardstick is the current session, not each other),
+  // only an "all-time best" tag where earned.
+  const lineFor = (l, { gaps }) => {
     const s = Array.isArray(l.sectorTimes)
       ? ` (S1 ${fmtSec(l.sectorTimes[0])} / S2 ${fmtSec(l.sectorTimes[1])} / S3 ${fmtSec(l.sectorTimes[2])})`
       : "";
     const cond = tyreCondition(l.tyre) ?? "dry";
-    const condBest = cond === "wet" ? bestWet : bestDry;
-    const gap = condBest != null && l.lapTime <= condBest + 1e-6 ? `best (${cond})` : `+${(l.lapTime - condBest).toFixed(1)} vs ${cond} best`;
+    let gap = "";
+    if (gaps) {
+      const condBest = cond === "wet" ? curWet : curDry;
+      if (condBest != null) {
+        gap = l.lapTime <= condBest + 1e-6 ? ` best (${cond})` : ` +${(l.lapTime - condBest).toFixed(1)} vs ${cond} best`;
+      }
+    } else {
+      const allBest = cond === "wet" ? allWet : allDry;
+      if (allBest != null && l.lapTime <= allBest + 1e-6) gap = ` all-time best (${cond})`;
+    }
     const tyre = tyreLabel(l.tyre);
     const tyreTag = tyre ? ` [${tyre}]` : "";
     const top = topSpeedOf(l);
     const topTag = top != null ? ` · top ${top} km/h` : "";
-    return `Lap ${l.lapNumber ?? "?"}: ${formatLapTime(l.lapTime)}${s}${tyreTag} ${gap}${topTag}`;
-  });
+    return `Lap ${l.lapNumber ?? "?"}: ${formatLapTime(l.lapTime)}${s}${tyreTag}${gap}${topTag}`;
+  };
 
-  const bestSummary = [
-    bestDry != null ? `dry best ${formatLapTime(bestDry)}` : null,
-    bestWet != null ? `wet best ${formatLapTime(bestWet)}` : null,
-  ].filter(Boolean).join(", ");
+  const parts = [];
 
-  return (
-    `LAP HISTORY LOG — your completed laps so far across your saved history, not just this drive (${bestSummary}; wet = Intermediate/Wet tyres, judged separately from dry):` +
-    "\n- " + lines.join("\n- ")
-  );
+  if (current.length) {
+    const type = current[0]?.meta?.sessionType || null;
+    const bests = bestSummary(curDry, curWet);
+    const bestsTag = bests ? ` (session best: ${bests})` : "";
+    const date = shortDate(current[current.length - 1]?.recordedAt);
+    const header = opts.live
+      ? `CURRENT SESSION${type ? ` — ${type}` : ""}, live now. These are THE laps the driver means by "lap N"${bestsTag}:`
+      : `LAST SESSION (most recent on this track${type ? ` — ${type}` : ""}${date ? `, ${date}` : ""}; no live session right now). These are THE laps the driver means by "lap N"${bestsTag}:`;
+    parts.push(header + "\n- " + current.map((l) => lineFor(l, { gaps: true })).join("\n- "));
+  } else if (opts.live) {
+    parts.push(`CURRENT SESSION — live now, no completed laps yet. If the driver asks about "lap N", say no lap has been completed this session; the laps below are from OLDER sessions.`);
+  } else {
+    parts.push(`CURRENT SESSION — none. If the driver asks about "lap N", explain their saved laps are all from older sessions (below) and cite them by session/date.`);
+  }
+
+  if (previous.length) {
+    // Group per session, newest session first; legacy laps without a sessionId
+    // form one trailing group. Laps arrive oldest → newest, so a group's last lap
+    // is its newest.
+    const groups = new Map();
+    for (const l of previous) {
+      const k = l.meta?.sessionId || "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(l);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => {
+      if (!a[0]) return 1;
+      if (!b[0]) return -1;
+      return (b[1][b[1].length - 1]?.recordedAt || 0) - (a[1][a[1].length - 1]?.recordedAt || 0);
+    });
+    const blocks = ordered.map(([k, rows]) => {
+      const head = k
+        ? `[${rows[0]?.meta?.sessionType || "Session"} · ${shortDate(rows[0]?.recordedAt) || "date unknown"}]`
+        : "[Older laps · session unknown]";
+      return head + "\n- " + rows.map((l) => lineFor(l, { gaps: false })).join("\n- ");
+    });
+    const bests = bestSummary(allDry, allWet);
+    parts.push(
+      `PREVIOUS SESSIONS on this track — OLDER laps, for trends/progress ONLY. Lap numbers restart at 1 every session: "Lap 2" below is NOT the driver's current lap 2. Never answer a bare "lap N" question from this list${bests ? ` (all-time track best: ${bests})` : ""}:` +
+      "\n" + blocks.join("\n")
+    );
+  }
+
+  return parts.join("\n\n");
 }
 
 // ── Cross-lap trends ──────────────────────────────────────────────────────────
 // labelAt(dist, lapLen) → corner/zone name or null, so findings can read
 // "T3 Apex (340m)" instead of a bare distance.
 export function buildTrends(laps, refSamples, opts = {}) {
-  const valid = (laps || []).filter((l) => Array.isArray(l.samples) && l.samples.length > 5);
+  const valid = (laps || []).filter((l) => isRankable(l) && Array.isArray(l.samples) && l.samples.length > 5);
   if (valid.length < 2) return null; // a single lap is a data point, not a trend
 
   const ref = Array.isArray(refSamples) && refSamples.length > 5 ? refSamples : null;
@@ -175,7 +250,7 @@ export function buildTrends(laps, refSamples, opts = {}) {
   picked.sort((a, b) => a.d - b.d);
 
   return (
-    `CROSS-LAP TRENDS — recurring patterns across all ${valid.length} of your saved laps${ref ? " vs the reference" : ""} (only things that happen on most laps):` +
+    `CROSS-LAP TRENDS — recurring patterns across your last ${valid.length} laps on this track, possibly spanning sessions${ref ? ", vs the reference" : ""} (only things that happen on most laps):` +
     "\n- " + picked.map((f) => f.text).join("\n- ")
   );
 }
@@ -197,7 +272,7 @@ export function buildCornerProfiles(laps, opts = {}) {
   if (!corners.length) return null;
 
   const valid = (laps || [])
-    .filter((l) => Array.isArray(l.samples) && l.samples.length > 5 && typeof l.lapTime === "number" && l.lapTime > 0)
+    .filter((l) => isRankable(l) && Array.isArray(l.samples) && l.samples.length > 5 && typeof l.lapTime === "number" && l.lapTime > 0)
     .slice(-(opts.max || 15));
   if (!valid.length) return null;
 
@@ -248,7 +323,7 @@ export function buildCornerProfiles(laps, opts = {}) {
 
   const order = lapNums.map((n) => `L${n}`).join(", ");
   return (
-    `CORNER PROFILES — what you carried through each corner on every lap, each channel listing one value per lap ` +
+    `CORNER PROFILES — what you carried through each corner on every lap THIS SESSION, each channel listing one value per lap ` +
     `in the order [${order}]. Channels: speed = minimum km/h (lower = slower through the corner); gear = gear at the apex; ` +
     `throttle = minimum % (lower = a bigger lift); brake = peak % (higher = harder braking); steer = peak steering lock %:` +
     "\n- " + lines.join("\n- ")

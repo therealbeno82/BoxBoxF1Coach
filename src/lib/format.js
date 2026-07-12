@@ -1,4 +1,7 @@
 // ─── FORMAT HELPERS ───────────────────────────────────────────────────────────
+// Clamp a number to [lo, hi]. Shared so every screen doesn't mint its own copy.
+export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
 // Number of live mini-sectors the lap is split into for the Live screen's S1/S2/S3
 // cards — MINI_PER_SECTOR equal lap-fraction slices per main sector. Shared so the
 // recorder (which stamps boundary times) and the UI (which lays out the pips) agree.
@@ -28,6 +31,18 @@ export function toSpeed(kmh, units = "km/h") {
 // The unit label for the active speed unit.
 export function speedUnitLabel(units = "km/h") {
   return units === "mph" ? "mph" : "km/h";
+}
+
+// Convert a Celsius tyre temp to the active unit and round to an integer. The
+// bridge always reports °C; the UI can show °C or °F (a user pref).
+export function toTemp(celsius, tempUnits = "°C") {
+  if (typeof celsius !== "number" || Number.isNaN(celsius)) return NaN;
+  return Math.round(tempUnits === "°F" ? celsius * 9 / 5 + 32 : celsius);
+}
+
+// The unit symbol for the active temperature unit.
+export function tempUnitLabel(tempUnits = "°C") {
+  return tempUnits === "°F" ? "°F" : "°C";
 }
 
 // ─── SPEAKABLE TEXT ───────────────────────────────────────────────────────────
@@ -73,4 +88,18 @@ export function sessionTypeName(n) {
   if (n <= 17) return "Race";
   if (n === 18) return "Time Trial";
   return null;
+}
+
+// ─── 2026 BOOST / ACTIVE AERO LABELS ─────────────────────────────────────────
+// One state→label mapping shared by the Live screen's status ribbon and the
+// coach prompts (lib/coach/prompts.js), so the voice coach never describes a
+// boost/aero state that contradicts what the driver sees on screen.
+export function boostStateName(tel = {}) {
+  return tel.overtakeActive ? "DEPLOYING" : tel.overtakeAvailable ? "READY" : "—";
+}
+// "Straight" = low-drag wing mode, "Corner" = high-downforce; "—" until the
+// game reports active aero as available.
+export function aeroModeName(tel = {}) {
+  if (!tel.activeAeroAvailable) return "—";
+  return tel.activeAeroMode ? "Straight" : "Corner";
 }

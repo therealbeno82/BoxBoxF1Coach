@@ -119,9 +119,12 @@ export async function clearLaps(driver) {
       idxReq.onsuccess = () => {
         const keys = idxReq.result || [];
         for (const k of keys) store.delete(k);
-        resolve();
       };
       idxReq.onerror = () => reject(idxReq.error);
+      // Resolve on the transaction, not the getAllKeys callback — the deletes are
+      // still in flight when onsuccess fires; oncomplete means every write landed.
+      store.transaction.oncomplete = () => resolve();
+      store.transaction.onerror = () => reject(store.transaction.error);
     });
   } catch { /* ignore */ }
 }
@@ -247,4 +250,97 @@ export async function deleteTrackMap(driver, slug) {
       req.onerror = () => reject(req.error);
     });
   } catch { /* ignore */ }
+}
+
+// Every saved circuit outline owned by `driver`, as portable rows
+// { slug, track, path, savedAt } (the composite key is dropped — it's rebuilt
+// from driver+slug on import). Used by the profile backup export. Resolves to []
+// on any failure, like the other readers.
+export async function getTrackMaps(driver) {
+  if (!driver) return [];
+  try {
+    const db = await openDb();
+    const all = await new Promise((resolve, reject) => {
+      const req = trackMapTx(db, "readonly").getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    return all
+      .filter((r) => r?.driver === driver)
+      .map(({ slug, track, path, savedAt }) => ({ slug, track, path, savedAt }));
+  } catch {
+    return [];
+  }
+}
+
+// Delete every saved outline owned by `driver` — used when a profile import
+// overwrites an existing driver, so the incoming maps replace (not merge with)
+// the old ones.
+export async function clearTrackMaps(driver) {
+  if (!driver) return;
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const store = trackMapTx(db, "readwrite");
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return; // resolve on transaction complete, not here
+        if (cursor.value?.driver === driver) cursor.delete();
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+      store.transaction.oncomplete = () => resolve();
+      store.transaction.onerror = () => reject(store.transaction.error);
+    });
+  } catch { /* ignore */ }
+}
+
+// ─── RENAME ─────────────────────────────────────────────────────────────────
+// Re-file every record owned by `oldName` under `newName` — used when a driver
+// profile is renamed in Settings. The driver name is the key their whole history
+// hangs off: laps (meta.driver), their avatar row (keyed by name) and every saved
+// track map (keyed by "<driver>::<slug>"). Moving all three keeps a renamed
+// driver's laps, photo and circuit outlines intact. Best-effort like the rest of
+// the store — a partial rename still leaves each record readable under whichever
+// name it landed on, never a crash.
+export async function renameDriver(oldName, newName) {
+  if (!oldName || !newName || oldName === newName) return;
+  try {
+    const db = await openDb();
+    // Laps: rewrite meta.driver on each of the driver's laps (the id key is
+    // unchanged, so the record moves owners without being re-created).
+    await new Promise((resolve, reject) => {
+      const req = tx(db, "readwrite").index("driver").openCursor(oldName);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const rec = cursor.value;
+        if (rec?.meta) { rec.meta = { ...rec.meta, driver: newName }; cursor.update(rec); }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+    // Avatar: copy the photo to the new key, then drop the old row.
+    const avatar = await getAvatar(oldName);
+    if (avatar) { await putAvatar(newName, avatar); await deleteAvatar(oldName); }
+    // Track maps: re-key each "<old>::<slug>" record to "<new>::<slug>". The guard
+    // on rec.driver skips the freshly-put records the cursor may revisit, so this
+    // never loops.
+    await new Promise((resolve, reject) => {
+      const store = trackMapTx(db, "readwrite");
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const rec = cursor.value;
+        if (rec?.driver === oldName) {
+          store.put({ ...rec, key: trackMapKey(newName, rec.slug), driver: newName });
+          cursor.delete();
+        }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch { /* best-effort */ }
 }
