@@ -12,6 +12,7 @@
 // still overlay an LLM next-lap focus and debrief when available.
 
 import { analyzeLap, rankFindings, reconcile } from "./lapAnalysis.js";
+import { clamp } from "../format.js";
 
 const C = { line: "#2ED573", gear: "#b45bff", brake: "#ff4d5e", ers: "#34c8ff", throttle: "#ffffff" };
 const META = {
@@ -23,8 +24,6 @@ const META = {
 };
 // Display order on the screen.
 const ORDER = ["LINE", "GEAR", "BRAKING", "ERS", "THROTTLE"];
-
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
   const a = analyzeLap(userLap?.samples, refSamples, opts);

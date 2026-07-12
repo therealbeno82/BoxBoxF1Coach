@@ -65,14 +65,15 @@ export function useCoachChat({ llmConfig }) {
             error: true,
             time: Date.now(),
             content:
-              llmConfig?.provider === "openrouter"
-                ? "⚠ Couldn't reach OpenRouter. Check your API key and model in the Setup tab."
-                : "⚠ Couldn't reach the local LLM. Check Ollama is running and the model is pulled (Setup tab).",
+              "⚠ Couldn't reach OpenRouter. Check your API key and model in the Setup tab.",
           },
         ]);
         return null;
       } finally {
-        setThinking(false);
+        // Only the current request may clear the spinner. A newer send() aborts
+        // this one and sets thinking=true; without this guard the aborted call's
+        // finally would switch it back off while the new request is still in flight.
+        if (abortRef.current === ctrl) setThinking(false);
       }
     },
     [llmConfig]

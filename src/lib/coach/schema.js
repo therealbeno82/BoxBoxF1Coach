@@ -1,8 +1,8 @@
 // ─── COACHING-TIP SCHEMA ──────────────────────────────────────────────────────
 // The structured shape for the on-track tip and between-lap debrief. Exported as
-// a JSON Schema (passed to Ollama's `format` / OpenRouter's response_format) plus
-// a JS validator. `repairTip` is the fallback when a weak local model returns
-// non-JSON, so the pipeline never hard-fails.
+// a JSON Schema (passed to OpenRouter's response_format) plus a JS validator.
+// `repairTip` is the fallback when a model returns non-JSON, so the pipeline
+// never hard-fails.
 
 import { cleanOutput } from "./guardrails.js";
 

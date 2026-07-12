@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useCoachChat } from "../hooks/useCoachChat.js";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition.js";
-import { useLlmHealth } from "../hooks/useLlmHealth.js";
 import { C, FONT } from "../lib/ui/tokens.js";
 
 const SUGGESTIONS = [
@@ -17,10 +16,11 @@ const SUGGESTIONS = [
 // the moment the driver asks — even if the question arrives via a speech-
 // recognition callback captured a moment earlier. Renders inside the Analytics
 // chat card (no own outer border), so it just fills its container.
-export default function CoachChat({ llmConfig, modelLabel, contextRef, speak }) {
+// `health` ("checking" | "online" | "offline") comes from the app's single
+// useLlmHealth instance so the backend isn't pinged once per mounted consumer.
+export default function CoachChat({ llmConfig, modelLabel, contextRef, speak, health = "checking" }) {
   const { messages, send, thinking, clear } = useCoachChat({ llmConfig });
   const { supported, listening, interim, start, stop } = useSpeechRecognition();
-  const health = useLlmHealth(llmConfig); // "checking" | "online" | "offline"
   const [input, setInput] = useState("");
   const [speakReplies, setSpeakReplies] = useState(true);
   const scrollRef = useRef(null);

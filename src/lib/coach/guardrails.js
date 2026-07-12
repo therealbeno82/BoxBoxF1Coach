@@ -57,7 +57,8 @@ export function collectAllowedNumbers(ctx = {}) {
   const add = (v) => { if (typeof v === "number" && !Number.isNaN(v)) set.add(Math.round(v)); };
   const t = ctx.tel || ctx.telemetry || {};
   [t.speed, t.lapDistance, t.throttle, t.brake, t.steer, t.gear, t.rpm,
-   t.ersBattery, t.ersDeploy, t.lapTime].forEach(add);
+   t.ersBattery, t.ersDeploy, t.ersHarvestLimit,
+   t.overtakeActivationDistance, t.activeAeroActivationDistance, t.lapTime].forEach(add);
   const r = ctx.refSample || {};
   [r.speed, r.dist, r.throttle, r.brake, r.steer, r.gear, r.ersSpent].forEach(add);
   // Car-setup figures (wings, bias, pressures, …) when the call carries a setup,
