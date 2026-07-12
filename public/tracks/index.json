@@ -1,0 +1,85 @@
+{
+  "_attribution": "Track geometry: TUMFTM racetrack-database (github.com/TUMFTM/racetrack-database), LGPL-3.0.",
+  "tracks": {
+    "australia": {
+      "file": "australia.json",
+      "lengthM": 5299,
+      "points": 2119
+    },
+    "china": {
+      "file": "china.json",
+      "lengthM": 5445,
+      "points": 2178
+    },
+    "bahrain": {
+      "file": "bahrain.json",
+      "lengthM": 5406,
+      "points": 2162
+    },
+    "spain": {
+      "file": "spain.json",
+      "lengthM": 4650,
+      "points": 1860
+    },
+    "canada": {
+      "file": "canada.json",
+      "lengthM": 4358,
+      "points": 1743
+    },
+    "silverstone": {
+      "file": "silverstone.json",
+      "lengthM": 5887,
+      "points": 2355
+    },
+    "hungary": {
+      "file": "hungary.json",
+      "lengthM": 4377,
+      "points": 1751
+    },
+    "belgium": {
+      "file": "belgium.json",
+      "lengthM": 7000,
+      "points": 2800
+    },
+    "italy": {
+      "file": "italy.json",
+      "lengthM": 5790,
+      "points": 2316
+    },
+    "japan": {
+      "file": "japan.json",
+      "lengthM": 5803,
+      "points": 2321
+    },
+    "abudhabi": {
+      "file": "abudhabi.json",
+      "lengthM": 5547,
+      "points": 2219
+    },
+    "usa": {
+      "file": "usa.json",
+      "lengthM": 5508,
+      "points": 2203
+    },
+    "brazil": {
+      "file": "brazil.json",
+      "lengthM": 4305,
+      "points": 1722
+    },
+    "austria": {
+      "file": "austria.json",
+      "lengthM": 4315,
+      "points": 1726
+    },
+    "mexico": {
+      "file": "mexico.json",
+      "lengthM": 4297,
+      "points": 1719
+    },
+    "netherlands": {
+      "file": "netherlands.json",
+      "lengthM": 4316,
+      "points": 1727
+    }
+  }
+}

@@ -41,3 +41,26 @@ export function getTrackByName(name) {
   }
   return null;
 }
+
+// Track "names" that carry no real circuit identity — a lap recorded before the
+// game identified the circuit, or a hand-entered placeholder on an imported trace.
+// Treated as unknown so the reference/driven track-match guard never fires on them
+// (with no identity we can't positively confirm a mismatch).
+const UNKNOWN_TRACK_NAMES = new Set(['', 'live', 'unknown track', 'track', '—', '-']);
+
+export function isKnownTrackName(name) {
+  return !UNKNOWN_TRACK_NAMES.has(String(name ?? '').trim().toLowerCase());
+}
+
+// Do two track names refer to the same circuit? Case/whitespace-insensitive, and
+// slug-aware so a display name ("Melbourne") matches an alternate spelling that
+// resolves to the same calendar slug ("australia"). Two unknown/blank names never
+// count as a match.
+export function sameTrack(a, b) {
+  const na = String(a ?? '').trim().toLowerCase();
+  const nb = String(b ?? '').trim().toLowerCase();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = getTrackByName(a), tb = getTrackByName(b);
+  return !!(ta && tb && ta.slug === tb.slug);
+}

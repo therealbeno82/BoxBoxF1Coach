@@ -9,8 +9,9 @@ dist-ssr
 # Rust / Tauri (added when we wrap the native shell)
 src-tauri/target
 
-# Bundled bridge sidecar — a 55 MB generated artifact; rebuild with `npm run build:bridge`
-src-tauri/binaries/*.exe
+# Vendored Kokoro TTS weights — ~97 MB of fetchable artifacts (the .onnx alone is
+# ~90 MB, near GitHub's 100 MB hard limit); re-fetch with `node scripts/fetch-kokoro-model.mjs`
+public/kokoro/
 
 # Editor / OS
 .DS_Store
