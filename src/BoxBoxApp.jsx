@@ -5,34 +5,54 @@ import LiveScreen from "./components/screens/LiveScreen.jsx";
 import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
 import SettingsScreen from "./components/screens/SettingsScreen.jsx";
 import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
+import FfbScreen from "./components/screens/FfbScreen.jsx";
 import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
 import CarSetupModal from "./components/modals/CarSetupModal.jsx";
 import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.jsx";
 import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
+import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
 import CoachChat from "./components/CoachChat.jsx";
 import TelemetryStudio from "./components/TelemetryStudio.jsx";
-import { exportLapToFile } from "./lib/lapExport.js";
+import { exportLapToFile, exportSessionToFile, parseSessionLaps } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
+import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
 import { buildLapEvidence } from "./lib/lapEvidence.js";
 import { buildLapLog, buildTrends, buildCornerProfiles } from "./lib/lapHistory.js";
 import { makeTrackLabeler } from "./lib/trackLabels.js";
 // trackScene3d (and its three.js dependency) is loaded on demand inside the Driving
 // Lines tab — see the dynamic import in CompareDrivingLines — so three stays out of
 // the app's startup bundle.
-import { getTrack } from "./lib/trackData.js";
-import { getCorners, cornerLabel } from "./lib/cornerData.js";
+import { getTrack, sameTrack, isKnownTrackName } from "./lib/trackData.js";
+import { getCorners, cornerLabel, resolveSlug } from "./lib/cornerData.js";
 import { synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE } from "./lib/kokoroTTS.js";
 import { buildCoachLog } from "./lib/coach/coachLog.js";
 import { buildTipPrompt, buildDebriefPrompt } from "./lib/coach/prompts.js";
 import { COACHING_TIP_SCHEMA, DEBRIEF_SCHEMA, validateTip, repairTip, cleanSummary } from "./lib/coach/schema.js";
 import { telemetryIsUsable, collectAllowedNumbers, enforceGrounding } from "./lib/coach/guardrails.js";
-import { createProvider, listOllamaModels } from "./lib/coach/provider.js";
-import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL, DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL } from "./lib/coach/config.js";
-import { formatLapTime, sessionTypeName, speakable, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
+import { createProvider } from "./lib/coach/provider.js";
+import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL } from "./lib/coach/config.js";
+import { formatLapTime, sessionTypeName, speakable, clamp, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
+import { isRankable, visibleSessionLaps } from "./lib/driverStats.js";
+import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
+import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
+import { useTelemetry } from "./hooks/useTelemetry.js";
+import { useFfbEngine } from "./hooks/useFfbEngine.js";
+import { invoke } from "@tauri-apps/api/core";
+
+// Guard the `invoke` calls so `npm run dev` in a browser doesn't throw.
+const coreInvoke = (cmd, args) => { if (inTauri) invoke(cmd, args).catch(() => {}); };
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
+
+// How many recent same-track laps the coach reasons over. Scopes every coaching
+// input (evidence, structured log, trends, corner profiles) to the current form on
+// THIS circuit rather than the driver's entire back-catalogue across all tracks.
+const COACH_LAP_WINDOW = 20;
+// How many older-session laps (same track) the coach also sees, clearly labelled
+// as previous-session material — trends/progress only, never "lap N" answers.
+const COACH_PREV_LAP_WINDOW = 10;
 
 // Colour per call/zone type. ERS zones colour by their ERS mode (see zoneFill);
 // the bare ZONE_COLORS.ers is only used for the toggle chip / legend swatch.
@@ -251,8 +271,6 @@ function deriveZonesFromTrace(trace) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
-
 // Telemetry has physical limits a hand-traced or older export can violate: a gear
 // is always a whole number, throttle/brake are 0–100 %, steer is ±100 %. Clamp and
 // round every channel as a trace loads so a stray 5.5 gear or -1 throttle from the
@@ -452,6 +470,16 @@ function useAudio(voicePrefs = {}) {
     }
   }, []);
 
+  // Honor the persisted engine choice on every launch. The model itself lives in a
+  // module-level var that resets each session, so a restart must re-load it (fast +
+  // offline once the weights are cached) — otherwise speak() falls back to the browser
+  // voice until the user manually hits Test. Also fires when the user switches to Kokoro.
+  useEffect(() => {
+    if (voicePrefs.engine === "kokoro" && !isKokoroLoaded()) {
+      loadKokoroEngine();
+    }
+  }, [voicePrefs.engine, loadKokoroEngine]);
+
   // Pre-synthesise (and cache) a set of phrases so they play instantly later.
   // Sequential to avoid hammering the model. No-op unless Kokoro is the engine.
   const prewarm = useCallback(async (phrases) => {
@@ -504,11 +532,8 @@ function useAudio(voicePrefs = {}) {
 }
 
 // ─── LLM ENGINE ───────────────────────────────────────────────────────────────
-// Error text tuned to the active backend.
-function providerErr(cfg) {
-  return cfg?.provider === "openrouter"
-    ? "⚠ OpenRouter not reachable — check your API key in the Setup tab"
-    : "⚠ Ollama not reachable — check Setup tab";
+function providerErr() {
+  return "⚠ OpenRouter not reachable — check your API key in the Setup tab";
 }
 
 function useLLM(llmConfig) {
@@ -569,7 +594,7 @@ function useLLM(llmConfig) {
       if (tip) setLastAdvice({ text:tip.text, severity:tip.severity, time:Date.now(), dist:telemetry.lapDistance, zone:zone?.name });
       return tip?.text || null;
     } catch (e) {
-      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(llmConfig), time:Date.now(), error:true });
+      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(), time:Date.now(), error:true });
       return null;
     } finally {
       setThinking(false);
@@ -590,7 +615,7 @@ function useLLM(llmConfig) {
       if (tip) setLastAdvice({ text:tip.text, severity:tip.severity, summary:tip.summary, time:Date.now(), lap:true });
       return tip?.text || null;
     } catch (e) {
-      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(llmConfig), time:Date.now(), error:true });
+      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(), time:Date.now(), error:true });
       return null;
     } finally {
       setThinking(false);
@@ -609,13 +634,17 @@ function useLLM(llmConfig) {
 // lap to a few hundred samples. The user can still export a lap to a file too.
 
 // Idle telemetry reading shown before the live UDP bridge delivers a snapshot.
-const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3 };
+const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3,
+  ersHarvestLimit:0, overtakeAvailable:0, overtakeActive:0, overtakeActivationDistance:0, activeAeroMode:0, activeAeroAvailable:0, activeAeroActivationDistance:0, regs2026:0, sessionUid:"0" };
 
 // Cumulative lap-time stamped at each mini-sector boundary: index k = the running
 // lap time when the car entered mini-sector k. Slot 0 is the start line (time 0);
 // slot MINI_SECTORS is closed at the finish line. mini-sector k's duration is the
 // gap between consecutive stamps. Reset at every lap start / driver change.
 const freshMiniBound = () => { const a = new Array(MINI_SECTORS + 1).fill(null); a[0] = 0; return a; };
+
+// Average of a 4-wheel array (tyre temps); NaN when absent (old bridge / no data).
+const avg4 = (a) => (Array.isArray(a) && a.length === 4) ? (a[0] + a[1] + a[2] + a[3]) / 4 : NaN;
 
 // Map a lap fraction to a mini-sector index using the GAME's real sector boundaries
 // (S2/S3 start fractions from the UDP Session packet). Each of the 3 sectors is split
@@ -634,7 +663,7 @@ const miniIndexFor = (lapPct, s2, s3) => {
 
 function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
   const [storedLaps, setStoredLaps] = useState([]);
-  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, tainted: false, miniBound: freshMiniBound(), miniIdx: 0 });
+  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
   const lapNumRef = useRef(0);
   // The sessionId the lap counter is currently scoped to. Lap numbering restarts at 1
   // whenever the drive's session changes (a fresh connection, a manual "Reset Session
@@ -655,7 +684,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
   useEffect(() => {
     let cancelled = false;
     const buf = bufRef.current;
-    buf.bins.clear(); buf.lastPct = null; buf.lastLapNum = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false;
+    buf.bins.clear(); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
     buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     if (!driver) { setStoredLaps([]); lapNumRef.current = 0; lapNumSessionRef.current = null; return; }
     lapStore.getLaps(driver).then(laps => {
@@ -673,7 +702,8 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
     const { lapDistance, lapPct, lapNumber, throttle, brake, steer, speed, gear, ersMode, ersDeploy, lapTime,
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
             setup, tyreVisual, tyreActual, tyreAge, worldX, worldY, worldZ,
-            sector2Pct, sector3Pct } = tel;
+            sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
+            tyreSurfaceTemps, tyreInnerTemps } = tel;
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
     const buf = bufRef.current;
 
@@ -695,7 +725,23 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
       // exact bug seen entering Qualifying straight onto a flying lap. total still
       // falls back to buf.lastLapTime below, so the first lap keeps a valid time.
       const hasStatusSignals = typeof driverStatus === "number";
-      const ghost = buf.tainted ||
+      // Race-start phantom lap: when the car starts BEHIND the S/F line (a standing
+      // start, most pronounced at the back of the grid) the game reports lap distance
+      // near the end of the lap, so the very first crossing of the line as the race
+      // begins looks exactly like a lap "wrap" — but the buffer only spans the short
+      // grid-to-line crawl, not a full lap, and its time is a couple of seconds. Left
+      // alone it records a ~2 s "Lap 1" that corrupts PBs / best laps. Two independent
+      // sanity checks catch it (and any flashback/reset teleport that fakes a wrap):
+      //   • the samples cover only a sliver of the lap — a genuine lap starts near the
+      //     line (dist ≈ 0) and spans most of the track, this one starts ~90% around;
+      //   • the time is far below any real F1 lap (shortest circuits are still ~60 s+).
+      // Neither rejects a legitimate lap: the buffer is wiped at each true lap start, so
+      // a real lap's earliest sample sits near dist 0 and its time is tens of seconds.
+      const minDist = samples.length ? samples[0].dist : 0;
+      const maxDist = samples.length ? samples[samples.length - 1].dist : 0;
+      const coveredLap = maxDist > 0 && (maxDist - minDist) >= 0.5 * maxDist;
+      const tooShort = !(total >= 30); // s — no real F1 lap is this quick
+      const ghost = buf.tainted || !coveredLap || tooShort ||
         (!hasStatusSignals && typeof lastLapTime === "number" && !(lastLapTime > 0));
       if (samples.length > 5 && !ghost) {
         const m = metaRef.current;
@@ -723,11 +769,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
           if (typeof d !== "number" || !(d > 0)) { miniSectors = null; break; }
           miniSectors.push(d);
         }
+        // Sector boundary distances (metres) from the game's S2/S3 start fractions,
+        // scaled by this lap's own length (last bin ≤10 m short — negligible). Same
+        // shape as imported traces' meta.sectors, so the Telemetry tab's sector
+        // lines + zoom get real boundaries for live-recorded laps too.
+        const recLapLen = samples.length ? samples[samples.length - 1].dist : 0;
+        const sectors = (recLapLen > 0 && sector2Pct > 0 && sector3Pct > sector2Pct && sector3Pct < 1)
+          ? [sector2Pct * recLapLen, sector3Pct * recLapLen] : null;
         const lap = {
-          id: `lap-${Date.now()}`,
+          id: `lap-${crypto.randomUUID()}`, // UUID, not Date.now(): two laps closed in the same ms would collide
+
           lapNumber: lapNumRef.current,
           recordedAt: Date.now(),
           lapTime: total,
+          invalid: buf.invalidated,     // true → track-limits/corner-cut deleted lap; shown but excluded from bests
           sectorTimes,
           miniSectors,                  // 18 live mini-sector splits → per-mini PBs (LiveScreen)
           source: "live",
@@ -736,6 +791,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
             track: m.trackName || "Live",
             sessionType: m.sessionType || null, // coarse game mode: Time Trial / Qualifying / …
             sessionId: m.sessionId || null,     // the drive this lap belongs to
+            ...(sectors ? { sectors } : {}),    // S2/S3 start distances (m) for sector lines/zoom
           },
           setup: buf.lastSetup || null, // the garage setup active while this lap was driven
           tyre: buf.lastTyre || null,   // compound worn on this lap → dry/wet PB split (lib/tyres.js)
@@ -745,34 +801,57 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
         lapStore.putLap(lap);                  // fire-and-forget; no-op if no driver
       }
       buf.bins.clear();
-      buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false;
+      buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
       buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     }
 
-    // A new lap began (game lap number advanced) with no pct-wrap this tick — the car
-    // crossed the line straight onto a fresh lap without a preceding full out-lap
-    // (e.g. garage → flying lap on a new Qualifying session). Clear the in-progress
-    // buffer + sticky taint so the new lap records clean; without this the garage/pit
-    // taint would leak into the first flying lap and drop it. No-op when lapNumber is
-    // absent/static (idle EMPTY_TEL, replays) or on a normal completion (the wrap
-    // block above already saved + reset that boundary).
+    // A new clean lap began with no pct-wrap this tick — the car crossed the line
+    // straight onto a fresh lap without a preceding full out-lap (e.g. garage → flying
+    // lap on a new Qualifying session). Clear the in-progress buffer + sticky taint so
+    // the new lap records clean; without this the garage/pit taint would leak into the
+    // first flying lap and drop it.
+    //
+    // Two triggers, both keyed to the true lap-start boundary:
+    //   • lapNumber advanced (needs a prior lap: lastLapNum >= 0), OR
+    //   • driverStatus rose into a clean driving state (flying lap 1 / on track 4) from
+    //     a dirty one (garage 0 / in-lap 2 / out-lap 3, or the -1 seed), AND the car is
+    //     near the lap start. The lap-start gate matters: a dirty→clean edge can also
+    //     land mid-lap (e.g. a pit entry armed then cancelled flips in-lap → flying),
+    //     and wiping the buffer + taint there would record a pit-excursion lap as a
+    //     clean partial lap. At a true S/F-line start it needs NO prior lap, so it
+    //     fixes the FIRST flying lap of a session — the lapNumber-advance heuristic
+    //     alone missed it because the garage→flying teleport can skip the increment
+    //     we'd need to see. On this tick driverStatus is already clean, so the
+    //     taint-set block below won't re-taint it.
+    // No-op when lapNumber is absent/static (idle EMPTY_TEL, replays) or on a normal
+    // completion (the wrap block above already saved + reset that boundary).
     const wrapped = buf.lastPct != null && buf.lastPct > 0.85 && lapPct < 0.15;
+    const cleanNow = driverStatus === 1 || driverStatus === 4; // flying lap / on track
+    const wasDirty = buf.lastDriverStatus === 0 || buf.lastDriverStatus === 2 ||
+                     buf.lastDriverStatus === 3 || buf.lastDriverStatus === -1;
+    const enteredCleanLap = cleanNow && wasDirty && lapPct < 0.15;
     if (typeof lapNumber === "number") {
-      if (!wrapped && lapNumber > buf.lastLapNum && buf.lastLapNum >= 0) {
+      if (!wrapped &&
+          ((lapNumber > buf.lastLapNum && buf.lastLapNum >= 0) || enteredCleanLap)) {
         buf.bins.clear();
-        buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false;
+        buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
         buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
       }
       buf.lastLapNum = lapNumber;
     }
+    if (typeof driverStatus === "number") buf.lastDriverStatus = driverStatus;
 
-    // Taint the in-progress lap the moment the game tells us it isn't a clean flying
-    // lap — out-lap (3) / in-lap (2) / in garage (0), any pit-lane activity, or a
-    // game-invalidated lap. Sticky for the whole lap; cleared when the lap freezes.
+    // Taint the in-progress lap the moment the game tells us it isn't a real timed
+    // lap — out-lap (3) / in-lap (2) / in garage (0) or any pit-lane activity. These
+    // are dropped entirely. Sticky for the whole lap; cleared when the lap freezes.
     if (driverStatus === 0 || driverStatus === 2 || driverStatus === 3 ||
-        (typeof pitStatus === "number" && pitStatus !== 0) || lapInvalid) {
+        (typeof pitStatus === "number" && pitStatus !== 0)) {
       buf.tainted = true;
     }
+    // A game-invalidated flying lap (track limits / corner cut) is still fully timed —
+    // keep it, but flag it so the UI can label it and the bests can exclude it. Sticky
+    // for the whole lap; cleared alongside taint when the lap freezes.
+    if (lapInvalid) buf.invalidated = true;
 
     buf.lastPct = lapPct;
     if (typeof lapTime === "number" && lapTime > 0) buf.lastLapTime = lapTime;
@@ -799,7 +878,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
       // x/z (world position) let a lap draw its OWN track-map outline on the Compare
       // screen; absent for laps recorded before motion data arrived → map falls back
       // to the shared session outline. Keys match buildTrackMapGeometry's expectation.
-      const bin = { dist: lapDistance, throttle, brake, steer, speed, gear, ersMode, ersSpent: ersDeploy };
+      const bin = { dist: lapDistance, throttle, brake, steer, speed, gear, ersMode, ersSpent: ersDeploy,
+        boost: overtakeActive ? 1 : 0, aeroMode: activeAeroMode ?? 0 }; // 2026: boost deploy + active-aero wing mode per sample
+      // Averaged tyre temps (°C) — surface + carcass worms on the Telemetry tab.
+      // >0 guards both a missing field (NaN) and the all-zeros no-data case.
+      const tSurf = avg4(tyreSurfaceTemps), tCarc = avg4(tyreInnerTemps);
+      if (tSurf > 0) bin.tyreSurf = Math.round(tSurf);
+      if (tCarc > 0) bin.tyreCarc = Math.round(tCarc);
       if (typeof worldX === "number" && typeof worldZ === "number" && isFinite(worldX) && isFinite(worldZ)) {
         bin.x = worldX; bin.z = worldZ;
         if (typeof worldY === "number" && isFinite(worldY)) bin.y = worldY; // elevation → 3D view
@@ -843,7 +928,27 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
     if (d) lapStore.archiveLaps(d);
   }, []);
 
-  return { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps };
+  // Merge a loaded session's laps into memory so they show in the Session Laps
+  // panel + Compare/Analytics. In-memory ONLY — not written to IndexedDB, so a
+  // reviewed session never pollutes the driver's persisted history / PBs, and a
+  // driver switch or restart clears it (the saved file is the durable copy). The
+  // caller re-tags each lap with a fresh id + the active sessionId first.
+  const loadSessionLaps = useCallback((laps) => {
+    if (!Array.isArray(laps) || !laps.length) return;
+    setStoredLaps(prev => [...prev, ...laps]);
+  }, []);
+
+  // Re-read the active driver's persisted laps from IndexedDB. The driver-change
+  // effect above already does this on a switch; this covers writes made OUTSIDE
+  // the recorder (a profile import) that land under the CURRENT driver, where the
+  // driver dep hasn't changed so that effect wouldn't fire.
+  const reloadLaps = useCallback(() => {
+    const d = metaRef.current.driver;
+    if (!d) { setStoredLaps([]); return; }
+    lapStore.getLaps(d).then(setStoredLaps).catch(() => {});
+  }, []);
+
+  return { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps };
 }
 
 // ─── TRACK MAP ────────────────────────────────────────────────────────────────
@@ -967,9 +1072,30 @@ function buildLines3D(laps) {
     }
     const total = cum[cum.length - 1] || 1;
     const timeAt = cum.map(t => t / total);
-    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt });
+    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total });
   }
+  attachPaceCurves(out);
   return out;
+}
+
+// Pace curves for the 3D scene's pace-sync mode. Playback runs on ONE shared clock — the
+// anchor (driven) lap's track-distance fraction. Each other line gets an addressing array
+// in that same anchor-distance space, holding the distance the line had reached at the SAME
+// ELAPSED TIME as the anchor. Sampling every car at the shared clock then places them at a
+// single wall-clock instant, so a faster car runs ahead and reaches the line first — the
+// real time gap builds instead of both cars finishing together. The anchor maps to itself
+// (identity). Mutates each line, adding `paceAt`.
+function attachPaceCurves(lines) {
+  const anchor = lines.find(l => l.id === "comp")
+    || lines.reduce((b, l) => (!b || l.pts.length > b.pts.length ? l : b), null);
+  if (!anchor) return;
+  for (const l of lines) {
+    if (l === anchor || !(anchor.timeTotal > 0)) { l.paceAt = l.distAt; continue; }
+    // Line sample i is at elapsed time (timeAt[i]·timeTotal) s; find the anchor's distance
+    // fraction at that same elapsed time. Monotonic in i → a valid addressing curve.
+    l.paceAt = l.timeAt.map((tf) =>
+      clamp(timeFracToDistFrac(anchor, (tf * l.timeTotal) / anchor.timeTotal), 0, 1));
+  }
 }
 
 // Render outline + coloured segments + a colour legend to a 2×-scaled canvas and
@@ -1208,21 +1334,27 @@ function CompareTrackMaps({ referenceLap, comparisonLap, referenceLabel, compari
 // Both laps' racing lines overlaid on one shared circuit map, with a car driven along
 // each line. A scrubbable timeline above carries corner ticks; Play animates both cars.
 // Only laps that carry their own world positions get a line + car (calibrator references
-// have no x/z — their car is hidden with a note). Playback runs in lap-fraction space:
-//   • Position-sync — both cars share one fraction → stay aligned in space (line/apex diff).
-//   • Pace-sync — each car maps the clock through its own Δdist÷speed time curve → the
-//     faster car pulls ahead, so the time gap builds.
+// have no x/z — their car is hidden with a note). Playback runs on one shared clock — the
+// anchor (driven) lap's track-distance fraction:
+//   • Position-sync — both cars sit at that same track-distance fraction → aligned in space
+//     for line/apex comparison.
+//   • Pace-sync — the other car is placed at the distance IT had reached at the same elapsed
+//     time (via its pace curve), so the faster car runs ahead and reaches the line first —
+//     the time gap builds instead of both cars finishing together.
 const DL_COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const DL_REF_COLOR  = "#b45bff";   // purple — reference / benchmark lap (cockpit token)
 
 function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comparisonLabel,
-  sessionPath, trackName, zones = [] }) {
+  sessionPath, trackName, trackSlug = null, zones = [] }) {
   const [playhead, setPlayhead] = useState(0);     // 0–1 global clock
   const [playing, setPlaying]   = useState(false);
   const [syncMode, setSyncMode] = useState("pos"); // "pos" | "pace"
   const [speed, setSpeed]       = useState(1);
   const [loop, setLoop]         = useState(true);
   const [camMode, setCamMode]   = useState("chase");
+  // Real-circuit track model: null = still resolving, false = no lines to fit,
+  // else the model from trackGeometry (status "real" or "fallback").
+  const [trackModel, setTrackModel] = useState(null);
 
   // Captured world-space racing lines for whichever selected laps have position data.
   const lines3D = useMemo(
@@ -1245,9 +1377,14 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
   // (game-native sector times) mapped onto track-distance fractions via its time→distance
   // curve, falling back to even thirds when a lap has no recorded splits.
   const sectors = useMemo(() => {
-    const splitLap = comparisonLap?.sectorTimes ? comparisonLap
-                   : referenceLap?.sectorTimes ? referenceLap : null;
-    const line = compLine || refLine;
+    // Each split is a TIME, mapped onto the timeline (a DISTANCE axis) through a lap's own
+    // time→distance curve — so pair the split lap with ITS OWN line, not just whichever line
+    // exists. Prefer a lap that has both splits and a drawable line; fall back gracefully.
+    const cands = [{ lap: comparisonLap, line: compLine }, { lap: referenceLap, line: refLine }];
+    const paired = cands.find(c => c.lap?.sectorTimes && c.line)
+                || cands.find(c => c.lap?.sectorTimes);
+    const splitLap = paired?.lap || null;
+    const line = paired?.line || compLine || refLine;
     let b1 = 1 / 3, b2 = 2 / 3; // default: even thirds by distance
     if (splitLap && line) {
       const [s1, s2] = splitLap.sectorTimes;
@@ -1278,19 +1415,37 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
     ? corners.reduce((b, c) => (Math.abs(c.f - playhead) < Math.abs(b.f - playhead) ? c : b), corners[0]).name
     : "";
 
+  // ── Track model: real circuit geometry fitted to the recorded lines ──────────
+  // Resolved before the scene builds so the road is right on first render. The slug
+  // comes from live telemetry (trackId) when available, else from the track name
+  // (covers imported-trace sessions). loadTrackModel caches per slug + line set and
+  // falls back to a curvature-heuristic road on any miss, so this resolves fast.
+  const slug = trackSlug || resolveSlug(trackName);
+  useEffect(() => {
+    if (!lines3D.length) { setTrackModel(false); return; }
+    let live = true;
+    setTrackModel(null);
+    import("./lib/trackGeometry.js")
+      .then((m) => m.loadTrackModel(slug, lines3D))
+      .then((model) => { if (live) setTrackModel(model || false); })
+      .catch(() => { if (live) setTrackModel(false); });
+    return () => { live = false; };
+  }, [lines3D, slug]);
+
   // ── 3D scene lifecycle ──────────────────────────────────────────────────────
   const canvasRef = useRef(null);
   const sceneRef  = useRef(null);
-  // (Re)build the scene whenever the drawable lines change. Stored laps have a stable
-  // sample count so this runs once; a growing live lap rebuilds as it lengthens.
+  // (Re)build the scene whenever the drawable lines or the track model change; waits
+  // for the model so the road appears fully formed. Stored laps have a stable sample
+  // count so this runs once; a growing live lap rebuilds as it lengthens.
   useEffect(() => {
-    if (!canvasRef.current || !lines3D.length) { sceneRef.current = null; return; }
+    if (!canvasRef.current || !lines3D.length || trackModel === null) { sceneRef.current = null; return; }
     let cancelled = false, ctrl = null, ro = null;
     // three.js is heavy and only needed on this tab — code-split it out of startup
     // via a dynamic import; build the scene once the module resolves.
     import("./lib/trackScene3d.js").then(({ createTrackScene }) => {
       if (cancelled || !canvasRef.current) return;
-      ctrl = createTrackScene(canvasRef.current, lines3D, { camMode });
+      ctrl = createTrackScene(canvasRef.current, lines3D, { camMode, track: trackModel || null });
       sceneRef.current = ctrl;
       ctrl.setPlayback(playhead, axis); // late-loaded scene starts at the current playhead
       ro = new ResizeObserver(() => ctrl.resize());
@@ -1302,7 +1457,7 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
       if (ctrl) ctrl.dispose();
       sceneRef.current = null;
     };
-  }, [lines3D]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lines3D, trackModel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Push the current playback fraction to the scene's own render loop.
   useEffect(() => { sceneRef.current?.setPlayback(playhead, axis); }, [playhead, axis]);
@@ -1314,11 +1469,15 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
     let last = performance.now();
     const tick = (now) => {
       const dt = (now - last) / 1000; last = now;
+      let ended = false;
       setPlayhead(p => {
         let next = p + (dt * speed) / lapDur;
-        if (next >= 1) { if (loop) next = next % 1; else { next = 1; setPlaying(false); } }
+        if (next >= 1) { if (loop) next = next % 1; else { next = 1; ended = true; } }
         return next;
       });
+      // Stop OUTSIDE the updater (updaters must stay pure — StrictMode double-invokes them).
+      // At the end without loop, park at 1 and don't reschedule.
+      if (ended) { setPlaying(false); return; }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -1327,6 +1486,7 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
 
   // Timeline scrubbing — set the clock from a click/drag x-fraction (pauses playback).
   const barRef = useRef(null);
+  const scrubEnd = useRef(null); // tears down an in-flight drag's window listeners
   const scrubFrom = (clientX) => {
     const el = barRef.current; if (!el) return;
     const r = el.getBoundingClientRect();
@@ -1334,8 +1494,11 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
   };
   const onBarDown = (e) => { setPlaying(false); scrubFrom(e.clientX);
     const move = ev => scrubFrom(ev.clientX);
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); scrubEnd.current = null; };
+    scrubEnd.current = up;
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); };
+  // Drop a drag still in progress if the panel unmounts (listeners live on window).
+  useEffect(() => () => { scrubEnd.current?.(); }, []);
 
   const pill = (active) => ({
     background: active ? "var(--elevated)" : "transparent",
@@ -1389,7 +1552,13 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
         <div style={{position:"absolute",left:12,top:11,zIndex:3,pointerEvents:"none",
           fontFamily:"'JetBrains Mono',monospace",fontSize:9,letterSpacing:1.5,color:"#5b6478",textTransform:"uppercase"}}>
           {trackName || "Track"} · drag to orbit · scroll to zoom
+          {trackModel && trackModel.status === "fallback" ? " · approximate track" : ""}
         </div>
+        {trackModel === null && (
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",zIndex:2,
+            pointerEvents:"none",fontFamily:"'JetBrains Mono',monospace",fontSize:11,letterSpacing:1.5,
+            color:"#5b6478",textTransform:"uppercase"}}>Aligning circuit…</div>
+        )}
         {/* Nearest corner (top-right) */}
         <div style={{position:"absolute",right:12,top:11,zIndex:3,pointerEvents:"none",
           fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:"#34c8ff"}}>{cornerName}</div>
@@ -1422,7 +1591,7 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
           ))}
           {/* Reference car position (diverges from the knob in pace-sync) */}
           {refLine && compLine && syncMode==="pace" && (
-            <div title="Reference car" style={{position:"absolute",left:`${refClockFor(refLine,compLine,playhead)*100}%`,top:"50%",
+            <div title="Reference car" style={{position:"absolute",left:`${refDistForCompDist(refLine,playhead)*100}%`,top:"50%",
               transform:"translate(-50%,-50%)",width:9,height:9,borderRadius:"50%",background:"transparent",border:`2px solid ${DL_REF_COLOR}`}} />
           )}
           {/* Knob */}
@@ -1445,6 +1614,11 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
           ))}
         </div>
         <button onClick={()=>setLoop(l=>!l)} style={pill(loop)}>Loop</button>
+        {trackModel && trackModel.status === "real" && (
+          <span style={{fontSize:9,color:"var(--text-faintest)",letterSpacing:0.5}}>
+            Track geometry: TUMFTM racetrack-database
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1463,28 +1637,24 @@ function timeFracToDistFrac(line, ft) {
   return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
 }
 
-// Map the global clock to the reference line's own clock position when in pace-sync, so
-// its timeline arrow sits where the reference car actually is relative to the comparison
-// car. Both share the same clock value but address different time curves, so we convert
-// the comparison car's current track-fraction into the reference's clock fraction.
-function refClockFor(refLine, compLine, clock) {
-  if (!refLine || !compLine) return clock;
-  // Where is the comparison car on track right now (by its time curve)?
-  const ct = compLine.timeAt, cd = compLine.distAt;
-  let i = 1; while (i < ct.length && ct[i] < clock) i++;
-  const lo = ct[i - 1], hi = ct[i] ?? 1;
-  const t = hi > lo ? (clamp(clock,0,1) - lo) / (hi - lo) : 0;
-  const trackFrac = (cd[i - 1] ?? 0) + ((cd[i] ?? 1) - (cd[i - 1] ?? 0)) * t;
-  // Find the reference's clock value at that same track fraction.
-  const rd = refLine.distAt, rt = refLine.timeAt;
-  let j = 1; while (j < rd.length && rd[j] < trackFrac) j++;
-  const rlo = rd[j - 1], rhi = rd[j] ?? 1;
-  const u = rhi > rlo ? (trackFrac - rlo) / (rhi - rlo) : 0;
-  return (rt[j - 1] ?? 0) + ((rt[j] ?? 1) - (rt[j - 1] ?? 0)) * u;
+// The reference car's track-distance fraction when the shared clock (the comparison/anchor
+// car's distance fraction) is at `compDistFrac`. Reads the reference line's pace curve
+// (anchor-distance space) against its own distAt, so the timeline marker sits where the
+// reference car really is on track — diverging from the knob by the spatial gap the time
+// delta has opened. Falls back to the clock itself when pace data is unavailable.
+function refDistForCompDist(refLine, compDistFrac) {
+  const paceAt = refLine?.paceAt, distAt = refLine?.distAt;
+  if (!paceAt || !distAt) return compDistFrac;
+  const f = clamp(compDistFrac, 0, 1);
+  let i = 1; while (i < paceAt.length && paceAt[i] < f) i++;
+  i = Math.min(i, paceAt.length - 1);
+  const lo = paceAt[i - 1], hi = paceAt[i];
+  const t = hi > lo ? (f - lo) / (hi - lo) : 0;
+  return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
 }
 
 function lapSourceLabel(s) {
-  if (s.lapNumber) return `Lap ${s.lapNumber} · ${s.lapTime ? fmtTime(s.lapTime) : "—"}`;
+  if (s.lapNumber) return `Lap ${s.lapNumber} · ${s.lapTime ? fmtTime(s.lapTime) : "—"}${s.invalid ? " · ⚠ INVALIDATED" : ""}`;
   const m = s.meta || {};
   const parts = [m.driver || "?", m.track || "?"];
   if (m.session) parts.push(m.session);
@@ -1502,7 +1672,7 @@ const btnStyle = (bg,color,border) => ({
 });
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
-export default function F1CoachApp({ onOpenCalibrator }) {
+export default function BoxBoxApp({ onOpenCalibrator }) {
   // UI state
   const [tab,        setTab]        = useState("dashboard");
   const [audioOn,    setAudioOn]    = useState(true);
@@ -1521,10 +1691,24 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     return { throttle:true, brake:true, steering:true, gear:true, speed:true, rpm:false, ers:true, drs:true, tyreTemp:false, gforce:true };
   });
   useEffect(() => { localStorage.setItem("f1coach.traceChannels", JSON.stringify(traceChannels)); }, [traceChannels]);
-  // Who runs the AI between-lap coach: "auto" = on when the LLM backend is actually
-  // reachable (live health probe), "ai" = always on, "engine" = off (fallback only).
-  // The real-time call engine runs regardless — this only governs the AI's tip.
-  const [aiControl,  setAiControl]  = useState("auto");
+  // Which trace panels the Telemetry studio shows (ids match its PANELS registry).
+  // Persisted per install; merged over the defaults so future panel ids appear
+  // enabled instead of vanishing for drivers with an older saved selection.
+  const [visibleTraces, setVisibleTraces] = useState(() => {
+    const defaults = { inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true };
+    try {
+      const s = JSON.parse(localStorage.getItem("f1coach.visibleTraces") || "null");
+      if (s) return { ...defaults, ...s };
+    } catch {}
+    return defaults;
+  });
+  useEffect(() => { localStorage.setItem("f1coach.visibleTraces", JSON.stringify(visibleTraces)); }, [visibleTraces]);
+  // Refuse to hide the last visible trace — an all-empty studio is never useful.
+  const toggleTrace = (id) => setVisibleTraces((v) => {
+    const on = v[id] !== false;
+    if (on && Object.values(v).filter(Boolean).length <= 1) return v;
+    return { ...v, [id]: !on };
+  });
   const [cues,       setCues]       = useState([]);
 
   // How many seconds ahead of the reference's mark each call fires.
@@ -1541,69 +1725,52 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   });
 
   // Config
-  const [ollamaUrl,  setOllamaUrl]  = useState(DEFAULT_OLLAMA_URL);
-  const [model,      setModel]      = useState(DEFAULT_OLLAMA_MODEL);
-  const [wsUrl,      setWsUrl]      = useState("ws://localhost:9001");
-  // UDP port the bundled bridge listens on for the game's telemetry. Default 20777
-  // (the game's default), but some users run a tool that receives that stream and
-  // rebroadcasts it on another port — so this is configurable. The number is pushed
-  // to the running bridge over the WebSocket (it rebinds live); see connectWs.
+  // UDP port the in-process telemetry core listens on for the game's telemetry.
+  // Default 20777 (the game's default), but some users run a tool that receives
+  // that stream and rebroadcasts it on another port — so this is configurable. The
+  // number is pushed to the native core via the `set_udp_port` command (it rebinds
+  // its listener live).
   const [udpPort, setUdpPort] = useState(() => {
     const n = parseInt(localStorage.getItem("f1coach.udpPort"), 10);
     return n >= 1 && n <= 65535 ? n : 20777;
   });
-  const udpPortRef = useRef(udpPort);
-  udpPortRef.current = udpPort;
   useEffect(() => { localStorage.setItem("f1coach.udpPort", String(udpPort)); }, [udpPort]);
 
-  // UDP repeater: re-broadcast the game's raw telemetry to a second app on another
-  // port (two apps can't bind the game's port at once — the bridge receives on
-  // udpPort and forwards a byte-identical copy here). Config is pushed to the bridge
-  // over the WebSocket (setRepeater); see connectWs. Off by default.
-  const [repeatEnabled, setRepeatEnabled] = useState(() => localStorage.getItem("f1coach.repeatEnabled") === "1");
-  const [repeatHost,    setRepeatHost]    = useState(() => localStorage.getItem("f1coach.repeatHost") || "127.0.0.1");
-  const [repeatPort,    setRepeatPort]    = useState(() => {
-    const n = parseInt(localStorage.getItem("f1coach.repeatPort"), 10);
-    return n >= 1 && n <= 65535 ? n : 20778;
-  });
-  const repeaterRef = useRef({ repeatEnabled, repeatHost, repeatPort });
-  repeaterRef.current = { repeatEnabled, repeatHost, repeatPort };
-  useEffect(() => { localStorage.setItem("f1coach.repeatEnabled", repeatEnabled ? "1" : "0"); }, [repeatEnabled]);
-  useEffect(() => { localStorage.setItem("f1coach.repeatHost", repeatHost); }, [repeatHost]);
-  useEffect(() => { localStorage.setItem("f1coach.repeatPort", String(repeatPort)); }, [repeatPort]);
-
-  // LLM backend — local Ollama (default, offline) or optional cloud (OpenRouter).
-  // Persisted so the user doesn't re-enter their key/provider each session. The old
-  // "claude" provider value migrates to "openrouter" on read.
-  const [provider,        setProvider]        = useState(() => {
-    const p = localStorage.getItem("f1coach.provider");
-    return p === "claude" ? "openrouter" : (p || "ollama");
-  });
+  // LLM backend — OpenRouter cloud. Persisted so the user doesn't re-enter their
+  // key/model each session.
   const [openRouterKey,   setOpenRouterKey]   = useState(() => localStorage.getItem("f1coach.openRouterKey") || "");
   const [openRouterModel, setOpenRouterModel] = useState(() => localStorage.getItem("f1coach.openRouterModel") || DEFAULT_OPENROUTER_MODEL);
-  useEffect(() => { localStorage.setItem("f1coach.provider", provider); }, [provider]);
   useEffect(() => { localStorage.setItem("f1coach.openRouterKey", openRouterKey); }, [openRouterKey]);
   useEffect(() => { localStorage.setItem("f1coach.openRouterModel", openRouterModel); }, [openRouterModel]);
 
   // One config object threaded to both LLM call sites (tips + chat).
   const llmConfig = useMemo(
-    () => ({ provider, ollamaUrl, ollamaModel: model, openRouterKey, openRouterModel }),
-    [provider, ollamaUrl, model, openRouterKey, openRouterModel]
+    () => ({ openRouterKey, openRouterModel }),
+    [openRouterKey, openRouterModel]
   );
-  const activeModelLabel = provider === "openrouter" ? openRouterModel : model;
+  const activeModelLabel = openRouterModel;
 
-  // Live reachability of the active LLM backend — polls on mount, on config change,
-  // and on a slow interval, for BOTH Ollama and OpenRouter. This drives the header
+  // Live reachability of the LLM backend — polls on mount, on config change, and on
+  // a slow interval. This drives the header
   // AI pill and the "auto" coach gate so they reflect whether the model can actually
   // be reached, not just that one is configured (previously these only flipped on
   // after a manual "Test" click, so auto-coaching never started on its own).
   const llmHealth = useLlmHealth(llmConfig);
   const llmOnline = llmHealth === "online";
 
+  // One-shot check on boot for a newer GitHub release; surfaced as a banner on
+  // the dashboard. null until (and unless) a newer version is published.
+  const appUpdate = useUpdateCheck();
+
   // Speed units — the bridge always reports km/h; the driver can read km/h or
   // mph across the Live KPIs, Telemetry readouts and Corner table. Persisted.
   const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
   useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
+
+  // Tyre temp units — the bridge always reports °C; the driver can read °C or °F
+  // in the Telemetry Studio's Tyre Temps panel. Persisted.
+  const [tempUnits, setTempUnits] = useState(() => localStorage.getItem("f1coach.tempUnits") || "°C");
+  useEffect(() => { localStorage.setItem("f1coach.tempUnits", tempUnits); }, [tempUnits]);
 
   // Voice preferences — persisted across sessions
   const [voicePrefs, setVoicePrefs] = useState(() => {
@@ -1613,6 +1780,19 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   useEffect(() => {
     localStorage.setItem("f1coach.voicePrefs", JSON.stringify(voicePrefs));
   }, [voicePrefs]);
+
+  // Active team skin — recolours the whole app by swapping CSS custom properties
+  // on <html> (see lib/ui/skins.js). "default" is the original dark navy palette.
+  // The global key is the seed default; the choice is also remembered per driver
+  // (in .prefs) alongside units/voicePrefs below.
+  const [activeSkin, setActiveSkin] = useState(() => {
+    const s = localStorage.getItem("f1coach.skin");
+    return isSkin(s) ? s : DEFAULT_SKIN;
+  });
+  useEffect(() => {
+    localStorage.setItem("f1coach.skin", activeSkin);
+    applySkin(activeSkin);
+  }, [activeSkin]);
 
   // Driver profiles — more than one person can use the app and keep their laps
   // (and therefore their dashboard stats) separate. Simple name-based profiles: a
@@ -1636,7 +1816,7 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   useEffect(() => { localStorage.setItem("f1coach.drivers", JSON.stringify(drivers)); }, [drivers]);
   useEffect(() => { if (activeDriver) localStorage.setItem("f1coach.activeDriver", activeDriver); }, [activeDriver]);
   const driverNames = useMemo(() => drivers.map(d => d.name), [drivers]);
-  const driverKey = driverNames.join(" "); // stable dep: changes only when the roster's names do
+  const driverKey = driverNames.join("\u0000"); // stable dep: changes only when the roster's names do (NUL-joined so names can't collide)
   const activeDriverObj = useMemo(
     () => drivers.find(d => d.name === activeDriver) || drivers[0] || null, [drivers, activeDriver]);
   // Latest roster, read inside effects/callbacks that shouldn't re-run on every edit.
@@ -1663,10 +1843,10 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     return () => { cancelled = true; };
   }, [driverKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Per-driver settings: each profile remembers its own speed units + voice. The
-  // live `units`/`voicePrefs` state is hydrated from the active driver on switch
-  // and written back on edit. The global f1coach.units/voicePrefs keys remain the
-  // seed default a brand-new (or migrated, prefs-less) profile inherits.
+  // Per-driver settings: each profile remembers its own speed units, voice + team
+  // skin. The live `units`/`voicePrefs`/`activeSkin` state is hydrated from the
+  // active driver on switch and written back on edit. The global f1coach.* keys
+  // remain the seed default a brand-new (or migrated, prefs-less) profile inherits.
   const lastPrefsDriver = useRef(activeDriver);
   // Hydrate the active driver's saved prefs into the live state when switching.
   useEffect(() => {
@@ -1674,10 +1854,12 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     const p = driversRef.current.find(d => d.name === activeDriver)?.prefs;
     if (p) {
       if (p.units != null) setUnits(p.units);
+      if (p.tempUnits != null) setTempUnits(p.tempUnits);
       if (p.voicePrefs != null) setVoicePrefs(p.voicePrefs);
+      if (isSkin(p.skin)) setActiveSkin(p.skin);
     }
   }, [activeDriver]);
-  // Persist live units/voicePrefs back onto the active driver — but skip the
+  // Persist live units/voicePrefs/skin back onto the active driver — but skip the
   // switch tick, where they still hold the previous driver's values.
   useEffect(() => {
     if (lastPrefsDriver.current !== activeDriver) { lastPrefsDriver.current = activeDriver; return; }
@@ -1685,12 +1867,12 @@ export default function F1CoachApp({ onOpenCalibrator }) {
       const idx = prev.findIndex(d => d.name === activeDriver);
       if (idx < 0) return prev;
       const cur = prev[idx], pp = cur.prefs;
-      if (pp && pp.units === units && JSON.stringify(pp.voicePrefs || {}) === JSON.stringify(voicePrefs || {})) return prev;
+      if (pp && pp.units === units && pp.tempUnits === tempUnits && pp.skin === activeSkin && JSON.stringify(pp.voicePrefs || {}) === JSON.stringify(voicePrefs || {})) return prev;
       const next = prev.slice();
-      next[idx] = { ...cur, prefs: { units, voicePrefs } };
+      next[idx] = { ...cur, prefs: { units, tempUnits, voicePrefs, skin: activeSkin } };
       return next;
     });
-  }, [units, voicePrefs, activeDriver]);
+  }, [units, tempUnits, voicePrefs, activeSkin, activeDriver]);
 
   // Sign a new driver from the Settings roster form (name + optional number/team/livery/photo).
   const signDriver = useCallback(({ name, number, team, color, avatar } = {}) => {
@@ -1712,20 +1894,47 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     lapStore.clearLaps(nm);
     lapStore.deleteAvatar(nm);
   }, []);
+  // Edit an existing driver profile from the Settings roster. Name, number, team,
+  // livery and photo are all editable. Renaming re-files the driver's laps, photo
+  // and track maps in IndexedDB (lapStore.renameDriver) and follows the active
+  // selection so the cockpit stays on the same person. `avatar` is a data URL (new
+  // photo), null (removed) or undefined (left unchanged). Resolves true on success,
+  // false if the profile is gone or the new name collides with another one.
+  const editDriver = useCallback(async (originalName, { name, number, team, color, avatar } = {}) => {
+    const on = (originalName || "").trim();
+    const nm = (name || "").trim();
+    if (!on || !nm) return false;
+    const list = driversRef.current;
+    if (!list.some(d => d.name === on)) return false;
+    const renamed = nm !== on;
+    if (renamed && list.some(d => d.name === nm)) return false;
+
+    // Migrate stored data BEFORE touching React state, so the avatar-reload effect
+    // (which re-reads IndexedDB when the roster's names change) sees the new keys.
+    if (renamed) await lapStore.renameDriver(on, nm);
+
+    setDrivers(prev => {
+      const i = prev.findIndex(d => d.name === on);
+      if (i < 0) return prev;
+      const next = prev.slice();
+      next[i] = { ...prev[i], name: nm, number: (number || "").trim(), team: (team || "").trim(), color: color || prev[i].color };
+      return next;
+    });
+    if (renamed) {
+      if (activeDriver === on) setActiveDriver(nm);
+      setAvatars(prev => { const n = { ...prev }; if (n[on] != null) { n[nm] = n[on]; delete n[on]; } return n; });
+    }
+    // Apply an explicit photo change (against the final name). Untouched photos are
+    // left alone — a rename already moved them via renameDriver above.
+    if (avatar !== undefined) {
+      if (avatar) { setAvatars(prev => ({ ...prev, [nm]: avatar })); await lapStore.putAvatar(nm, avatar); }
+      else { setAvatars(prev => { const n = { ...prev }; delete n[nm]; return n; }); await lapStore.deleteAvatar(nm); }
+    }
+    return true;
+  }, [activeDriver]);
 
   // Connection state
   const [wsConnected,  setWsConnected]  = useState(false);
-  const [ollamaStatus, setOllamaStatus] = useState("idle");
-  const [ollamaModels, setOllamaModels] = useState([]); // installed model names, for the picker
-  // Keep the Settings → Ollama indicator in sync with the live health probe so it
-  // isn't stuck on "Untested" when Ollama is actually reachable. A manual test in
-  // flight ("testing") is left alone to resolve itself.
-  useEffect(() => {
-    if (provider !== "ollama") return;
-    setOllamaStatus(prev => prev === "testing" ? prev
-      : llmHealth === "online" ? "ok"
-      : llmHealth === "offline" ? "error" : prev);
-  }, [llmHealth, provider]);
   const [liveTel,      setLiveTel]      = useState(null);
   // A drive "session": a fresh id minted each time the live bridge connects, so
   // laps recorded during one connection share it and the dashboard can count
@@ -1756,7 +1965,7 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   // Lap recording runs on RAW telemetry — it only reads the channels + lap
   // position (not currentZone), so storedLaps is available to resolve the
   // reference and comparison laps below. Laps are saved under the active driver.
-  const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps } =
+  const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
     useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
       activeDriver, sessionId, sessionTypeLabel);
 
@@ -1776,46 +1985,88 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     setActiveTraceId(null);
   }, [archiveSessionLaps]);
 
-  // Auto-reset the Session Laps panel when the drive moves to a different circuit
-  // or session type. Each dimension is tracked independently and only a
-  // known→different-known change resets, so the first telemetry after connect
-  // (unknown → real) and menu blips (real → -1/0 → same real) never fire a
-  // spurious reset.
+  // ─── PROFILE BACKUP / IMPORT ───────────────────────────────────────────────
+  // Save the ACTIVE driver's whole profile (roster entry + prefs + photo + every
+  // lap with telemetry + saved track maps) to one .json file. Returns the counts
+  // so Settings can report what was written. See lib/profileBackup.js.
+  const exportProfile = useCallback(async () => {
+    const d = driversRef.current.find(x => x.name === activeDriver) || driversRef.current[0];
+    if (!d) throw new Error("No driver to export.");
+    return exportProfileFile(d);
+  }, [activeDriver]);
+
+  // Bring a parsed profile payload back into storage under `name`. `overwrite`
+  // wipes that driver's existing laps + track maps first (a clean restore);
+  // otherwise the profile is added as a new roster entry (a copy). After writing
+  // storage we merge the roster entry into React state, load the photo, make the
+  // profile active and re-read its laps (covers overwriting the current driver,
+  // where the recorder's driver-change effect wouldn't fire).
+  const importProfile = useCallback(async (payload, { name, overwrite } = {}) => {
+    const target = (name || payload?.driver?.name || "").trim();
+    if (!target) throw new Error("No driver name to import under.");
+    if (overwrite) {
+      await lapStore.clearLaps(target);
+      await lapStore.clearTrackMaps(target);
+      await lapStore.deleteAvatar(target);
+    }
+    const entry = await importProfileData(payload, { name: target });
+    setDrivers(prev => {
+      const i = prev.findIndex(d => d.name === target);
+      const base = {
+        name: target,
+        number: entry.number,
+        team: entry.team,
+        color: entry.color || (i >= 0 ? prev[i].color : LIVERY_COLORS[prev.length % LIVERY_COLORS.length]),
+        ...(entry.prefs ? { prefs: entry.prefs } : {}),
+      };
+      if (i >= 0) { const next = prev.slice(); next[i] = { ...prev[i], ...base }; return next; }
+      return [...prev, base];
+    });
+    if (entry.avatar) setAvatars(prev => ({ ...prev, [target]: entry.avatar }));
+    else if (overwrite) setAvatars(prev => { const n = { ...prev }; delete n[target]; return n; });
+    setActiveDriver(target);
+    reloadLaps();
+    return entry;
+  }, [reloadLaps]);
+
+  // Auto-reset the Session Laps panel only when the drive moves to a different
+  // circuit. Session type is deliberately NOT a trigger: staying on the same
+  // track across multiple sessions (e.g. several practice sessions) keeps all
+  // laps together so they aggregate for more intensive practice. The user can
+  // still reset manually for a fresh start. Only a known→different-known track
+  // change resets, so the first telemetry after connect (unknown → real) and
+  // menu blips (real → -1 → same real) never fire a spurious reset.
   const prevTrackRef = useRef(null);
-  const prevSessionTypeRef = useRef(null);
   useEffect(() => {
-    const trackId = rawTel.trackId, sessionType = rawTel.sessionType;
-    const tValid = typeof trackId === "number" && trackId >= 0;        // -1/undefined = no session
-    const sValid = typeof sessionType === "number" && sessionType > 0; // 0/undefined = unknown (see sessionTypeName)
-    let changed = false;
+    const trackId = rawTel.trackId;
+    const tValid = typeof trackId === "number" && trackId >= 0; // -1/undefined = no session
     if (tValid) {
-      if (prevTrackRef.current != null && prevTrackRef.current !== trackId) changed = true;
+      if (prevTrackRef.current != null && prevTrackRef.current !== trackId) resetSessionLaps();
       prevTrackRef.current = trackId;
     }
-    if (sValid) {
-      if (prevSessionTypeRef.current != null && prevSessionTypeRef.current !== sessionType) changed = true;
-      prevSessionTypeRef.current = sessionType;
-    }
-    if (changed) resetSessionLaps();
-  }, [rawTel.trackId, rawTel.sessionType, resetSessionLaps]);
+  }, [rawTel.trackId, resetSessionLaps]);
 
   // Laps belonging to the current drive, scoped by sessionId exactly like the Live
-  // screen's Session Laps panel (see LiveScreen's `sessionLaps`). The Analytics
-  // screen renders its lap-data panels from this — not the full history — so they
-  // reset in lock-step: a fresh sessionId, from the reset button or the auto-reset
-  // above, empties it. Falls back to all laps when no session is active (idle / no
-  // live bridge).
+  // screen's Session Laps panel (both go through visibleSessionLaps). The Analytics
+  // screen renders its lap-data panels + the reference/driven dropdowns from this —
+  // not the full history — so they reset in lock-step: a fresh sessionId, from the
+  // reset button or the auto-reset above, empties it. With no live session (idle /
+  // pre-connect) it scopes to the LAST driven session, not every saved lap.
   const sessionLaps = useMemo(
-    () => storedLaps.filter(l => !l.archived && (sessionId ? l.meta?.sessionId === sessionId : true)),
+    () => visibleSessionLaps(storedLaps, sessionId),
     [storedLaps, sessionId]);
 
   // Open the Live view automatically the moment telemetry first connects — but not
   // while the user is mid-analysis on Compare (or already on Live), so we never yank
   // them away. Connecting usually happens from Setup, so that tab DOES hand off.
-  const prevWsRef = useRef(false);
+  // FIRST connect only: "receiving" also flaps on a game pause (packets stop), and
+  // re-switching on every resume would pull the user off whatever tab they're on.
+  const autoTabDoneRef = useRef(false);
   useEffect(() => {
-    if (wsConnected && !prevWsRef.current && tab !== "compare" && tab !== "live") setTab("live");
-    prevWsRef.current = wsConnected;
+    if (wsConnected && !autoTabDoneRef.current) {
+      autoTabDoneRef.current = true;
+      if (tab !== "compare" && tab !== "live") setTab("live");
+    }
   }, [wsConnected, tab]);
 
   // Resolve the active reference from loaded traces + this session's driven laps.
@@ -1827,7 +2078,10 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   // and ERS-mode (by-mode) zones detected from its throttle, brake + ERS channels.
   // Select a different reference and the zones (and coaching calls) change. No
   // reference → generic defaults.
-  const zones = useMemo(() => deriveZonesFromTrace(activeTrace), [activeTrace]);
+  const zones = useMemo(
+    () => (activeTrace ? deriveZonesFromTrace(activeTrace) : []),
+    [activeTrace]
+  );
 
   // Flatten the zones into the list the announcement engine walks. Each entry
   // knows the lap-fraction of its action point (`atPct`), what to speak, and
@@ -1853,17 +2107,11 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   })), [zones]);
 
   // Internals
-  const wsRef       = useRef(null);
-  // WS reconnect state: whether the user still wants to be connected (so a dropped
-  // bridge auto-retries, but an explicit Disconnect doesn't), the backoff timer +
-  // attempt count, and a ref to the latest connect fn for the retry timer to call.
-  const wantConnectedRef = useRef(false);
-  const reconnectRef     = useRef({ timer: null, attempts: 0 });
-  const connectRef       = useRef(null);
   // Announcement engine state: which call keys have fired this lap + a remembered
   // track length so seconds-of-lead can be converted to a lap-fraction.
   const announcedRef    = useRef({ set: new Set(), lastPct: 0 });
   const lastTrackLenRef = useRef(5000);
+  const lastBatteryCallRef = useRef(0);
   const coachCtxRef = useRef(null);
   // Live track map: world positions accumulated into ~12 m distance bins as you
   // drive, so the map draws the actual circuit. mapVersion bumps re-render on reset.
@@ -1966,9 +2214,11 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   // currently-selected colour-coded zones (honouring the live legend toggles) + a
   // colour legend, on a dark background. Reuses the shared exportMapImage canvas
   // pipeline so the dashboard and Compare maps render identically.
+  // Reads mapPath — the outline actually on screen (saved circuit, else the live
+  // recording) — so the export always matches what the Live map shows.
   const exportTrackMapPng = () => {
-    if (!recordedPath || recordedPath.length < 20) return;
-    const { segs, outline } = buildTrackMapGeometry(recordedPath, zones, 240, 240, liveCues);
+    if (!mapPath || mapPath.length < 20) return;
+    const { segs, outline } = buildTrackMapGeometry(mapPath, zones, 240, 240, liveCues);
     exportMapImage({ segs, outline, filters: liveCues, legend: LIVE_LEGEND, name: trackName || "live", format: "png" });
   };
 
@@ -2008,42 +2258,117 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     [zones, activeTrace, trackCorners]
   );
 
+  // The circuit the driver's current laps belong to — the anchor for scoping every
+  // coaching input to ONE track (compare apples with apples). Prefer the live-
+  // identified circuit; fall back to the newest saved lap's own track. Deliberately
+  // NOT trackName, which falls back to the reference's track — that would let a
+  // wrong-track reference redefine "the driven track" and hide a real mismatch.
+  const drivenTrackName = trackInfo?.name
+    || storedLaps[storedLaps.length - 1]?.meta?.track
+    || null;
+
+  // Does the loaded reference actually belong to the track being driven? Only counts
+  // as a mismatch when BOTH tracks are positively known and different — a reference
+  // loaded for another circuit by mistake. Unknown / "Live" tracks fail open (we
+  // can't confirm a mismatch, so we don't block coaching). Comparing across circuits
+  // produces nonsense advice, so on a mismatch the coach withholds it and says so.
+  const refTrackName = activeTrace?.meta?.track || null;
+  const tracksMismatch = !!activeTrace
+    && isKnownTrackName(drivenTrackName) && isKnownTrackName(refTrackName)
+    && !sameTrack(drivenTrackName, refTrackName);
+
+  // Laps the coach is allowed to reason about, partitioned so "lap N" is never
+  // ambiguous (lap numbers restart every session, so an all-time list shows the
+  // model several identical "Lap 2" rows):
+  //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
+  //     another track (that mixed history is what made the log claim "55 laps");
+  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
+  //   • split into the AUTHORITATIVE session (live session, else the most recent
+  //     session on this track when the app is opened offline to review data) and a
+  //     short, clearly-labelled tail of older-session laps (trends/progress only).
+  // Partitioning happens BEFORE any windowing so a long current session is never
+  // truncated in favour of stale laps.
+  const trackLaps = useMemo(
+    () => storedLaps.filter((l) => isRankable(l) && sameTrack(l.meta?.track, drivenTrackName)),
+    [storedLaps, drivenTrackName]);
+
+  // The session whose laps answer bare "lap N" questions: the live game session
+  // when UDP is flowing, else the session of the newest recorded lap on this track
+  // (same fallback as visibleSessionLaps in driverStats.js). Null when no lap
+  // carries a sessionId at all (legacy history) — then there is no authoritative
+  // block and everything is presented as older material.
+  const coachSessionId = useMemo(() => {
+    if (sessionId) return sessionId;
+    let latest = null;
+    for (const l of trackLaps) {
+      if (!l.meta?.sessionId) continue;
+      if (!latest || (l.recordedAt || 0) > (latest.recordedAt || 0)) latest = l;
+    }
+    return latest?.meta?.sessionId ?? null;
+  }, [trackLaps, sessionId]);
+
+  const currentSessionLaps = useMemo(
+    () => coachSessionId
+      ? trackLaps.filter((l) => l.meta?.sessionId === coachSessionId).slice(-COACH_LAP_WINDOW)
+      : [],
+    [trackLaps, coachSessionId]);
+
+  // Older-session laps on this track (includes legacy laps without a sessionId).
+  const previousSessionLaps = useMemo(() => {
+    const cur = new Set(currentSessionLaps.map((l) => l.id));
+    return trackLaps.filter((l) => !cur.has(l.id)).slice(-COACH_PREV_LAP_WINDOW);
+  }, [trackLaps, currentSessionLaps]);
+
+  // Aggregate window for inputs that don't cite lap numbers (evidence, trends,
+  // structured log) — the most recent laps on this track regardless of session.
+  const coachableLaps = useMemo(
+    () => trackLaps.slice(-COACH_LAP_WINDOW),
+    [trackLaps]);
+
   const lapEvidence = useMemo(() => {
-    if (!activeTrace || !storedLaps.length) return null;
-    const lap = storedLaps[storedLaps.length - 1];
+    if (!activeTrace || tracksMismatch || !coachableLaps.length) return null;
+    const lap = coachableLaps[coachableLaps.length - 1];
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildLapEvidence(lap.samples, activeTrace.samples,
       { labelAt: trackLabeler, userLapTime: lap.lapTime, refLapTime });
-  }, [storedLaps, activeTrace, trackLabeler]);
+  }, [coachableLaps, activeTrace, trackLabeler, tracksMismatch]);
 
   // Structured per-channel breakdown for the Coach Log screen — the most recent
   // completed lap vs the reference, with the real time-on-table distributed across
   // channels. Recomputed only on lap finish / reference change (cheap), like the
-  // evidence above. Null until there's a completed lap + a reference.
+  // evidence above. Null until there's a completed lap + a reference, and while the
+  // reference belongs to a different circuit (the screen shows a mismatch notice).
   const coachLog = useMemo(() => {
-    if (!activeTrace || !storedLaps.length) return null;
-    const lap = storedLaps[storedLaps.length - 1];
+    if (!activeTrace || tracksMismatch || !coachableLaps.length) return null;
+    const lap = coachableLaps[coachableLaps.length - 1];
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildCoachLog(lap, activeTrace.samples, refLapTime,
-      { labelAt: trackLabeler, setup: lap.setup, lapsAnalysed: storedLaps.length });
-  }, [storedLaps, activeTrace, trackLabeler]);
+      { labelAt: trackLabeler, setup: lap.setup, lapsAnalysed: coachableLaps.length });
+  }, [coachableLaps, activeTrace, trackLabeler, tracksMismatch]);
 
-  // Full saved-history view for the conversational coach: a per-lap log (so the
-  // driver can ask about an earlier lap) and cross-lap trends (recurring corner
-  // issues across their whole history — storedLaps is every persisted lap for the
-  // driver, not just this drive). Recomputed only when a lap completes or the
-  // reference/zones change — never per telemetry tick.
-  const lapLog = useMemo(() => buildLapLog(storedLaps), [storedLaps]);
+  // History views for the conversational coach, all scoped to the current circuit:
+  // a session-partitioned per-lap log (bare "lap N" questions resolve against the
+  // current/last session; older sessions are listed separately for trends) and
+  // cross-lap trends (recurring corner issues on this track).
+  // Recomputed only when a lap completes or the reference/zones change.
+  const lapLog = useMemo(
+    () => buildLapLog(currentSessionLaps, previousSessionLaps,
+      { live: !!sessionId, max: COACH_LAP_WINDOW }),
+    [currentSessionLaps, previousSessionLaps, sessionId]);
   const sessionTrends = useMemo(() => {
-    if (storedLaps.length < 2) return null;
-    return buildTrends(storedLaps, activeTrace?.samples || null, { labelAt: trackLabeler });
-  }, [storedLaps, activeTrace, trackLabeler]);
-  // Per-corner profile history (recent laps) — speed/gear/throttle/brake/steer carried
-  // through each corner — so the coach can field specific "what did I do at T# on lap N"
+    if (coachableLaps.length < 2) return null;
+    // A wrong-track reference must not seed the "vs reference" trend lines — pass no
+    // reference on a mismatch so trends stay pure same-track self-consistency.
+    const ref = tracksMismatch ? null : (activeTrace?.samples || null);
+    return buildTrends(coachableLaps, ref, { labelAt: trackLabeler });
+  }, [coachableLaps, activeTrace, trackLabeler, tracksMismatch]);
+  // Per-corner profile history (current/last session only — it cites lap numbers,
+  // which restart every session) — speed/gear/throttle/brake/steer carried through
+  // each corner — so the coach can field specific "what did I do at T# on lap N"
   // recall. Null for unknown tracks (no corner DB).
   const cornerProfiles = useMemo(
-    () => buildCornerProfiles(storedLaps, { corners: trackCorners, max: 15 }),
-    [storedLaps, trackCorners]
+    () => buildCornerProfiles(currentSessionLaps, { corners: trackCorners, max: COACH_LAP_WINDOW }),
+    [currentSessionLaps, trackCorners]
   );
 
   // The driver's current position as a corner/sector name, for the live coach
@@ -2058,120 +2383,37 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   // LLM
   const { ask, askLap, thinking, lastAdvice } = useLLM(llmConfig);
 
-  // Is the AI between-lap coach active right now?
-  const aiActive = aiControl === "ai" ? true
-                 : aiControl === "engine" ? false
-                 : llmOnline; // "auto" — follow the live reachability probe (both providers)
+  // Is the AI between-lap coach active right now? Insights always generate as
+  // long as the LLM backend is actually reachable (live health probe); the
+  // real-time call engine runs regardless of this.
+  const aiActive = llmOnline;
 
-  // ── WebSocket ───────────────────────────────────────────────────────────
-  // Reconnect with exponential backoff (1→2→4→8→10 s, capped), but only while the
-  // user still wants to be connected. Calls the latest connectWs via a ref so it
-  // stays stable.
-  const scheduleReconnect = useCallback(() => {
-    if (!wantConnectedRef.current) return;
-    const r = reconnectRef.current;
-    if (r.timer) return;
-    const delay = Math.min(1000 * 2 ** r.attempts, 10000);
-    r.attempts++;
-    r.timer = setTimeout(() => { r.timer = null; connectRef.current?.(); }, delay);
-  }, []);
+  // ── Telemetry (in-process native core) ────────────────────────────────────
+  // The native core owns the single UDP listener and is always running, so there's
+  // no connect/disconnect: we just subscribe to its Tauri events. `wsConnected`
+  // now means "the game is actively sending packets"; a fresh drive session id is
+  // minted on each rising edge (as the old WebSocket onopen used to do).
+  useTelemetry({
+    onSnapshot: setLiveTel,
+    onReceivingChange: setWsConnected,
+  });
 
-  const connectWs = useCallback(() => {
-    wantConnectedRef.current = true;
-    const r = reconnectRef.current;
-    if (r.timer) { clearTimeout(r.timer); r.timer = null; }
-    // Detach the previous socket's handlers BEFORE closing it — otherwise closing an
-    // already-open socket fires its onclose → scheduleReconnect, which would later
-    // tear down the new connection we're about to make.
-    const old = wsRef.current;
-    if (old) { old.onopen = old.onmessage = old.onclose = old.onerror = null; try { old.close(); } catch {} }
-    try {
-      const ws = new WebSocket(wsUrl);
-      ws.onopen    = () => {
-        setWsConnected(true); reconnectRef.current.attempts = 0; setSessionId(`s-${Date.now()}`);
-        // Tell the bridge which UDP port to listen on (it defaults to 20777, but the
-        // user may have pointed the game / a rebroadcaster at another port).
-        try { ws.send(JSON.stringify({ type: "setUdpPort", port: udpPortRef.current })); } catch {}
-        // Restore the repeater config too, so a reconnect re-arms forwarding.
-        const r = repeaterRef.current;
-        try { ws.send(JSON.stringify({ type: "setRepeater", enabled: r.repeatEnabled, host: r.repeatHost, port: r.repeatPort })); } catch {}
-      };
-      ws.onmessage = e => {
-        try {
-          const msg = JSON.parse(e.data);
-          // Telemetry snapshots have no `type`; control/status frames (e.g. the
-          // bridge's current-UDP-port report) carry one — don't treat them as telemetry.
-          if (msg && typeof msg.type === "string") return;
-          setLiveTel(msg);
-        } catch {}
-      };
-      ws.onclose   = () => { setWsConnected(false); scheduleReconnect(); }; // bridge dropped → retry
-      ws.onerror   = () => setWsConnected(false);
-      wsRef.current = ws;
-    } catch { scheduleReconnect(); } // constructor threw (bad URL) → retry
-  }, [wsUrl, scheduleReconnect]);
-  connectRef.current = connectWs;
-
-  // Explicit disconnect: stop wanting a connection so the backoff retry doesn't
-  // immediately reopen the socket.
-  const disconnectWs = () => {
-    wantConnectedRef.current = false;
-    const r = reconnectRef.current;
-    if (r.timer) { clearTimeout(r.timer); r.timer = null; }
-    r.attempts = 0;
-    wsRef.current?.close();
-    setWsConnected(false);
-  };
-
-  // Close the socket + cancel any pending retry on unmount / hot reload.
-  useEffect(() => () => {
-    wantConnectedRef.current = false;
-    const r = reconnectRef.current;
-    if (r.timer) { clearTimeout(r.timer); r.timer = null; }
-    wsRef.current?.close();
-  }, []);
-
-  // Push a UDP-port change to the bridge live, without forcing a reconnect. The
-  // bridge rebinds its UDP listener on receipt (see f1-bridge.cjs). No-op if the
-  // socket isn't open — connectWs sends the port again on its next onopen.
+  // Drive-session identity comes from the GAME's per-session UID (in every UDP
+  // header), not from the receiving on/off edge — the game stops sending packets
+  // while paused, so an edge-based session id reset the Session Laps panel and lap
+  // numbering after any pause longer than the receive timeout. A manual "Reset
+  // Session Laps" still mints its own id (resetSessionLaps), which sticks until
+  // the game starts a genuinely new session (new UID).
   useEffect(() => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send(JSON.stringify({ type: "setUdpPort", port: udpPort })); } catch {}
-    }
-  }, [udpPort]);
+    const uid = rawTel.sessionUid;
+    if (uid && uid !== "0") setSessionId(`s-${uid}`);
+  }, [rawTel.sessionUid]);
 
-  // Push repeater changes (enable/disable, host, port) to the bridge live — it
-  // re-points forwarding without rebinding the game socket. No-op if not open;
-  // connectWs re-sends on its next onopen.
-  useEffect(() => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send(JSON.stringify({ type: "setRepeater", enabled: repeatEnabled, host: repeatHost, port: repeatPort })); } catch {}
-    }
-  }, [repeatEnabled, repeatHost, repeatPort]);
+  // Push a UDP-port change to the native core; it rebinds its listener live.
+  useEffect(() => { coreInvoke("set_udp_port", { port: udpPort }); }, [udpPort]);
 
-  // ── Ollama: fetch the installed-model list (for the picker) ──────────────
-  const loadOllamaModels = useCallback(async () => {
-    try {
-      const names = await listOllamaModels({ url: ollamaUrl, signal: AbortSignal.timeout(3000) });
-      setOllamaModels(names);
-      return names;
-    } catch { setOllamaModels([]); return []; }
-  }, [ollamaUrl]);
-
-  // ── Ollama test ─────────────────────────────────────────────────────────
-  // "ok" only when the server is up AND the chosen model is actually installed —
-  // a reachable server with a missing model is the silent failure that gives no
-  // chat reply, so we surface it as its own "nomodel" state.
-  const testOllama = async () => {
-    setOllamaStatus("testing");
-    try {
-      const names = await listOllamaModels({ url: ollamaUrl, signal: AbortSignal.timeout(3000) });
-      setOllamaModels(names);
-      setOllamaStatus(names.includes(model) ? "ok" : "nomodel");
-    } catch { setOllamaStatus("error"); }
-  };
+  // Native force-feedback engine (device control, live gauges, tuning + profiles).
+  const ffb = useFfbEngine();
 
   // ── Load trace JSON ─────────────────────────────────────────────────────
   const loadTrace = (file) => {
@@ -2181,7 +2423,7 @@ export default function F1CoachApp({ onOpenCalibrator }) {
         const json = JSON.parse(e.target.result);
         if (!json.meta || !json.samples) { alert("Invalid trace JSON — use the Trace Calibrator to export."); return; }
         json.samples = sanitizeTraceSamples(json.samples); // clamp/round any out-of-range readings (gear 5.5, throttle -1)
-        const id = Date.now().toString();
+        const id = crypto.randomUUID(); // UUID, not Date.now(): importing several traces at once would collide on ms
         setRefTraces(prev => [...prev, { ...json, id }]);
         setActiveTraceId(id);
         const zoneCount = deriveZonesFromTrace(json).length;
@@ -2196,6 +2438,40 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     if (activeTraceId===id) setActiveTraceId(null);
   };
 
+  // ── Save / load a whole session of laps ──────────────────────────────────
+  // Save writes every lap currently in the Session Laps panel to one file. Load
+  // reads such a file back and drops it INTO the panel for review: the laps are
+  // re-tagged with a fresh session id (which becomes the active one) so the panel
+  // shows exactly the loaded race, and a fresh lap id each so they never clobber
+  // an existing lap. In-memory only — reviewing a saved session doesn't touch the
+  // driver's persisted history; the file stays the durable copy.
+  const saveSession = () => {
+    const ok = exportSessionToFile(sessionLaps, {
+      driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
+    });
+    if (ok) addCue(`💾 Saved ${sessionLaps.length} laps to file`, "info");
+  };
+  const loadSession = (file) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      let laps;
+      try { laps = parseSessionLaps(e.target.result); }
+      catch (err) { alert(err.message || "Could not load the session file."); return; }
+      const newSid = `loaded-${Date.now()}`;
+      const retagged = laps.map(l => ({
+        ...l,
+        id: `lap-${crypto.randomUUID()}`,
+        archived: false,
+        meta: { ...(l.meta || {}), driver: activeDriver || "You", sessionId: newSid },
+      }));
+      loadSessionLaps(retagged);
+      setSessionId(newSid);       // scope the panel to the loaded session
+      setActiveTraceId(null);     // the old reference belonged to a different drive
+      addCue(`📂 Loaded ${retagged.length} laps from file`, "info");
+    };
+    reader.readAsText(file);
+  };
+
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its
   // action point. Seconds → lap-fraction uses current speed and the lap length.
@@ -2204,7 +2480,23 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     const a = announcedRef.current;
     // New lap (lapPct wrapped back to ~0) → let every call fire again.
     if (tel.lapPct < a.lastPct - 0.5) a.set.clear();
+    // Smaller backward jump = a flashback within the lap: re-arm only the calls
+    // whose mark is now ahead again (already-passed calls must not instantly refire).
+    else if (tel.lapPct < a.lastPct - 0.02) {
+      for (const call of announceCalls) if (tel.lapPct < call.atPct) a.set.delete(call.key);
+    }
     a.lastPct = tel.lapPct;
+
+    // Only fire cues when the car is genuinely driving on track. Paused, in the
+    // garage, or in the pit lane, the game resets/freezes lap distance — which
+    // would otherwise replay cues as the mark sweeps back past its trigger. The
+    // re-arm bookkeeping above still runs, so the next real lap fires cleanly.
+    // (gamePaused is undefined on older cores/idle telemetry — treated as "not
+    // paused" so behaviour is unchanged until the Rust snapshot ships it.)
+    const driving = !tel.gamePaused &&
+      tel.driverStatus !== 0 &&                       // 0 = in garage
+      (tel.pitStatus == null || tel.pitStatus === 0); // != 0 = pit lane / pit area
+    if (!driving) return;
 
     // Track length (m) from live telemetry, so lead seconds → distance.
     const trackLen = (tel.lapPct > 0.002 && tel.lapDistance > 0)
@@ -2228,7 +2520,11 @@ export default function F1CoachApp({ onOpenCalibrator }) {
       addCue(call.cue, call.type);
     }
 
-    if (tel.ersBattery < 15 && Math.random() < 0.004) {
+    // Battery warning: only while actually driving a timed lap (the idle EMPTY_TEL
+    // reads 0% battery), at most once per 30 s.
+    if (wsConnected && tel.lapTime > 0 && tel.ersBattery < 15 &&
+        Date.now() - lastBatteryCallRef.current > 30000) {
+      lastBatteryCallRef.current = Date.now();
       speak("Battery critical — conserve ERS", "urgent");
       addCue("⚠️ Battery critical", "info");
     }
@@ -2240,8 +2536,8 @@ export default function F1CoachApp({ onOpenCalibrator }) {
   // calls; this never speaks mid-corner, so the two no longer compete.
   const lastSummarisedLap = useRef(null);
   useEffect(() => {
-    if (!aiActive || !activeTrace || !storedLaps.length) return;
-    const lap = storedLaps[storedLaps.length - 1];
+    if (!aiActive || !activeTrace || !coachableLaps.length) return;
+    const lap = coachableLaps[coachableLaps.length - 1];
     if (lastSummarisedLap.current === lap.id) return;
     // Skip a stale lap (e.g. one finished before the AI was switched on).
     if (Date.now() - lap.recordedAt > 20000) { lastSummarisedLap.current = lap.id; return; }
@@ -2252,7 +2548,7 @@ export default function F1CoachApp({ onOpenCalibrator }) {
       if (tip && focusAudioOn) speak(tip, "low");
       if (tip) addCue(`🤖 ${tip}`, "llm");
     })();
-  }, [storedLaps, aiActive, activeTrace, lapEvidence, focusAudioOn]);
+  }, [coachableLaps, aiActive, activeTrace, lapEvidence, focusAudioOn]);
 
   // ── Manual LLM ask ──────────────────────────────────────────────────────
   const askNow = async () => {
@@ -2266,7 +2562,7 @@ export default function F1CoachApp({ onOpenCalibrator }) {
     track: lap?.meta?.track || trackName || "—",
     time: lap?.lapTime ? fmtTime(lap.lapTime) : (lap?.meta?.lapTime ? fmtTime(lap.meta.lapTime) : ""),
     date: lap?.recordedAt ? new Date(lap.recordedAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "",
-    color: activeDriverObj?.color || C.blue, setup: lap?.setup || null,
+    color: activeDriverObj?.color || "#3671C6", setup: lap?.setup || null,
   });
 
   const addCue = (text, type="info") => {
@@ -2294,14 +2590,16 @@ export default function F1CoachApp({ onOpenCalibrator }) {
 
   // Live snapshot for the Voice Coach — keeps telemetry context current even
   // when a question arrives via an async speech-recognition callback.
-  coachCtxRef.current = { tel, refSample, zone, trace: activeTrace?.meta || null, evidence: lapEvidence, lapLog, trends: sessionTrends, cornerProfiles, posLabel };
+  coachCtxRef.current = { tel, refSample, zone, trace: activeTrace?.meta || null, evidence: lapEvidence, lapLog, trends: sessionTrends, cornerProfiles, posLabel,
+    trackMismatch: tracksMismatch ? { refTrack: refTrackName, drivenTrack: drivenTrackName } : null };
 
   return (
     <Shell
       tab={tab} onTab={setTab} onSettings={()=>setTab("setup")}
       wsConnected={wsConnected}
       llmConnected={llmOnline}
-      activeDriver={activeDriver} driverColor={activeDriverObj?.color || C.blue} driverCount={drivers.length}
+      ffbConnected={ffb.connected}
+      activeDriver={activeDriver} driverColor={activeDriverObj?.color || "#3671C6"} driverCount={drivers.length}
       onDriverChip={()=>setSwitchDriverOpen(true)}
     >
       {/* ── DASHBOARD (full-bleed redesigned screen) ── */}
@@ -2309,13 +2607,16 @@ export default function F1CoachApp({ onOpenCalibrator }) {
         <DashboardScreen
           driver={activeDriverObj}
           avatar={activeDriverObj ? avatars[activeDriverObj.name] : null}
+          update={appUpdate}
           laps={storedLaps}
           driverCount={drivers.length}
           units={units}
+          activeSkin={activeSkin}
           onEnterCockpit={()=>setTab("live")}
           onSwitchDriver={()=>setSwitchDriverOpen(true)}
           onSelectLap={(id)=>{ setComparisonLapId(id); setTab("compare"); }}
           onOpenSetup={openSetupForLap}
+          onDeleteLap={deleteLap}
         />
       )}
 
@@ -2331,6 +2632,8 @@ export default function F1CoachApp({ onOpenCalibrator }) {
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
           focusAudioOn={focusAudioOn} onToggleFocusAudio={()=>setFocusAudioOn(a=>!a)}
           onOpenSetup={openSetupForLap} onResetSessionLaps={resetSessionLaps}
+          onSaveSession={saveSession} onLoadSession={loadSession}
+          onSaveMap={mapPath && mapPath.length >= 20 ? exportTrackMapPng : null}
           legendChips={LIVE_LEGEND.map(([color,label,key])=>({ color, label,
             on: liveCues[key]!==false,
             onToggle: ()=>setLiveCues(f=>({...f,[key]:!f[key]})) }))}
@@ -2364,15 +2667,17 @@ export default function F1CoachApp({ onOpenCalibrator }) {
           onDeleteLap={deleteLap} onExportLap={exportLapToFile}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
-            zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} corners={trackCorners} />}
+            zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
+            visibleTraces={visibleTraces} onToggleTrace={toggleTrace} />}
           ersSlot={<CompareTrackMaps referenceLap={activeTrace} comparisonLap={comparisonLap}
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
             sessionPath={recordedPath} trackName={trackName} telemetry={tel} />}
           linesSlot={<CompareDrivingLines referenceLap={activeTrace} comparisonLap={comparisonLap}
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
-            sessionPath={recordedPath} trackName={trackName} zones={zones} />}
+            sessionPath={recordedPath} trackName={trackName} trackSlug={trackInfo?.slug || null}
+            zones={zones} />}
           chatSlot={<CoachChat llmConfig={llmConfig} modelLabel={activeModelLabel}
-            contextRef={coachCtxRef} speak={speak} />}
+            contextRef={coachCtxRef} speak={speak} health={llmHealth} />}
         />
         );
       })()}
@@ -2380,24 +2685,17 @@ export default function F1CoachApp({ onOpenCalibrator }) {
       {/* ── SETTINGS (full-bleed redesigned screen) ── */}
       {tab==="setup" && (
         <SettingsScreen
-          provider={provider} setProvider={setProvider}
-          ollamaUrl={ollamaUrl} setOllamaUrl={setOllamaUrl} model={model} setModel={setModel}
           openRouterKey={openRouterKey} setOpenRouterKey={setOpenRouterKey}
           openRouterModel={openRouterModel} setOpenRouterModel={setOpenRouterModel}
-          ollamaStatus={ollamaStatus} onTestOllama={testOllama}
-          ollamaModels={ollamaModels} onLoadOllamaModels={loadOllamaModels}
-          wsUrl={wsUrl} setWsUrl={setWsUrl} wsConnected={wsConnected}
+          wsConnected={wsConnected}
           udpPort={udpPort} setUdpPort={setUdpPort}
-          repeatEnabled={repeatEnabled} setRepeatEnabled={setRepeatEnabled}
-          repeatPort={repeatPort} setRepeatPort={setRepeatPort}
-          onWsConnect={connectWs} onWsDisconnect={disconnectWs}
           units={units} setUnits={setUnits}
-          audioOn={audioOn} setAudioOn={setAudioOn}
-          autoInsights={aiControl!=="engine"}
-          setAutoInsights={(fn)=>{ const cur=aiControl!=="engine"; const next=typeof fn==="function"?fn(cur):fn; setAiControl(next?"auto":"engine"); }}
+          tempUnits={tempUnits} setTempUnits={setTempUnits}
+          activeSkin={activeSkin} setActiveSkin={setActiveSkin}
           voicePrefs={voicePrefs} setVoicePrefs={setVoicePrefs} kokoro={kokoro} onTestVoice={preview}
           drivers={drivers} activeDriver={activeDriver} onSignDriver={signDriver}
-          avatars={avatars} onDeleteDriver={deleteDriver}
+          avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
+          onExportProfile={exportProfile} onImportProfile={importProfile}
           onOpenTrace={()=>setTraceOpen(true)} onOpenCalibrator={onOpenCalibrator}
         />
       )}
@@ -2408,10 +2706,14 @@ export default function F1CoachApp({ onOpenCalibrator }) {
         <CoachLogScreen
           coachLog={coachLog} trackName={trackName} sessionLabel={sessionTypeLabel}
           trends={sessionTrends}
+          trackMismatch={tracksMismatch ? { refTrack: refTrackName, drivenTrack: drivenTrackName } : null}
           llmFocus={lastAdvice && lastAdvice.lap && !lastAdvice.error ? lastAdvice.text : null}
           llmSummary={lastAdvice && lastAdvice.lap && !lastAdvice.error ? lastAdvice.summary : null}
         />
       )}
+
+      {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
+      {tab==="ffb" && <FfbScreen ffb={ffb} />}
 
       {/* ── Modals ── */}
       {switchDriverOpen && (

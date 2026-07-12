@@ -1,5 +1,5 @@
 import { useState } from "react";
-import F1CoachApp from "./F1CoachApp.jsx";
+import BoxBoxApp from "./BoxBoxApp.jsx";
 import TraceCalibrator from "./TraceCalibrator.jsx";
 
 // Two full-screen tools: the live Coach (the default view) and the Trace
@@ -12,7 +12,7 @@ export default function App() {
   return (
     <>
       <div style={{ display: mode === "coach" ? "contents" : "none" }}>
-        <F1CoachApp onOpenCalibrator={() => setMode("calibrator")} />
+        <BoxBoxApp onOpenCalibrator={() => setMode("calibrator")} />
       </div>
       <div style={{ display: mode === "calibrator" ? "contents" : "none" }}>
         <TraceCalibrator onExit={() => setMode("coach")} />

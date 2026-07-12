@@ -1,6 +1,6 @@
-# F1 Coach
+# Box, Box
 
-**An AI race engineer for EA SPORTS F1™ 25/26.** F1 Coach reads the game's live UDP
+**An AI race engineer for EA SPORTS F1™ 25/26.** Box, Box reads the game's live UDP
 telemetry, compares your driving against Esports-grade reference traces, and coaches you
 over "team radio" — with real-time braking/ERS calls in the corner and an LLM race
 engineer you can talk to between laps, by voice or text.
@@ -65,11 +65,10 @@ with a lap debrief, or when you ask it something. A priority-based speech arbite
 only when the LLM backend is actually reachable (a live health probe); the real-time engine
 layer runs regardless.
 
-### LLM providers
-The coach speaks through **OpenRouter** by default (cloud, low-latency models suit short
-radio calls — default `anthropic/claude-3.5-haiku`, switchable to any OpenRouter model from
-the Setup tab). A local **Ollama** endpoint (`llama3.2:3b`) is also supported for fully
-offline use. The prompt layer includes genuine guardrails — grounding (no invented
+### LLM provider
+The coach speaks through **OpenRouter** (cloud, low-latency models suit short radio
+calls — default `anthropic/claude-3.5-haiku`, switchable to any OpenRouter model from
+the Setup tab). The prompt layer includes genuine guardrails — grounding (no invented
 numbers), location language (corners, not metres), scope/anti-jailbreak, and untrusted-data
 wrapping.
 
@@ -83,7 +82,7 @@ wrapping.
 | Frontend     | React 18, Vite 6, Three.js (3D track view)                          |
 | Telemetry    | Node bridge (`ws`, `@deltazeroproduction/f1-udp-parser`)            |
 | Speech       | `@huggingface/transformers` (Whisper STT), `kokoro-js` (TTS), ONNX  |
-| LLM          | OpenRouter (default) or local Ollama                                |
+| LLM          | OpenRouter                                                          |
 | Packaging    | `@yao-pkg/pkg` (bridge sidecar), Tauri NSIS installer               |
 
 ---
@@ -92,7 +91,7 @@ wrapping.
 
 ```
 src/                     React app
-  F1CoachApp.jsx         Root: dashboard, WS telemetry client, lap recorder, coaching orchestration
+  BoxBoxApp.jsx          Root: dashboard, WS telemetry client, lap recorder, coaching orchestration
   components/            Screens (Live, Dashboard, Analytics, Settings…), modals, chat, telemetry studio
   lib/coach/             LLM persona, prompts, guardrails, lap analysis, provider client
   lib/                   Track data, tyres, formatting, Whisper/Kokoro wrappers, 3D scene
@@ -107,12 +106,12 @@ public/ort/              Self-hosted ONNX runtime wasm
 
 ## Prerequisites
 
-- **Windows 10/11** (the bridge sidecar targets `node22-win-x64`; the game broadcasts UDP).
+- **Windows 10/11** (the game broadcasts UDP; the native core listens in-process).
 - **Node.js 22+** and npm.
 - For building the native app: **Rust** (stable, MSVC toolchain) + **Visual Studio Build
   Tools** (Desktop C++), plus **WebView2** runtime (preinstalled on current Windows).
 - In **F1 25/26**: enable UDP telemetry — *Settings → Telemetry Settings → UDP Telemetry:
-  On*, **UDP Format: 2025**, IP `127.0.0.1`, port `20777`.
+  On*, **UDP Format: 2026**, IP `127.0.0.1`, port `20777`.
 
 ---
 
@@ -122,20 +121,20 @@ public/ort/              Self-hosted ONNX runtime wasm
 # 1. Install dependencies (also copies the ONNX runtime into /public/ort)
 npm install
 
-# 2a. Run the web UI in the browser (needs the bridge running separately)
-npm run bridge        # UDP → WS bridge on :9001  (or `npm run bridge:fake` for synthetic data)
-npm run dev           # Vite dev server on :1420
+# 2. Fetch the local Kokoro TTS weights (~97 MB, one-time — not in git)
+node scripts/fetch-kokoro-model.mjs
 
-# 2b. …or run the full native app (Tauri spawns the bridge for you)
+# 3. Run the full native app (the Rust core owns the UDP listener)
 npm run tauri:dev
 ```
 
-> No game running? `npm run bridge:fake` feeds synthetic telemetry so you can develop the
-> UI without the game.
+> No game running? Launch with the `F1_FAKE=1` environment variable (or flip the fake-mode
+> toggle in Settings) and the core feeds synthetic telemetry so you can develop the UI
+> without the game. `npm run dev` alone previews the web UI with no native core.
 
 ### Configure the coach
-Open the **Setup** tab and either paste an **OpenRouter API key** (and pick a model) or
-point it at a local **Ollama** server. The key is stored locally on your machine.
+Open the **Setup** tab, paste an **OpenRouter API key**, and pick a model. The key is
+stored locally on your machine.
 
 ---
 
@@ -150,7 +149,7 @@ npm run tauri:build
 ```
 
 Outputs:
-- Raw binary: `src-tauri/target/release/F1coach.exe`
+- Raw binary: `src-tauri/target/release/boxbox.exe`
 - Installer:  `src-tauri/target/release/bundle/nsis/…`
 
 ---
@@ -164,7 +163,6 @@ Outputs:
 | Broadcast rate     | 30 Hz                         | `BROADCAST_HZ` in the bridge            |
 | UDP format         | `2025`                        | in-game telemetry settings              |
 | OpenRouter model   | `anthropic/claude-3.5-haiku`  | `src/lib/coach/config.js` / Setup tab   |
-| Ollama model       | `llama3.2:3b`                 | `src/lib/coach/config.js` / Setup tab   |
 
 ---
 

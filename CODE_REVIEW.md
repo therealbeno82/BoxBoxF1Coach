@@ -1,63 +1,81 @@
-# F1 Coach — Code Review
+# Box, Box — Code Review
 
-Scope: Tauri (Rust) shell, React frontend (`src/`), Node telemetry bridge (`bridge/`), build scripts. Dependencies and build artifacts excluded.
+Scope: Tauri shell + in-process Rust core (`src-tauri/src/telemetry`, `src-tauri/src/ffb`),
+React frontend (`src/`), build scripts. Dependencies and build artifacts excluded.
 
-**Overall:** Well-structured and unusually well-commented. Tauri attack surface is minimal, the LLM layer has real prompt-injection guardrails, and all external inputs (trace files, avatar uploads, telemetry) are validated or sanitized. Findings below are mostly hardening and polish — nothing critical.
+> Architecture note: the old Node telemetry bridge (`bridge/f1-bridge.cjs`) has been
+> removed. A single UDP listener now lives in-process in Rust and pushes snapshots to the
+> webview via Tauri events (`telemetry`, `core_status`, `ffb_gauges`, `ffb_status`). The
+> LLM path is OpenRouter-only.
+
+**Overall:** Well-structured and unusually well-commented. The Tauri attack surface is
+minimal, Rust UDP parsing is fully bounds-checked, the FFB engine has genuine safety-release
+gating, and the LLM layer has real prompt-injection guardrails. Findings are hardening and
+polish — nothing critical. Items marked ✅ were fixed in the review pass.
 
 ---
 
 ## Security
 
-### 1. OpenRouter API key stored in plaintext — *Moderate*
-`F1CoachApp.jsx:1519-1522` persists the key in `localStorage` (`f1coach.openRouterKey`). In a Tauri WebView this is written unencrypted to the app's data directory, readable by any local process or anyone with disk access.
+### S1. OpenRouter API key stored in plaintext — *Moderate*
+`src/BoxBoxApp.jsx` persists the key in `localStorage` (`f1coach.openRouterKey`). In the
+Tauri WebView this is written unencrypted to the app data directory, readable by any local
+process. The `type="password"` input only masks display, not storage.
 
-Mitigation: store it via the OS keychain (`tauri-plugin-stronghold` or a keyring plugin), or at minimum surface a note in the Setup tab that the key is kept locally in cleartext. The `type="password"` input only masks display, not storage.
+✅ Partially addressed: the Setup tab now states the key is kept locally in cleartext.
+Recommended follow-up: move it to the OS keychain (a keyring/stronghold Tauri plugin).
 
-### 2. Bridge WebSocket binds all interfaces — *Low*
-`bridge/f1-bridge.cjs:86` — `new WebSocketServer({ port: WS_PORT })` listens on `0.0.0.0`, so any host on the LAN can connect, receive your live telemetry, and send `setUdpPort` to re-point the UDP listener (`:97-101`).
+### S2. Derived strings interpolated into prompts without sanitization — *Low (hardening)*
+`prompts.js` runs the clearly-untrusted fields (driver/track/zone names) through
+`sanitizeUntrusted`, but `evidence`, `lapLog`, `trends`, and `cornerProfiles` are
+interpolated raw. They are app-computed from numeric telemetry, but a corner/zone label
+originating in a loaded trace can pass through. `SCOPE_RULE` + `<< >>` data-wrapping already
+mitigate; sanitizing these too would be defense-in-depth.
 
-Fix: bind to loopback only —
-```js
-const wss = new WebSocketServer({ host: "127.0.0.1", port: WS_PORT });
-```
-Optionally reject connections with an unexpected `Origin`.
-
-### 3. One-shot raw setup dump to logs — *Low*
-`bridge/f1-bridge.cjs:276-284` prints the full car-setup JSON to stdout/stderr, which Rust forwards into the app log (`lib.rs:32-37`). Useful in dev, but gate it behind a `DEBUG`/env flag (or remove) for release builds.
+### S3. UDP listener binds all interfaces — *Informational*
+`src-tauri/src/telemetry/udp.rs` binds `0.0.0.0` on the game port. Inherent to receiving
+telemetry, and every accessor in `raw.rs` is bounds-checked so a malformed/short datagram
+bails via `?` rather than panicking — no memory-safety risk. A LAN host could still inject
+fake telemetry / drive the FFB; acceptable for this app.
 
 ### Positives worth keeping
-- CSP is tightly scoped and `object-src 'none'`, `frame-src 'none'`, `base-uri 'self'` are set (`tauri.conf.json:26`).
-- Capabilities grant only `core:default` (`capabilities/default.json`); the shell plugin is used internally and **not** exposed to the frontend.
-- Prompt-injection defense is genuine: `sanitizeUntrusted`, `<< >>` data wrapping, and `SCOPE_RULE` (`lib/coach/guardrails.js`, `config.js`, `prompts.js`).
-- Trace JSON is validated + clamped (`sanitizeTraceSamples`), avatar uploads are type/size checked (`avatarImage.js`).
-- ONNX runtime is served same-origin instead of a CDN to satisfy CSP (`copy-ort.mjs`, `transformersConfig.js`).
+- CSP is tightly scoped: `object-src 'none'`, `frame-src 'none'`, `base-uri 'self'`
+  (`tauri.conf.json`).
+- Capabilities grant only `core:default` + `opener:default` (`capabilities/default.json`).
+- Prompt-injection defense is genuine: `sanitizeUntrusted`, `<< >>` wrapping, `SCOPE_RULE`.
+- Trace JSON is validated + clamped (`sanitizeTraceSamples`) on import.
+- Rust readers are `Option`-returning and bounds-checked end to end.
 
 ---
 
-## Potential bugs
+## Bugs
 
-### 1. Chat spinner race in `useCoachChat.js` — *Low*
-On rapid successive `send()` calls, the new call sets `thinking=true` and aborts the previous request. The aborted call's `finally { setThinking(false) }` then runs *after*, switching the spinner off while the new request is still in flight.
+### B1. Chat spinner race in `useCoachChat.js` — *fixed* ✅
+On rapid `send()` calls the new call aborts the previous one and sets `thinking=true`; the
+aborted call's `finally` then cleared it while the new request was still in flight. Guarded
+with `if (abortRef.current === ctrl) setThinking(false)`.
 
-Fix: only clear state if the request is still current —
-```js
-} finally {
-  if (abortRef.current === ctrl) setThinking(false);
-}
-```
+### B2. `clearLaps` resolved before deletes completed — *fixed* ✅
+`lapStore.js` resolved inside `getAllKeys.onsuccess`, before the delete writes landed.
+Now resolves on `transaction.oncomplete` (and rejects on `transaction.onerror`).
 
-### 2. `clearLaps` resolves before deletes complete — *Low*
-`lapStore.js:119-123` calls `resolve()` immediately after issuing the deletes inside `getAllKeys.onsuccess`. It works (same transaction), but the promise resolves before the writes finish — fragile if a caller ever awaits it expecting completion. Resolve on `tx.oncomplete` instead.
+### B3. Timestamp-based IDs could collide — *fixed* ✅
+`lap-${Date.now()}` and the trace id `Date.now().toString()` collided when two items were
+created in the same millisecond. Both now use `crypto.randomUUID()`.
 
-### 3. Timestamp-based IDs can collide — *Very low*
-`lap-${Date.now()}` (`F1CoachApp.jsx:698`), trace id `Date.now().toString()` (`:2108`). Two items created in the same millisecond collide. Use `crypto.randomUUID()` or append a counter.
+### B4. `useTauriEvents` subscribes to the handler keys present at mount — *documented* ✅
+The effect's empty dep array means the event *names* are read once. All callers pass a fixed
+key set, so it is not a live bug; the constraint is now documented in the hook.
 
 ---
 
 ## Cleanup / maintainability
 
-- **`F1CoachApp.jsx` is a ~2,400-line monolith** holding the root component plus the lap recorder, WS logic, and screen orchestration. The `lib/` and `components/` split is good; consider extracting the recorder (`useLapRecorder`) and WS connection into their own hook modules.
-- **`lib.rs` uses `.lock().unwrap()`** (`:26`, `:52`) — panics if the mutex is poisoned. Low risk, but `if let Ok(mut g) = ...lock()` is safer on a shutdown path.
-- **No automated tests** in the source tree. The guardrails (`cleanOutput`, `enforceGrounding`, `sanitizeUntrusted`) and `sectorSeconds`/lap-completion logic are pure and ideal unit-test targets.
-- **`BROADCAST_HZ = 30`** is hardcoded though comments mention a 60 Hz option; make it an env override for consistency with the other tunables.
-- **`devCsp`** allows `'unsafe-inline'`/`'unsafe-eval'` for scripts — fine since it's dev-only, just noting it never reaches production CSP.
+- **`BoxBoxApp.jsx` is a ~2,400-line monolith** holding the root component, lap recorder,
+  telemetry wiring, and screen orchestration. Consider extracting `useLapRecorder`.
+- **`lib.rs` uses `.lock().unwrap()`** in `spawn_emitter` — safe today (runs once at setup,
+  before any thread could poison the mutex), but `if let Ok(..)` would be more defensive.
+- **No automated tests.** The pure guardrail functions (`cleanOutput`, `enforceGrounding`,
+  `sanitizeUntrusted`, `compareVersions`) are ideal, cheap unit-test targets.
+- **`devCsp`** allows `'unsafe-inline'`/`'unsafe-eval'` for scripts — fine, dev-only; it
+  never reaches the production CSP.

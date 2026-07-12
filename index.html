@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>F1 Coach</title>
+    <title>Box, Box</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,38 +12,73 @@
     />
     <style>
       /* ─── COCKPIT DESIGN TOKENS ───────────────────────────────────────────
-         The redesigned GUI ("Cockpit") is a single committed dark palette — no
-         light theme, no per-team skins. Structural colours live here as CSS
-         custom properties so any inline style referencing var(--token) inherits
-         the design. Screens also import the same palette from src/lib/ui/tokens.js
-         for the many design-specific accents (purple/cyan/teal/…). Data-semantic
-         colours (reference purple, driven cyan, sector + telemetry-channel
-         colours) are fixed constants and read the same everywhere. */
+         These :root values are the DEFAULT skin — the original committed dark
+         navy/blue palette. Team skins (src/lib/ui/skins.js) override a subset of
+         these custom properties on <html> at runtime; anything a skin doesn't set
+         falls back to the value here, so the Default skin === this palette exactly.
+         Screens read the same tokens via src/lib/ui/tokens.js (the var()-backed
+         `C` object). Data-semantic colours (reference purple, driven cyan, sector
+         + delta + telemetry-channel colours) are fixed literals in tokens.js and
+         are never skinned. */
       :root {
+        /* Surfaces (skinnable) */
         --bg:             #0b0e14;  /* app background */
+        --glow:           #131a2b;  /* radial glow behind the body content */
         --surface:        #11151d;  /* primary card */
-        --panel:          #0d1119;  /* inset / well / nested tile */
-        --elevated:       #16243f;  /* active / selected (blue-tinted) */
+        --panel:          #0d1119;  /* inset / well / nested tile (legacy alias of --inset) */
+        --inset:          #0d1119;  /* inset / well / nested tile */
+        --elevated:       #16243f;  /* active / selected (accent-tinted) */
         --modal:          #0e121b;  /* overlay cards */
+
+        /* Borders (skinnable) */
         --line:           #1c2230;  /* hairline card border */
         --border:         #1c2230;
         --border-input:   #232a3a;
         --border-strong:  #2b3346;
+        --border-modal:   #262c3a;  /* floating nav / switcher bar */
+
+        /* Text (fixed — neutral tones read the same across every skin) */
         --text:           #ffffff;
         --text-dim:       #d6dbe8;
         --text-mid:       #aeb6c6;
         --text-muted:     #8b94a8;
         --text-faint:     #6b7488;
         --text-faintest:  #5b6478;
-        --accent:         #3671C6;  /* brand blue — CTAs, active nav, car dot */
+
+        /* Brand accent (skinnable) */
+        --accent:         #3671C6;  /* brand blue — CTAs, active nav, accent bars */
         --accent-contrast:#ffffff;
+        --on-accent:      #ffffff;  /* foreground on top of --accent fills */
+        --accent-glow:    rgba(54,113,198,.33);
+        --accent-0d:      rgba(54,113,198,.05);
+        --accent-1f:      rgba(54,113,198,.12);
+        --accent-33:      rgba(54,113,198,.20);
+        --accent-44:      rgba(54,113,198,.27);
+        --accent-55:      rgba(54,113,198,.33);
         --secondary:      #b45bff;  /* reference / coach purple */
         --logo-bar:       #3671C6;
         --livery-mix:     85%;
         --tint-mix:       10%;
+
+        /* Dashboard hero treatment (skinnable; Default keeps today's soft look) */
+        --hero-border:    #1c2230;
+        --pb-border:      #2c2150;  /* personal-best highlighted row */
+        --mark:           #3671C6;  /* decorative hero speed-mark accent */
+        --num-italic:     normal;   /* italicised race numerals for some liveries */
+        --r-lg:           16px;     /* radius scale — team skins flatten to 8px */
+        --r-md:           14px;
+        --r-sm:           10px;
+        --tex-hero:       none;     /* carbon-weave hero texture (team skins only) */
       }
 
       * { box-sizing: border-box; }
+      /* Smooth reskin: fade colour changes ONLY while a skin swap is in flight —
+         applySkin (src/lib/ui/skins.js) holds .reskin on <html> for ~240 ms.
+         Scoped, not universal: an always-on `*` transition would also animate
+         every live data-driven colour change (deltas, gauges, 30 Hz telemetry
+         readouts) and make the style engine track transitions on the whole tree.
+         Inline `transition` styles on individual elements still win over this. */
+      html.reskin * { transition: background-color .16s ease, border-color .16s ease, color .16s ease; }
       html,
       body,
       #root {
