@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { C, FONT } from "./lib/ui/tokens.js";
+import { clamp } from "./lib/format.js";
 
 // ─── CHANNEL DEFINITIONS (matching MoTeC colour conventions) ─────────────────
 const DEFAULT_CHANNELS = [
@@ -36,8 +37,6 @@ function parseLapTime(str) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 

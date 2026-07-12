@@ -8,7 +8,7 @@ import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 
-export default function CoachLogScreen({ coachLog, trackName, sessionLabel, llmFocus, llmSummary, trends }) {
+export default function CoachLogScreen({ coachLog, trackName, sessionLabel, llmFocus, llmSummary, trends, trackMismatch }) {
   // buildTrends returns a prose block: a header line then "\n- " bullet items.
   // Split off the bullets for a compact recurring-patterns strip.
   const trendItems = typeof trends === "string" ? trends.split("\n- ").slice(1) : [];
@@ -19,14 +19,25 @@ export default function CoachLogScreen({ coachLog, trackName, sessionLabel, llmF
 
       {/* Top bar */}
       <div style={{ display: "flex", alignItems: "center", gap: 13, flex: "none" }}>
-        <div style={{ width: 5, height: 42, borderRadius: 3, background: C.purple }} />
+        <div style={{ width: 5, height: 42, borderRadius: 3, background: C.blue }} />
         <div>
           <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1 }}>{trackName || "Coach Log"}</div>
           <div style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: 5 }}>Coach Log · {sessionLabel || "Analysis"}</div>
         </div>
       </div>
 
-      {!coachLog ? (
+      {trackMismatch ? (
+        <div style={{ flex: 1, ...card, borderColor: C.red || "#ff4d5e", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "48px 24px" }}>
+          <div style={{ fontSize: 30, marginBottom: 12 }}>⚠️</div>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6, color: C.red || "#ff4d5e" }}>Track names do not match</div>
+          <div style={{ fontSize: 12, color: C.textMid, maxWidth: 460, lineHeight: 1.6 }}>
+            The loaded reference lap is from <b style={{ color: C.textBody }}>{trackMismatch.refTrack || "another circuit"}</b>,
+            but you're driving <b style={{ color: C.textBody }}>{trackMismatch.drivenTrack || "a different circuit"}</b>.
+            The coach only compares laps from the same track, so no advice is shown. Load a reference for this
+            circuit — or clear it — to get coaching again.
+          </div>
+        </div>
+      ) : !coachLog ? (
         <div style={{ flex: 1, ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 30, marginBottom: 12 }}>✦</div>
           <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6 }}>No analysis yet</div>

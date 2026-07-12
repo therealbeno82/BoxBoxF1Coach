@@ -5,10 +5,10 @@
 // legend chips + an audio-cue toggle), the session-laps list, and the AI "Next Lap
 // Focus" card. All data comes from the live telemetry snapshot + this driver's laps.
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
-import { formatLapTime, toSpeed, speedUnitLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
-import { computeDriverStats } from "../../lib/driverStats.js";
+import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
+import { computeDriverStats, isRankable, visibleSessionLaps } from "../../lib/driverStats.js";
 import { tyreCondition } from "../../lib/tyres.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 
@@ -26,29 +26,40 @@ function Kpi({ label, value, unit, color }) {
   );
 }
 
+// Compact horizontal status pill — used by the 2026 ribbon (boost / active aero /
+// per-lap energy budget) that sits under the main KPI strip.
+function StatusChip({ label, value, color, hint }) {
+  return (
+    <div title={hint || ""} style={{ ...card, padding: "8px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 130 }}>
+      <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: 16, lineHeight: 1, color, whiteSpace: "nowrap" }}>{value}</div>
+    </div>
+  );
+}
+
 export default function LiveScreen({
   tel, units = "km/h", trackName, sessionLabel, liveLapNumber,
   laps = [], sessionId, activeTrace, lastAdvice,
   liveMini = { durations: [], current: -1, tyre: null },
   mapSlot, legendChips = [], audioOn, onToggleAudio,
   focusAudioOn = true, onToggleFocusAudio, onOpenSetup, onResetSessionLaps,
+  onSaveSession, onLoadSession, onSaveMap,
 }) {
   const uLabel = speedUnitLabel(units);
   const stats = useMemo(() => computeDriverStats(laps), [laps]);
 
-  // This drive's completed laps (newest first); fall back to all of the driver's
-  // laps if the session isn't tagged.
-  const sessionLaps = useMemo(() => {
-    // `!archived` keeps laps cleared via "Reset Session Laps" out of the panel even
-    // after a restart (sessionId is null then, so the fallback would otherwise show
-    // every saved lap). Archived laps still live in `laps` for the all-time stats /
-    // track records below and the dashboard + coaching that read the full history.
-    const inSession = laps.filter(l => !l.archived && (sessionId ? l.meta?.sessionId === sessionId : true));
-    return [...inSession].sort((a, b) => (b.recordedAt || 0) - (a.recordedAt || 0));
-  }, [laps, sessionId]);
+  // This drive's completed laps (newest first). visibleSessionLaps drops archived
+  // laps (cleared via "Reset Session Laps", so they stay gone after a restart) and,
+  // when there's no live sessionId yet, scopes to the LAST driven session rather
+  // than every saved lap. Archived / other-session laps still live in `laps` for the
+  // all-time stats + track records below and the dashboard + coaching that read the
+  // full history.
+  const sessionLaps = useMemo(
+    () => [...visibleSessionLaps(laps, sessionId)].sort((a, b) => (b.recordedAt || 0) - (a.recordedAt || 0)),
+    [laps, sessionId]);
   const lastLap = sessionLaps[0] || null;
   const sessionBest = useMemo(() => {
-    const valid = sessionLaps.filter(l => typeof l.lapTime === "number" && l.lapTime > 0);
+    const valid = sessionLaps.filter(l => isRankable(l) && typeof l.lapTime === "number" && l.lapTime > 0);
     return valid.length ? Math.min(...valid.map(l => l.lapTime)) : null;
   }, [sessionLaps]);
 
@@ -60,6 +71,11 @@ export default function LiveScreen({
     const t = setTimeout(() => setConfirmReset(false), 3500);
     return () => clearTimeout(t);
   }, [confirmReset]);
+
+  // Hidden <input> that backs the "Load Session" button — clicking the button opens
+  // the OS file picker; picking a .json hands it to the parent, then we clear the
+  // input's value so re-loading the SAME file fires onChange again.
+  const fileInputRef = useRef(null);
 
   // ── F1 timing-tower sector colours ────────────────────────────────────────
   // Both the big S1/S2/S3 cards (the last lap's splits) and the session-laps list
@@ -88,7 +104,7 @@ export default function LiveScreen({
   const sessionBests = useMemo(() => {
     const m = new Map();
     for (const l of sessionLaps) {
-      if (!Array.isArray(l.sectorTimes)) continue;
+      if (!isRankable(l) || !Array.isArray(l.sectorTimes)) continue;
       const sid = l.meta?.sessionId ?? "∅";
       let acc = m.get(sid);
       if (!acc) { acc = [null, null, null]; m.set(sid, acc); }
@@ -106,7 +122,7 @@ export default function LiveScreen({
   const recordBests = useMemo(() => {
     const m = new Map();
     for (const l of laps) {
-      if (!Array.isArray(l.sectorTimes)) continue;
+      if (!isRankable(l) || !Array.isArray(l.sectorTimes)) continue;
       const key = recordKey(l);
       let acc = m.get(key);
       if (!acc) { acc = [null, null, null]; m.set(key, acc); }
@@ -143,7 +159,7 @@ export default function LiveScreen({
   const sessionMini = useMemo(() => {
     const m = new Map();
     for (const l of sessionLaps) {
-      if (!Array.isArray(l.miniSectors)) continue;
+      if (!isRankable(l) || !Array.isArray(l.miniSectors)) continue;
       const sid = l.meta?.sessionId ?? "∅";
       let acc = m.get(sid);
       if (!acc) { acc = new Array(MINI_SECTORS).fill(null); m.set(sid, acc); }
@@ -159,7 +175,7 @@ export default function LiveScreen({
   const recordMini = useMemo(() => {
     const m = new Map();
     for (const l of laps) {
-      if (!Array.isArray(l.miniSectors)) continue;
+      if (!isRankable(l) || !Array.isArray(l.miniSectors)) continue;
       const key = recordKey(l);
       let acc = m.get(key);
       if (!acc) { acc = new Array(MINI_SECTORS).fill(null); m.set(key, acc); }
@@ -214,6 +230,20 @@ export default function LiveScreen({
     { label: "ERS Batt", value: Math.round(tel.ersBattery ?? 0), unit: "%", color: C.ersYellow },
   ];
   const ersModeName = ERS_MODES[tel.ersMode ?? 0] || "None";
+
+  // ── 2026 driver-managed boost (Manual Override) + active aero ──────────────
+  // DRS is gone in 2026; the equivalent now is the driver's "overtake" energy
+  // boost (deploy when available) plus the car's active-aero wing mode. Labels
+  // come from the shared format.js helpers so the coach prompt (prompts.js)
+  // always describes the same state this ribbon shows. Only rendered once the
+  // car reports the 2026 ruleset (regs2026) — a format-2025 car has none of it.
+  const is2026 = (tel.regs2026 ?? 0) === 1;
+  const boostActive = (tel.overtakeActive ?? 0) === 1;
+  const boostReady = (tel.overtakeAvailable ?? 0) === 1;
+  const boostColor = boostActive ? C.green : boostReady ? C.teal : C.textFaint;
+  const aeroAvail = (tel.activeAeroAvailable ?? 0) === 1;
+  const aeroColor = aeroAvail ? (tel.activeAeroMode ? C.blue : C.textMid) : C.textFaint;
+  const energyBudget = `${Math.round(tel.ersDeploy ?? 0)} / ${Math.round(tel.ersHarvestLimit ?? 0)} kJ`;
 
   const focus = lastAdvice && !lastAdvice.info ? lastAdvice : null;
 
@@ -280,9 +310,9 @@ export default function LiveScreen({
                     <div key={j}
                       title={col ? `${s.name}.${j + 1} · ${d.toFixed(3)}s` : active ? "On track" : ""}
                       style={{ flex: 1, height: 7, borderRadius: 2,
-                        background: col ? col + "cc" : active ? C.blue + "55" : "transparent",
+                        background: col ? col + "cc" : active ? C.accent55 : "transparent",
                         border: `1px solid ${col || (active ? C.blue : C.borderStrong)}`,
-                        boxShadow: col ? `0 0 6px ${col}99` : active ? `0 0 6px ${C.blue}aa` : "none",
+                        boxShadow: col ? `0 0 6px ${col}99` : active ? `0 0 6px ${C.accentGlow}` : "none",
                         animation: active && !col ? "blink 1s infinite" : "none",
                         transition: "background .15s, border-color .15s, box-shadow .15s" }} />
                   );
@@ -292,6 +322,20 @@ export default function LiveScreen({
           ))}
         </div>
       </div>
+
+      {/* ── 2026 status ribbon: driver-managed boost + active aero + energy budget ── */}
+      {is2026 && (
+        <div style={{ display: "flex", gap: 12, flex: "none", flexWrap: "wrap" }}>
+          <StatusChip label="Boost" value={boostStateName(tel)} color={boostColor}
+            hint={boostActive ? "Deploying overtake (Manual Override) boost"
+              : boostReady ? "Boost available — deploy it down a straight"
+              : "Boost charging / not available"} />
+          <StatusChip label="Active Aero" value={aeroModeName(tel)} color={aeroColor}
+            hint="Wing mode: Straight = low-drag, Corner = high-downforce" />
+          <StatusChip label="Energy / Lap" value={energyBudget} color={C.ersYellow}
+            hint="ERS deployed this lap vs the per-lap harvest cap (your energy budget)" />
+        </div>
+      )}
 
       {/* ── Main: track map + right column ── */}
       <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap" }}>
@@ -311,6 +355,15 @@ export default function LiveScreen({
                   <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: .3, color: l.on ? C.textBody2 : C.textDim }}>{l.label}</span>
                 </div>
               ))}
+              {onSaveMap && (
+                <button onClick={onSaveMap} title="Save this map as a PNG" style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px",
+                  background: "none", border: `1px solid ${C.line}`, borderRadius: 8, cursor: "pointer",
+                  fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700,
+                  color: C.textDim, fontFamily: FONT.ui }}>
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.blue, flex: "none" }} /> Save map
+                </button>
+              )}
             </div>
           </div>
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
@@ -344,32 +397,36 @@ export default function LiveScreen({
                 </div>
               )}
               {sessionLaps.map((l) => {
-                const isPB = sessionBest != null && Math.abs(l.lapTime - sessionBest) < 1e-6;
+                const invalid = !!l.invalid;
+                const isPB = !invalid && sessionBest != null && Math.abs(l.lapTime - sessionBest) < 1e-6;
                 const delta = sessionBest != null ? l.lapTime - sessionBest : null;
                 const secs = Array.isArray(l.sectorTimes) ? l.sectorTimes : [null, null, null];
                 return (
                   <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 12,
-                    background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
+                    background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
                     <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
-                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: isPB ? C.purple : "#fff" }}>{formatLapTime(l.lapTime, 3)}</span>
+                    {invalid && (
+                      <span title="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</span>
+                    )}
+                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
                     <span style={{ flex: "none", color: C.textFaintest }}>–</span>
-                    {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. */}
-                    <div style={{ flex: "none", display: "flex", gap: 14 }}>
+                    {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
+                    <div style={{ flex: "none", display: "flex", gap: 14, opacity: invalid ? 0.5 : 1 }}>
                       {[0, 1, 2].map((i) => {
                         const v = secs[i];
                         const ok = typeof v === "number" && v > 0;
                         return (
                           <span key={i} style={{ display: "inline-flex", alignItems: "baseline", gap: 4, fontFamily: FONT.mono, fontSize: 11, fontWeight: 700 }}>
                             <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: 0.5, color: C.textDim }}>S{i + 1}</span>
-                            <span style={{ color: sectorColor(l, i) }}>{ok ? v.toFixed(3) : "—"}</span>
+                            <span style={{ color: invalid ? C.textDim : sectorColor(l, i) }}>{ok ? v.toFixed(3) : "—"}</span>
                           </span>
                         );
                       })}
                     </div>
                     <span style={{ flex: 1 }} />
                     <span style={{ flex: "none", color: C.textFaintest }}>–</span>
-                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: isPB ? C.purple : C.yellow }}>
-                      {isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
+                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
+                      {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
                     </span>
                     <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
                       justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
@@ -383,6 +440,45 @@ export default function LiveScreen({
                 );
               })}
             </div>
+            {/* Save / load a whole session of laps to a file, for reviewing a full
+                race later. Save is disabled with nothing to save; Load is always
+                available. The hidden input backs the Load button. */}
+            {(onSaveSession || onLoadSession) && (
+              <div style={{ display: "flex", gap: 8, marginTop: 11, flex: "none" }}>
+                <input ref={fileInputRef} type="file" accept="application/json,.json" style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) onLoadSession?.(f);
+                    e.target.value = ""; // allow re-picking the same file
+                  }} />
+                <button
+                  onClick={() => onSaveSession?.()}
+                  disabled={sessionLaps.length === 0}
+                  title="Save every lap in this panel to a file you can reload later"
+                  style={{
+                    flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                    borderRadius: 8, border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
+                    fontFamily: FONT.ui, fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase", fontWeight: 700,
+                    cursor: sessionLaps.length === 0 ? "default" : "pointer",
+                    opacity: sessionLaps.length === 0 ? 0.45 : 1, transition: "all .15s ease",
+                  }}
+                >
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.blue, flex: "none" }} /> Save Session
+                </button>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Load a previously saved session of laps into this panel"
+                  style={{
+                    flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                    borderRadius: 8, border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
+                    fontFamily: FONT.ui, fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase", fontWeight: 700,
+                    cursor: "pointer", transition: "all .15s ease",
+                  }}
+                >
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.teal, flex: "none" }} /> Load Session
+                </button>
+              </div>
+            )}
             <button
               onClick={() => {
                 if (confirmReset) { onResetSessionLaps?.(); setConfirmReset(false); }

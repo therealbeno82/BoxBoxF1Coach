@@ -57,7 +57,7 @@ export default function CarSetupModal({ pb, onClose }) {
   }, [onClose]);
 
   if (!pb) return null;
-  const color = pb.color || C.blue;
+  const color = C.accent; // title bar + slider fills follow the active skin accent
   const sections = formatSetup(pb.setup);
 
   return (
@@ -132,7 +132,7 @@ export default function CarSetupModal({ pb, onClose }) {
           padding: "16px 24px", borderTop: `1px solid ${C.line}`, background: C.bg }}>
           <span style={{ fontSize: 12, color: C.textDim, fontFamily: FONT.mono }}>Loadout snapshot saved with this lap</span>
           <button onClick={onClose} style={{ padding: "11px 22px", borderRadius: 9, border: `1px solid ${C.blue}`,
-            background: C.blue, color: "#fff", fontSize: 12, fontWeight: 800, letterSpacing: .5, cursor: "pointer", fontFamily: FONT.ui }}>Close</button>
+            background: C.blue, color: C.onAccent, fontSize: 12, fontWeight: 800, letterSpacing: .5, cursor: "pointer", fontFamily: FONT.ui }}>Close</button>
         </div>
       </div>
     </div>

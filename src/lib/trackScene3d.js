@@ -1,26 +1,38 @@
 // ─── 3D TRACK SCENE (Compare → Driving Lines tab) ─────────────────────────────
-// A self-contained Three.js scene that renders two laps' captured racing lines as a
-// road ribbon with two 3D cars driving along them, viewed by a chase camera you can
-// orbit/zoom. Built imperatively (no react-three-fiber) so it owns its own render loop
-// and stays decoupled from React's 60 fps state churn: React only pushes the current
-// playback fraction via setPlayback(); this module's rAF does the drawing.
+// A self-contained Three.js scene that renders two laps' captured racing lines on a
+// real circuit model with two 3D cars driving along them, viewed by a chase camera
+// you can orbit/zoom. Built imperatively (no react-three-fiber) so it owns its own
+// render loop: React only pushes the playback fraction via setPlayback().
+//
+// The road comes from a track model (src/lib/trackGeometry.js): real centerline +
+// per-point track widths aligned into the game's world frame, or a curvature
+// heuristic road when no real data exists. The recorded lines are never modified —
+// they are painted onto the road exactly where the car drove, so apexes, track
+// limits and curb hops read honestly.
 //
 // createTrackScene(canvas, lines, opts) → controller
-//   lines: [{ id, color(hex int|css), pts:[{x,y?,z}], distAt:[0..1], timeAt:[0..1] }]
+//   lines: [{ id, color(hex int|css), pts:[{x,y?,z}], distAt:[0..1], timeAt:[0..1], paceAt? }]
+//   opts:  { camMode, track }  — track = model from trackGeometry.loadTrackModel()
 //   controller: { setPlayback(frac, axis), zoomBy(f), setCamMode(m), frame(),
 //                 resize(), dispose() }
 import * as THREE from "three";
+import { makeF1Car } from "./carModel3d.js";
+import { buildHeuristicTrack } from "./trackGeometry.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const CAM_MODES = ["chase", "broadcast", "top"];
 
-// Sample a car's world position + heading along a line at fraction `frac`, using the same
-// dist/time addressing curves the 2D timeline uses so the 3D cars stay in lock-step with
-// the scrubber. `axis` is "dist" (position-sync) or "time" (pace-sync). The path itself is
-// a Catmull-Rom spline (line.curve) rather than the raw chords, so motion and heading stay
-// smooth through corners instead of snapping segment-to-segment.
+// Sample a car's world position + heading along a line at fraction `frac`. `axis` is
+// "dist" (position-sync — raw track distance) or "time" (pace-sync — the line's pace
+// curve, i.e. its progress in the shared anchor-distance clock). The anchor car stays in
+// lock-step with the scrubber knob; the other car is offset along its own line by the pace
+// curve, so the time gap shows. The path is a Catmull-Rom spline (line.curve) rather than
+// the raw chords, so motion and heading stay smooth through corners.
 function sampleLine(line, frac, axis) {
-  const addr = axis === "time" ? line.timeAt : line.distAt;
+  // Pace-sync ("time") addresses the pace curve — the line's progress in the shared
+  // anchor-distance clock — so every car sits at one wall-clock instant. Position-sync
+  // ("dist") addresses raw track distance. Both are [0..1] arrays over the samples.
+  const addr = axis === "time" ? (line.paceAt || line.distAt) : line.distAt;
   const P = line.vpts; // THREE.Vector3[]
   const n = P.length;
   const f = Math.max(0, Math.min(1, frac));
@@ -43,107 +55,53 @@ function sampleLine(line, frac, axis) {
   return { pos, heading };
 }
 
-// World position of a built line (vpts + distAt) at lap-distance fraction `f`. Used to
-// average the drawn lines into a neutral road spine so neither car sits glued to the
-// road centreline. Mirrors sampleLine's distAt addressing but only needs a position.
-function linePosAtFrac(line, f) {
-  const addr = line.distAt, P = line.vpts, n = P.length;
-  let i = 1;
-  while (i < n && addr[i] < f) i++;
-  i = Math.min(i, n - 1);
-  const lo = addr[i - 1], hi = addr[i];
-  const t = Math.max(0, Math.min(1, hi > lo ? (f - lo) / (hi - lo) : 0));
-  return P[i - 1].clone().lerp(P[i], t);
-}
-
-// An open-wheel F1-style car from primitives, facing +Z (front is +Z). ~5.0 m long.
-function makeCar(color) {
-  const g = new THREE.Group();
-  const paint = new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.4 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x0c0f13, metalness: 0.2, roughness: 0.6 });
-  const helmetMat = new THREE.MeshStandardMaterial({ color: 0xe8edf5, metalness: 0.1, roughness: 0.35 });
-
-  // Slim central monocoque tub
-  const tub = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.42, 3.4), paint);
-  tub.position.y = 0.5;
-  g.add(tub);
-
-  // Tapered nose reaching forward to the front wing
-  const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.1, 1.5, 4), paint);
-  nose.rotation.x = Math.PI / 2;   // lay the pyramid along Z
-  nose.rotation.y = Math.PI / 4;   // square it up
-  nose.position.set(0, 0.42, 2.2);
-  g.add(nose);
-
-  // Engine cover / airbox tapering behind the cockpit
-  const airbox = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.4, 1.7, 4), paint);
-  airbox.rotation.x = -Math.PI / 2;
-  airbox.rotation.y = Math.PI / 4;
-  airbox.position.set(0, 0.78, -1.0);
-  g.add(airbox);
-
-  // Open cockpit: driver helmet poking up, plus a thin halo hoop
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 12), helmetMat);
-  helmet.position.set(0, 0.95, 0.15);
-  g.add(helmet);
-  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.04, 8, 16, Math.PI), dark);
-  halo.rotation.x = Math.PI / 2;
-  halo.position.set(0, 0.92, 0.35);
-  g.add(halo);
-
-  // Front wing: wide, low, near the nose tip
-  const frontWing = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.06, 0.55), dark);
-  frontWing.position.set(0, 0.16, 2.55);
-  g.add(frontWing);
-
-  // Rear wing: tall plane on a pylon at the back
-  const rearWing = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.4, 0.1), dark);
-  rearWing.position.set(0, 0.95, -2.0);
-  g.add(rearWing);
-  const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.3), dark);
-  pylon.position.set(0, 0.7, -1.9);
-  g.add(pylon);
-
-  // Exposed wheels sitting outside the narrow body
-  const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.42, 16);
-  for (const [wx, wz] of [[-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5]]) {
-    const w = new THREE.Mesh(wheelGeo, dark);
-    w.rotation.z = Math.PI / 2; // roll about X (axle along X)
-    w.position.set(wx, 0.38, wz);
-    g.add(w);
-  }
-  return g;
-}
-
-// Build a road ribbon (BufferGeometry) by sweeping a constant half-width along a spine
-// of Vector3 points, with a horizontal normal so the surface follows elevation.
-function buildRoadGeometry(spine, halfWidth) {
-  const N = spine.length;
+// Indexed quad-strip between two rails of Vector3s (same length). `closed` adds the
+// wrap-around quads. Optional `colors` = flat [r,g,b] per vertex (L then R per row).
+function ribbonGeometry(Ls, Rs, closed, colors = null) {
+  const N = Ls.length;
   const pos = new Float32Array(N * 2 * 3);
-  const n = new THREE.Vector3();
-  const t = new THREE.Vector3();
   for (let i = 0; i < N; i++) {
-    const prev = spine[Math.max(0, i - 1)];
-    const next = spine[Math.min(N - 1, i + 1)];
-    t.copy(next).sub(prev); t.y = 0; t.normalize();
-    n.crossVectors(UP, t).normalize(); // horizontal perpendicular
-    const p = spine[i];
-    const L = p.clone().addScaledVector(n, halfWidth);
-    const R = p.clone().addScaledVector(n, -halfWidth);
-    pos.set([L.x, L.y, L.z], i * 6);
-    pos.set([R.x, R.y, R.z], i * 6 + 3);
+    pos.set([Ls[i].x, Ls[i].y, Ls[i].z], i * 6);
+    pos.set([Rs[i].x, Rs[i].y, Rs[i].z], i * 6 + 3);
   }
   const idx = [];
-  for (let i = 0; i < N - 1; i++) {
-    const a = i * 2, b = i * 2 + 1, c = i * 2 + 2, d = i * 2 + 3;
+  const segs = closed ? N : N - 1;
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % N;
+    const a = i * 2, b = i * 2 + 1, c = j * 2, d = j * 2 + 1;
     idx.push(a, b, c, b, d, c);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  if (colors) geo.setAttribute("color", new THREE.BufferAttribute(Float32Array.from(colors), 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
   return geo;
 }
+
+// Sweep a constant half-width horizontal ribbon along a list of Vector3 points (open
+// strip) — used for the painted racing lines.
+function sweepRibbon(points, halfWidth) {
+  const N = points.length;
+  const Ls = new Array(N), Rs = new Array(N);
+  const t = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < N; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(N - 1, i + 1)];
+    t.copy(next).sub(prev); t.y = 0;
+    if (t.lengthSq() < 1e-10) t.set(0, 0, 1); else t.normalize();
+    n.crossVectors(UP, t);
+    Ls[i] = points[i].clone().addScaledVector(n, halfWidth);
+    Rs[i] = points[i].clone().addScaledVector(n, -halfWidth);
+  }
+  return ribbonGeometry(Ls, Rs, false);
+}
+
+// Deterministic per-index pseudo-noise in [0,1) for asphalt vertex shading.
+const noise = (i) => {
+  const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
 
 export function createTrackScene(canvas, lines, opts = {}) {
   const CLEAR = 0x141a26;
@@ -152,7 +110,7 @@ export function createTrackScene(canvas, lines, opts = {}) {
   renderer.setClearColor(CLEAR, 1);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(CLEAR, 120, 900);
+  scene.fog = new THREE.Fog(CLEAR, 150, 1100);
 
   const camera = new THREE.PerspectiveCamera(52, 1, 0.5, 20000);
 
@@ -177,43 +135,189 @@ export function createTrackScene(canvas, lines, opts = {}) {
   const disposables = [];
   const track = (obj) => { disposables.push(obj); return obj; };
 
-  // ── Road surface from a NEUTRAL spine ──────────────────────────────────────
-  // With one line, the road IS that line. With two, building the road from either
-  // racing line would pin that line's car to the road centreline (it looked like
-  // the car "stayed in the middle" and ignored track data) — and which line won was
-  // just whichever had more samples. Instead sweep the per-fraction MIDLINE of all
-  // drawn lines, so every car visibly weaves off-centre on its own line.
-  const spineVpts = built.length < 2
-    ? built[0].vpts
-    : (() => {
-        const M = 240;
-        const out = [];
-        for (let k = 0; k <= M; k++) {
-          const f = k / M;
-          const v = new THREE.Vector3();
-          for (const l of built) v.add(linePosAtFrac(l, f));
-          out.push(v.multiplyScalar(1 / built.length));
-        }
-        return out;
-      })();
-  const roadGeo = track(buildRoadGeometry(spineVpts, 8));
-  const roadMat = track(new THREE.MeshStandardMaterial({
-    color: 0x2b313d, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide,
+  // ── Track model: real circuit (aligned) or heuristic road around the lines ────
+  const model = opts.track || buildHeuristicTrack(lines);
+  const closed = !!model?.closed;
+  // Centered rows + per-row travel tangent/left-normal and edge rails.
+  const rows = (model?.centerline || []).map(r => ({
+    x: r.x - c.x, y: hasY ? r.y - c.y : 0, z: r.z - c.z, wl: r.wl, wr: r.wr, k: r.k || 0,
   }));
-  const road = new THREE.Mesh(roadGeo, roadMat);
-  road.position.y = -0.05;
-  scene.add(road);
+  const nR = rows.length;
+  const rowN = new Array(nR);   // left-of-travel horizontal normal
+  const atOffset = (i, off, lift = 0) => // point `off` meters left (+) / right (−) of row i
+    new THREE.Vector3(rows[i].x + rowN[i].x * off, rows[i].y + lift, rows[i].z + rowN[i].z * off);
+  for (let i = 0; i < nR; i++) {
+    const a = rows[closed ? (i - 1 + nR) % nR : Math.max(0, i - 1)];
+    const b = rows[closed ? (i + 1) % nR : Math.min(nR - 1, i + 1)];
+    let tx = b.x - a.x, tz = b.z - a.z;
+    const tl = Math.hypot(tx, tz) || 1;
+    // n = cross(UP, t) → (tz, −tx): the left-hand side of the direction of travel.
+    rowN[i] = { x: tz / tl, z: -tx / tl };
+  }
+
+  // Road-surface height at a centered x/z (elevAt works in world coords).
+  const surfY = model?.elevAt
+    ? (x, z) => model.elevAt(x + c.x, z + c.z) - (hasY ? c.y : 0)
+    : () => 0;
+  // Cars and painted lines ride ON the road, but keep any recorded height ABOVE it
+  // (curb hops, bumps) — clamp only below-surface error from the drape smoothing.
+  const onSurface = (x, rawY, z, lift) => {
+    const road = surfY(x, z);
+    return road + Math.min(Math.max(rawY - road, 0), 1.5) + lift;
+  };
+
+  if (nR > 2) {
+    // ── Asphalt, with subtle per-vertex tone noise (no textures → CSP-safe) ──
+    const Ls = [], Rs = [], roadCols = [];
+    for (let i = 0; i < nR; i++) {
+      Ls.push(atOffset(i, rows[i].wl));
+      Rs.push(atOffset(i, -rows[i].wr));
+    }
+    for (let i = 0; i < nR; i++) {
+      const a = 0.9 + 0.1 * noise(i * 2), b = 0.9 + 0.1 * noise(i * 2 + 1);
+      roadCols.push(a, a, a, b, b, b);
+    }
+    const roadGeo = track(ribbonGeometry(Ls, Rs, closed, roadCols));
+    const roadMat = track(new THREE.MeshStandardMaterial({
+      color: 0x2d333f, roughness: 0.95, metalness: 0, vertexColors: true, side: THREE.DoubleSide,
+    }));
+    scene.add(new THREE.Mesh(roadGeo, roadMat));
+
+    // ── Grass/runoff verges out from each edge ──
+    const vergeMat = track(new THREE.MeshStandardMaterial({
+      color: 0x15211b, roughness: 1, metalness: 0, side: THREE.DoubleSide,
+    }));
+    const LsV = rows.map((r, i) => atOffset(i, r.wl + 20, -0.04));
+    const RsV = rows.map((r, i) => atOffset(i, -(r.wr + 20), -0.04));
+    scene.add(new THREE.Mesh(track(ribbonGeometry(Ls.map(v => v.clone().setY(v.y - 0.04)), LsV, closed)), vergeMat));
+    scene.add(new THREE.Mesh(track(ribbonGeometry(RsV, Rs.map(v => v.clone().setY(v.y - 0.04)), closed)), vergeMat));
+
+    // ── White track-limit lines just inside each edge ──
+    const edgeMat = track(new THREE.MeshBasicMaterial({
+      color: 0xd8dde8, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    }));
+    const edgeRail = (side) => { // side +1 = left, −1 = right
+      const A = rows.map((r, i) => atOffset(i, side * ((side > 0 ? r.wl : r.wr) - 0.2), 0.02));
+      const B = rows.map((r, i) => atOffset(i, side * ((side > 0 ? r.wl : r.wr) - 0.45), 0.02));
+      return track(ribbonGeometry(A, B, closed));
+    };
+    scene.add(new THREE.Mesh(edgeRail(1), edgeMat));
+    scene.add(new THREE.Mesh(edgeRail(-1), edgeMat));
+
+    // ── Curbs: red/white ribbons on corner edges (from centerline curvature) ──
+    // A run of sustained curvature gets an apex curb on the inside edge for its whole
+    // length and an exit curb on the outside edge over its second half. With the
+    // n = cross(UP, t) convention, positive k puts the corner's inside on the RIGHT.
+    const K_MIN = 1 / 120, MIN_RUN = 8, PAD = 4;
+    const runs = [];
+    let runStart = -1;
+    for (let i = 0; i < nR + 1; i++) {
+      const inCorner = i < nR && Math.abs(rows[i].k) > K_MIN;
+      if (inCorner && runStart < 0) runStart = i;
+      if (!inCorner && runStart >= 0) {
+        if (i - runStart >= MIN_RUN) runs.push([runStart, i - 1]);
+        runStart = -1;
+      }
+    }
+    const curbPos = [], curbCol = [], curbIdx = [];
+    const RED = [0.78, 0.16, 0.12], WHITE = [0.92, 0.92, 0.92];
+    const addCurb = (i0, i1, side) => { // side +1 = left edge, −1 = right edge
+      const start = curbPos.length / 3;
+      let arc = 0, prev = null, stripe = 0;
+      for (let i = i0; i <= i1; i++) {
+        const j = closed ? (i + nR) % nR : Math.min(Math.max(i, 0), nR - 1);
+        const w = side > 0 ? rows[j].wl : rows[j].wr;
+        const inner = atOffset(j, side * (w - 0.1), 0.015);
+        const outer = atOffset(j, side * (w + 1.5), 0.09); // raised outer lip
+        if (prev) arc += Math.hypot(inner.x - prev.x, inner.z - prev.z);
+        prev = inner;
+        stripe = Math.floor(arc / 4) % 2; // alternate every ~4 m along the curb
+        const col = stripe ? WHITE : RED;
+        curbPos.push(inner.x, inner.y, inner.z, outer.x, outer.y, outer.z);
+        curbCol.push(...col, ...col);
+      }
+      const rowsAdded = i1 - i0 + 1;
+      for (let r = 0; r < rowsAdded - 1; r++) {
+        const a = start + r * 2, b = a + 1, d = a + 2, e = a + 3;
+        curbIdx.push(a, b, d, b, e, d);
+      }
+    };
+    for (const [i0, i1] of runs) {
+      const kMean = rows.slice(i0, i1 + 1).reduce((s, r) => s + r.k, 0) / (i1 - i0 + 1);
+      const inside = kMean > 0 ? -1 : 1;
+      addCurb(i0 - PAD, i1 + PAD, inside);                                  // apex curb
+      addCurb(Math.round((i0 + i1) / 2), i1 + PAD * 2, -inside);            // exit curb
+    }
+    if (curbIdx.length) {
+      const curbGeo = track(new THREE.BufferGeometry());
+      curbGeo.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(curbPos), 3));
+      curbGeo.setAttribute("color", new THREE.BufferAttribute(Float32Array.from(curbCol), 3));
+      curbGeo.setIndex(curbIdx);
+      curbGeo.computeVertexNormals();
+      const curbMat = track(new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.8, metalness: 0, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      }));
+      scene.add(new THREE.Mesh(curbGeo, curbMat));
+    }
+
+    // ── Start/finish: checkered strip across the road + a simple gantry ──
+    const si = Math.min(Math.max(model.startIndex || 0, 0), nR - 1);
+    const sj = closed ? (si + 2) % nR : Math.min(si + 2, nR - 1);
+    const COLS = 10;
+    const sfPos = [], sfCol = [], sfIdx = [];
+    for (const [ri, i] of [[0, si], [1, sj]]) {
+      for (let cIdx = 0; cIdx <= COLS; cIdx++) {
+        const u = cIdx / COLS;
+        const off = rows[i].wl - u * (rows[i].wl + rows[i].wr);
+        const p = atOffset(i, off, 0.03);
+        sfPos.push(p.x, p.y, p.z);
+        const dark = (cIdx + ri) % 2 ? 0.08 : 0.95;
+        sfCol.push(dark, dark, dark);
+      }
+    }
+    for (let cIdx = 0; cIdx < COLS; cIdx++) {
+      const a = cIdx, b = cIdx + 1, d = COLS + 1 + cIdx, e = COLS + 1 + cIdx + 1;
+      sfIdx.push(a, b, d, b, e, d);
+    }
+    const sfGeo = track(new THREE.BufferGeometry());
+    sfGeo.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(sfPos), 3));
+    sfGeo.setAttribute("color", new THREE.BufferAttribute(Float32Array.from(sfCol), 3));
+    sfGeo.setIndex(sfIdx);
+    sfGeo.computeVertexNormals();
+    const sfMat = track(new THREE.MeshBasicMaterial({
+      vertexColors: true, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
+    scene.add(new THREE.Mesh(sfGeo, sfMat));
+    // Gantry: two posts + beam over the line.
+    const gantryMat = track(new THREE.MeshStandardMaterial({ color: 0x10141b, roughness: 0.7 }));
+    const postGeo = track(new THREE.BoxGeometry(0.25, 5, 0.25));
+    const pL = atOffset(si, rows[si].wl + 1.2), pR = atOffset(si, -(rows[si].wr + 1.2));
+    for (const p of [pL, pR]) {
+      const post = new THREE.Mesh(postGeo, gantryMat);
+      post.position.set(p.x, p.y + 2.5, p.z);
+      scene.add(post);
+    }
+    const beamLen = pL.distanceTo(pR);
+    const beam = new THREE.Mesh(track(new THREE.BoxGeometry(0.35, 0.6, 0.35)), gantryMat);
+    beam.scale.z = beamLen / 0.35;
+    beam.position.set((pL.x + pR.x) / 2, (pL.y + pR.y) / 2 + 4.8, (pL.z + pR.z) / 2);
+    beam.lookAt(pR.x, beam.position.y, pR.z);
+    scene.add(beam);
+  }
 
   // ── A large dark ground plane under the lowest point for depth ──
-  const minY = Math.min(...built.flatMap(l => l.vpts.map(v => v.y)));
-  const groundGeo = track(new THREE.PlaneGeometry(6000, 6000));
+  const minY = Math.min(0, ...built.flatMap(l => l.vpts.map(v => v.y)), ...rows.map(r => r.y));
+  const groundGeo = track(new THREE.PlaneGeometry(8000, 8000));
   const groundMat = track(new THREE.MeshStandardMaterial({ color: 0x0e131c, roughness: 1 }));
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = minY - 6;
   scene.add(ground);
 
-  // ── Flat 2D racing lines (thin ribbons painted on the track) + cars ──
+  // ── Racing lines painted on the road surface + the cars ──
   const cars = [];
   for (const l of built) {
     const col = new THREE.Color(l.color);
@@ -221,19 +325,18 @@ export function createTrackScene(canvas, lines, opts = {}) {
     // it, so corners stay clean and the car never drifts off its own line. Centripetal
     // parameterization avoids overshoot/cusps when sample spacing is uneven.
     l.curve = new THREE.CatmullRomCurve3(l.vpts, false, "centripetal");
-    // A thin horizontal ribbon hugging the surface, swept along densely-sampled spline
-    // points — reads as a flat painted line, not a 3D tube. Half-width 0.1 → ~0.2 m wide.
+    // A thin ribbon hugging the road surface (curb hops included), swept along
+    // densely-sampled spline points — reads as a painted line, not a 3D tube.
     const smooth = l.curve.getPoints(Math.min(2000, Math.max(l.vpts.length * 4, 64)));
-    const lineGeo = track(buildRoadGeometry(smooth, 0.1));
+    for (const p of smooth) p.y = onSurface(p.x, p.y, p.z, 0.05);
+    const lineGeo = track(sweepRibbon(smooth, 0.12));
     const lineMat = track(new THREE.MeshBasicMaterial({
       color: col, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     }));
-    const lineMesh = new THREE.Mesh(lineGeo, lineMat);
-    lineMesh.position.y = 0.03; // lift just above the road to avoid z-fighting
-    scene.add(lineMesh);
+    scene.add(new THREE.Mesh(lineGeo, lineMat));
 
-    const car = makeCar(l.color);
+    const car = makeF1Car(l.color);
     scene.add(car);
     cars.push({ line: l, car });
   }
@@ -272,6 +375,7 @@ export function createTrackScene(canvas, lines, opts = {}) {
     let lead = null;
     for (const c2 of cars) {
       const s = sampleLine(c2.line, playFrac, playAxis);
+      s.pos.y = onSurface(s.pos.x, s.pos.y, s.pos.z, 0);
       c2.car.position.copy(s.pos);
       c2.car.rotation.y = s.heading;
       if (c2.line.id === "comp" || !lead) lead = s; // chase the comparison car

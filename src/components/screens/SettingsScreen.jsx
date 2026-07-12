@@ -1,59 +1,37 @@
 // ─── SETTINGS SCREEN ────────────────────────────────────────────────────────
 // System configuration: AI provider/model, the telemetry-bridge WebSocket, the
-// trace configurator + calibrator, general preferences (speed units + cue/insight
-// toggles), the coach voice (engine + voice + rate), and the driver roster sign-up.
-// Replaces the legacy SetupPanel; the light/dark + team-skin appearance picker is
-// retired with the dark-only redesign.
+// trace configurator + calibrator, general preferences (speed units), the coach
+// voice (engine + voice + rate), the Appearance · Team Skin picker, and the driver
+// roster sign-up. Replaces the legacy SetupPanel.
 
 import { useEffect, useRef, useState } from "react";
 import { C, FONT, LIVERY_COLORS, eyebrow } from "../../lib/ui/tokens.js";
+import { SKINS } from "../../lib/ui/skins.js";
 import { KOKORO_VOICES, DEFAULT_KOKORO_VOICE } from "../../lib/kokoroTTS.js";
 import { listOpenRouterModels } from "../../lib/coach/provider.js";
 import { DEFAULT_OPENROUTER_MODEL } from "../../lib/coach/config.js";
 import { fileToAvatarDataUrl } from "../../lib/avatarImage.js";
-
-// In the packaged Tauri app the telemetry bridge is bundled and started
-// automatically (see src-tauri/src/lib.rs). In plain browser dev it still has to
-// be launched by hand with `npm run bridge`, so the hint copy adapts to context.
-const isTauri = typeof window !== "undefined" && !!window.__TAURI_INTERNALS__;
+import { parseProfileFile } from "../../lib/profileBackup.js";
+// The telemetry core is built into the native app (see src-tauri) and is always
+// running; there's nothing to launch. In plain browser dev there is no native
+// core at all, so the hint copy adapts to context (inTauri).
+import { inTauri } from "../../lib/env.js";
+import { invoke } from "@tauri-apps/api/core";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 13 };
 const label = { fontSize: 10, letterSpacing: 1.5, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 };
 const input = { background: C.inset, border: `1px solid ${C.borderInput}`, borderRadius: 8, padding: "11px 13px", color: C.textBody, fontSize: 13, fontFamily: FONT.mono, letterSpacing: 1, outline: "none", width: "100%" };
 
-function Switch({ on, onClick }) {
-  return (
-    <span onClick={onClick} style={{ width: 34, height: 19, flex: "none", borderRadius: 11, background: on ? C.blue : C.borderInput, position: "relative", transition: "background .15s", display: "inline-block", cursor: "pointer" }}>
-      <span style={{ position: "absolute", top: 2, left: on ? 17 : 2, width: 15, height: 15, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
-    </span>
-  );
-}
-
-function ProviderCard({ active, dot, name, model, onClick }) {
-  return (
-    <button onClick={onClick} style={{ display: "flex", flexDirection: "column", gap: 7, alignItems: "flex-start", textAlign: "left",
-      padding: "12px 13px", borderRadius: 10, cursor: "pointer", fontFamily: FONT.ui,
-      background: active ? C.elevated : C.inset, border: `1px solid ${active ? C.blue : C.borderInput}`,
-      boxShadow: active ? `0 0 0 1px ${C.blue} inset` : "none" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        <span style={{ width: 9, height: 9, borderRadius: "50%", background: dot }} />
-        <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: .3 }}>{name}</span>
-      </div>
-      <span style={{ fontSize: 10, color: C.textDim, fontFamily: FONT.mono }}>{model}</span>
-    </button>
-  );
-}
-
 export default function SettingsScreen({
-  provider, setProvider, ollamaUrl, setOllamaUrl, model, setModel,
   openRouterKey, setOpenRouterKey, openRouterModel, setOpenRouterModel,
-  ollamaStatus, onTestOllama, ollamaModels = [], onLoadOllamaModels,
-  wsUrl, setWsUrl, wsConnected, onWsConnect, onWsDisconnect,
+  wsConnected,
   udpPort, setUdpPort,
-  repeatEnabled, setRepeatEnabled, repeatPort, setRepeatPort,
-  units, setUnits, audioOn, setAudioOn, autoInsights, setAutoInsights,
+  units, setUnits,
+  tempUnits, setTempUnits,
+  activeSkin, setActiveSkin,
   voicePrefs, setVoicePrefs, kokoro, onTestVoice,
-  drivers = [], activeDriver, onSignDriver, avatars = {}, onDeleteDriver,
+  drivers = [], activeDriver, onSignDriver, avatars = {}, onDeleteDriver, onEditDriver,
+  onExportProfile, onImportProfile,
   onOpenTrace, onOpenCalibrator,
 }) {
   const engine = voicePrefs.engine || "browser";
@@ -72,24 +50,33 @@ export default function SettingsScreen({
   };
   const portValid = (() => { const n = parseInt(portDraft, 10); return n >= 1 && n <= 65535; })();
 
-  // Same draft-commit pattern for the repeater's target port (where the raw stream
-  // is re-broadcast for a second app to read).
-  const [repeatPortDraft, setRepeatPortDraft] = useState(String(repeatPort));
-  useEffect(() => { setRepeatPortDraft(String(repeatPort)); }, [repeatPort]);
-  const commitRepeatPort = () => {
-    const n = parseInt(repeatPortDraft, 10);
-    if (n >= 1 && n <= 65535) setRepeatPort(n);
-    else setRepeatPortDraft(String(repeatPort));
+  // This device's LAN addresses — what a console player enters in the game's
+  // telemetry target-IP field when running the app on a second device. Fetched
+  // from the native core (browser JS can't read the real interface IP); empty in
+  // plain-browser dev. `copiedIp` flashes a confirmation on the copied address.
+  const [localIps, setLocalIps] = useState([]);
+  const [copiedIp, setCopiedIp] = useState("");
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke("get_local_ips").then(setLocalIps).catch(() => setLocalIps([]));
+  }, []);
+  const copyIp = async (ip) => {
+    try { await navigator.clipboard.writeText(ip); setCopiedIp(ip); setTimeout(() => setCopiedIp(""), 1500); }
+    catch { /* clipboard blocked — the address is still shown to type manually */ }
   };
-  const repeatPortValid = (() => { const n = parseInt(repeatPortDraft, 10); return n >= 1 && n <= 65535; })();
 
-  // Sign-up form
+  // Sign-up / edit form. `editingName` holds the original name of the driver being
+  // edited (null when the form is signing a brand-new driver); `avatarTouched`
+  // tracks whether the photo was changed so an untouched edit leaves it as-is.
   const [sName, setSName] = useState("");
   const [sNumber, setSNumber] = useState("");
   const [sTeam, setSTeam] = useState("");
   const [sColor, setSColor] = useState(LIVERY_COLORS[0]);
   const [sAvatar, setSAvatar] = useState(null);   // downscaled data URL, or null
   const [avatarErr, setAvatarErr] = useState("");
+  const [editingName, setEditingName] = useState(null);
+  const [avatarTouched, setAvatarTouched] = useState(false);
+  const [formErr, setFormErr] = useState("");
   const fileRef = useRef(null);
 
   const pickAvatar = async (e) => {
@@ -97,8 +84,76 @@ export default function SettingsScreen({
     e.target.value = ""; // allow re-picking the same file
     if (!file) return;
     setAvatarErr("");
-    try { setSAvatar(await fileToAvatarDataUrl(file)); }
+    try { setSAvatar(await fileToAvatarDataUrl(file)); setAvatarTouched(true); }
     catch (err) { setAvatarErr(err.message || "Couldn't use that image."); }
+  };
+
+  const resetForm = () => {
+    setSName(""); setSNumber(""); setSTeam(""); setSColor(LIVERY_COLORS[0]);
+    setSAvatar(null); setAvatarErr(""); setEditingName(null); setAvatarTouched(false); setFormErr("");
+  };
+
+  // Load a roster driver into the form to edit it (its current photo included).
+  const startEdit = (d) => {
+    setSName(d.name); setSNumber(d.number || ""); setSTeam(d.team || "");
+    setSColor(d.color || LIVERY_COLORS[0]); setSAvatar(avatars[d.name] || null);
+    setAvatarErr(""); setFormErr(""); setAvatarTouched(false); setEditingName(d.name);
+  };
+
+  // ─── Profile backup / import ────────────────────────────────────────────────
+  // Export the active driver's whole profile to a file; import one back. On a name
+  // collision the user chooses copy-vs-overwrite (pendingImport holds the parsed
+  // payload until they decide). backupMsg reports the outcome; backupBusy disables
+  // the buttons while a read/write is in flight.
+  const profileFileRef = useRef(null);
+  const [backupMsg, setBackupMsg] = useState(null);       // { kind:"ok"|"err", text }
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [pendingImport, setPendingImport] = useState(null); // { payload, name }
+
+  const lapWord = (n) => `${n} lap${n === 1 ? "" : "s"}`;
+
+  const exportActiveProfile = async () => {
+    if (!onExportProfile) return;
+    setBackupBusy(true); setBackupMsg(null); setPendingImport(null);
+    try {
+      const c = await onExportProfile();
+      const maps = c?.trackMaps ? `, ${c.trackMaps} track map${c.trackMaps === 1 ? "" : "s"}` : "";
+      setBackupMsg({ kind: "ok", text: `Exported ${activeDriver} — ${lapWord(c?.laps || 0)}${maps}.` });
+    } catch (e) { setBackupMsg({ kind: "err", text: e.message || "Export failed." }); }
+    finally { setBackupBusy(false); }
+  };
+
+  // A non-colliding "<name> (imported)" variant for the copy option.
+  const uniqueCopyName = (base) => {
+    const names = new Set(drivers.map(d => d.name));
+    if (!names.has(`${base} (imported)`)) return `${base} (imported)`;
+    let i = 2;
+    while (names.has(`${base} (imported ${i})`)) i++;
+    return `${base} (imported ${i})`;
+  };
+
+  const pickProfileFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    setBackupMsg(null); setPendingImport(null);
+    try {
+      const payload = parseProfileFile(await file.text());
+      const incoming = payload.driver.name;
+      if (drivers.some(d => d.name === incoming)) setPendingImport({ payload, name: incoming });
+      else await runImport(payload, { name: incoming, overwrite: false });
+    } catch (err) { setBackupMsg({ kind: "err", text: err.message || "Couldn't read that file." }); }
+  };
+
+  const runImport = async (payload, opts) => {
+    if (!onImportProfile) return;
+    setBackupBusy(true); setBackupMsg(null); setPendingImport(null);
+    try {
+      const entry = await onImportProfile(payload, opts);
+      const c = entry?.counts || {};
+      setBackupMsg({ kind: "ok", text: `Imported ${opts.name} — ${lapWord(c.laps || 0)}${opts.overwrite ? " (overwrote existing)" : ""}.` });
+    } catch (err) { setBackupMsg({ kind: "err", text: err.message || "Import failed." }); }
+    finally { setBackupBusy(false); }
   };
 
   useEffect(() => {
@@ -110,13 +165,6 @@ export default function SettingsScreen({
     window.speechSynthesis.onvoiceschanged = load;
   }, []);
 
-  // Populate the model picker from Ollama's installed models whenever the Ollama
-  // provider is active or its URL changes — so the dropdown is ready without the
-  // user having to click Test first.
-  useEffect(() => {
-    if (provider === "ollama") onLoadOllamaModels?.();
-  }, [provider, ollamaUrl, onLoadOllamaModels]);
-
   const loadOrModels = async () => {
     setOrStatus("loading");
     try {
@@ -125,13 +173,21 @@ export default function SettingsScreen({
     } catch { setOrStatus("error"); }
   };
 
-  const signUp = () => {
-    onSignDriver({ name: sName, number: sNumber, team: sTeam, color: sColor, avatar: sAvatar });
-    setSName(""); setSNumber(""); setSTeam(""); setSColor(LIVERY_COLORS[0]);
-    setSAvatar(null); setAvatarErr("");
+  const submit = async () => {
+    if (!sName.trim()) return;
+    const base = { name: sName, number: sNumber, team: sTeam, color: sColor };
+    if (editingName) {
+      // Untouched photo → send undefined so a rename keeps it; otherwise the
+      // current form photo (a data URL or null for "removed").
+      const ok = await onEditDriver(editingName, { ...base, avatar: avatarTouched ? sAvatar : undefined });
+      if (!ok) { setFormErr("That name is already on the roster."); return; }
+    } else {
+      onSignDriver({ ...base, avatar: sAvatar });
+    }
+    resetForm();
   };
 
-  const bridgeColor = wsConnected ? C.green : C.red;
+  const coreColor = wsConnected ? C.green : C.red;
 
   return (
     <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px 28px 22px",
@@ -148,8 +204,8 @@ export default function SettingsScreen({
         </div>
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 7, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 13px" }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: bridgeColor, boxShadow: `0 0 8px ${bridgeColor}` }} />
-          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#fff" }}>{wsConnected ? "BRIDGE LINKED" : "BRIDGE OFFLINE"}</span>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: coreColor, boxShadow: `0 0 8px ${coreColor}` }} />
+          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#fff" }}>{wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY"}</span>
         </div>
       </div>
 
@@ -159,143 +215,86 @@ export default function SettingsScreen({
         {/* LEFT */}
         <div style={{ flex: "1 1 420px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* AI Model Connections */}
+          {/* AI Model Connection · OpenRouter */}
           <div style={card}>
-            <span style={eyebrow}>AI Model Connections</span>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
-              <ProviderCard active={provider === "ollama"} dot={C.purple} name="Ollama" model={model || "llama3.2:3b"} onClick={() => setProvider("ollama")} />
-              <ProviderCard active={provider === "openrouter"} dot={C.cyan} name="OpenRouter" model={openRouterModel || DEFAULT_OPENROUTER_MODEL} onClick={() => setProvider("openrouter")} />
+            <span style={eyebrow}>AI Model Connection · OpenRouter</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <label style={label}>API Key</label>
+              <input type="password" value={openRouterKey} onChange={e => setOpenRouterKey(e.target.value)} placeholder="sk-or-…" autoComplete="off" style={input} />
+              <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.6 }}>
+                Stored locally on this PC in cleartext (browser storage) so you don't re-enter it each launch —
+                it never leaves your machine except in requests to OpenRouter. Use a key scoped to this app and revoke it if the machine is shared.
+              </div>
             </div>
-
-            {provider === "ollama" ? (
-              <>
-                <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12 }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                    <label style={label}>Ollama URL</label>
-                    <input value={ollamaUrl} onChange={e => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" style={input} />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                    <label style={label}>Model</label>
-                    <select value={model} onChange={e => setModel(e.target.value)} style={{ ...input, fontFamily: FONT.mono, cursor: "pointer" }}>
-                      {/* Keep a not-installed model visible+selected so the mismatch is obvious. */}
-                      {model && !ollamaModels.includes(model) && <option value={model}>{model} — not installed</option>}
-                      {ollamaModels.length === 0 && !model && <option value="">No models found</option>}
-                      {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <button onClick={onTestOllama} style={testBtn}>Test connection</button>
-                  <span style={{ fontSize: 11, fontFamily: FONT.mono, color: ollamaStatus === "ok" ? C.green : ollamaStatus === "nomodel" ? C.amber || "#d9a441" : ollamaStatus === "error" ? C.red : C.textDim }}>
-                    {ollamaStatus === "ok" ? "✓ Connected" : ollamaStatus === "nomodel" ? "✗ Server up — model not installed" : ollamaStatus === "error" ? "✗ Not reachable" : ollamaStatus === "testing" ? "Testing…" : "Untested"}
-                  </span>
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  <label style={label}>API Key</label>
-                  <input type="password" value={openRouterKey} onChange={e => setOpenRouterKey(e.target.value)} placeholder="sk-or-…" autoComplete="off" style={input} />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  <label style={label}>Model</label>
-                  <input value={openRouterModel} onChange={e => setOpenRouterModel(e.target.value)} list="or-models" placeholder={DEFAULT_OPENROUTER_MODEL} style={input} />
-                  <datalist id="or-models">{orModels.map(m => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}</datalist>
-                </div>
-                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <button onClick={loadOrModels} style={testBtn}>Load models</button>
-                  <span style={{ fontSize: 11, fontFamily: FONT.mono, color: orStatus === "ok" ? C.green : orStatus === "error" ? C.red : C.textDim }}>
-                    {orStatus === "ok" ? `✓ ${orModels.length} models` : orStatus === "error" ? "✗ Couldn't load" : orStatus === "loading" ? "Loading…" : "Not loaded"}
-                  </span>
-                </div>
-              </>
-            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <label style={label}>Model</label>
+              <input value={openRouterModel} onChange={e => setOpenRouterModel(e.target.value)} list="or-models" placeholder={DEFAULT_OPENROUTER_MODEL} style={input} />
+              <datalist id="or-models">{orModels.map(m => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}</datalist>
+            </div>
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <button onClick={loadOrModels} style={testBtn}>Load models</button>
+              <span style={{ fontSize: 11, fontFamily: FONT.mono, color: orStatus === "ok" ? C.green : orStatus === "error" ? C.red : C.textDim }}>
+                {orStatus === "ok" ? `✓ ${orModels.length} models` : orStatus === "error" ? "✗ Couldn't load" : orStatus === "loading" ? "Loading…" : "Not loaded"}
+              </span>
+            </div>
           </div>
 
-          {/* Telemetry Bridge */}
+          {/* Telemetry (native in-process core) */}
           <div style={card}>
-            <span style={eyebrow}>Telemetry Bridge · UDP</span>
-            <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 12 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                <label style={label}>Bridge WebSocket</label>
-                <input value={wsUrl} onChange={e => setWsUrl(e.target.value)} placeholder="ws://localhost:9001" style={{ ...input, color: C.cyan }} />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                <label style={label}>UDP Port</label>
-                <input
-                  type="number" min="1" max="65535" inputMode="numeric"
-                  value={portDraft}
-                  onChange={e => setPortDraft(e.target.value)}
-                  onBlur={commitPort}
-                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                  placeholder="20777"
-                  style={{ ...input, color: portValid ? C.cyan : C.red }}
-                />
-              </div>
+            <span style={eyebrow}>Telemetry · UDP</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7, maxWidth: 220 }}>
+              <label style={label}>UDP Port</label>
+              <input
+                type="number" min="1" max="65535" inputMode="numeric"
+                value={portDraft}
+                onChange={e => setPortDraft(e.target.value)}
+                onBlur={commitPort}
+                onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                placeholder="20777"
+                style={{ ...input, color: portValid ? C.cyan : C.red }}
+              />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.inset, border: `1px solid ${wsConnected ? "#1d3a2a" : "#3a1d23"}`, borderRadius: 9, padding: "12px 14px" }}>
-              <span style={{ width: 10, height: 10, borderRadius: "50%", background: bridgeColor, boxShadow: `0 0 8px ${bridgeColor}`, flex: "none" }} />
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: coreColor, boxShadow: `0 0 8px ${coreColor}`, flex: "none" }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: .5, color: "#fff" }}>{wsConnected ? "BRIDGE LINKED" : "BRIDGE OFFLINE"}</div>
-                <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>{wsConnected ? "Receiving live telemetry" : isTauri ? "Bridge runs automatically — click Connect" : "Run the bridge, then connect"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: .5, color: "#fff" }}>{wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY"}</div>
+                <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>{wsConnected ? `Receiving on UDP ${udpPort}` : inTauri ? "Waiting for the game's UDP stream" : "Telemetry needs the native app (tauri dev)"}</div>
               </div>
-              {!wsConnected
-                ? <button onClick={onWsConnect} style={{ ...testBtn, border: `1px solid ${C.blue}`, background: "#16243f" }}>Connect</button>
-                : <button onClick={onWsDisconnect} style={testBtn}>Disconnect</button>}
             </div>
+            {/* Console / second-device setup — the game sends telemetry to THIS
+                device's LAN IP, so surface the address(es) to enter in-game. */}
+            {inTauri && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <label style={label}>This Device's Address · for consoles</label>
+                {localIps.length ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {localIps.map(({ name, ip }) => (
+                      <button key={ip} onClick={() => copyIp(ip)} title={`Copy ${ip}`} style={{
+                        display: "flex", alignItems: "center", gap: 10, textAlign: "left", width: "100%",
+                        background: C.inset, border: `1px solid ${copiedIp === ip ? C.green : C.borderInput}`,
+                        borderRadius: 8, padding: "9px 12px", cursor: "pointer", fontFamily: FONT.mono }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: C.cyan, letterSpacing: 1 }}>{ip}</span>
+                        <span style={{ fontSize: 10, color: C.textDim, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: FONT.ui }}>{name}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: copiedIp === ip ? C.green : C.textDim, flex: "none", fontFamily: FONT.ui }}>{copiedIp === ip ? "✓ COPIED" : "COPY"}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>No network address found — connect this device to your network.</div>
+                )}
+              </div>
+            )}
             <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
-              The bridge reads the game's UDP telemetry (port {udpPort}) and forwards it over WebSocket.{" "}
-              {isTauri
-                ? <>It’s bundled with the app and starts automatically — just enable UDP telemetry in-game (Settings → Telemetry, port {udpPort}, format 2025).</>
-                : <>Start it with <span style={{ color: C.textMuted, fontFamily: FONT.mono }}>npm run bridge</span>.</>}
+              The telemetry core is built into the app and always listening — just enable UDP telemetry in-game
+              (Settings → Telemetry, port {udpPort}, <span style={{ color: C.textMuted, fontFamily: FONT.mono }}>format 2026</span>, rate 60 Hz for the smoothest force feedback).
+              {inTauri && localIps.length > 0 && (
+                <> <br /><b style={{ color: C.textMuted }}>On console (PS5 / Xbox):</b> run this app on a PC or laptop on the same
+                network, then in the game set <span style={{ color: C.textMuted, fontFamily: FONT.mono }}>IP Address</span> to this device's
+                address above (e.g. <span style={{ color: C.cyan, fontFamily: FONT.mono }}>{localIps[0].ip}</span>) and Port to {udpPort}.</>
+              )}
               {" "}Leave the port at 20777 unless another tool receives the game's stream first and rebroadcasts it on a different port — then set that port here.
             </div>
-
-            {/* Repeater: re-broadcast the raw stream to a second app */}
-            <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.textBody }}>UDP Repeater</div>
-                  <div style={{ fontSize: 11, color: C.textDim, marginTop: 3 }}>Forward the game's raw telemetry to a second app on this PC</div>
-                </div>
-                <Switch on={!!repeatEnabled} onClick={() => setRepeatEnabled(v => !v)} />
-              </div>
-              {repeatEnabled && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 7, maxWidth: 200 }}>
-                  <label style={label}>Repeat to Port</label>
-                  <input
-                    type="number" min="1" max="65535" inputMode="numeric"
-                    value={repeatPortDraft}
-                    onChange={e => setRepeatPortDraft(e.target.value)}
-                    onBlur={commitRepeatPort}
-                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                    placeholder="20778"
-                    style={{ ...input, color: repeatPortValid ? C.cyan : C.red }}
-                  />
-                </div>
-              )}
-              <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
-                When on, the bridge re-sends the game's raw packets to <span style={{ color: C.textMuted, fontFamily: FONT.mono }}>127.0.0.1:{repeatPort}</span> so a second telemetry app can read them at the same time. Set that app's UDP port to match — and keep it different from {udpPort}.
-              </div>
-            </div>
           </div>
-
-          {/* Trace Configurator + Calibrator */}
-          <div style={card}>
-            <span style={eyebrow}>Trace Configurator</span>
-            <button onClick={onOpenCalibrator} style={{ width: "100%", padding: 13, borderRadius: 9, border: `1px solid ${C.blue}`,
-              background: "linear-gradient(135deg,#16243f,#11151d)", color: "#fff", fontSize: 13, fontWeight: 800, letterSpacing: .5,
-              cursor: "pointer", fontFamily: FONT.ui, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              Open Trace Configurator <span style={{ fontSize: 15 }}>→</span>
-            </button>
-            <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
-              The Calibrator traces a reference lap from an onboard image to build the benchmark the Coach measures you against.
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT */}
-        <div style={{ flex: "1 1 420px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* General Preferences */}
           <div style={card}>
@@ -313,19 +312,15 @@ export default function SettingsScreen({
                 ))}
               </div>
             </div>
-            <div style={{ borderTop: `1px solid ${C.line}` }}>
-              {[
-                { label: "Audio Coaching Cues", desc: "Speak coach callouts over your headset during a session", on: audioOn, toggle: () => setAudioOn(a => !a) },
-                { label: "Auto Insights", desc: "Generate a lap summary automatically when you cross the line", on: autoInsights, toggle: () => setAutoInsights(v => !v) },
-              ].map(t => (
-                <div key={t.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderBottom: `1px solid ${C.line}`, padding: "14px 2px" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.textBody }}>{t.label}</div>
-                    <div style={{ fontSize: 11, color: C.textDim, marginTop: 3 }}>{t.desc}</div>
-                  </div>
-                  <Switch on={t.on} onClick={t.toggle} />
-                </div>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <label style={label}>Tyre Temp Units</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {["°C", "°F"].map(u => (
+                  <button key={u} onClick={() => setTempUnits(u)} style={{
+                    padding: "9px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: .3, fontFamily: FONT.ui,
+                    background: tempUnits === u ? C.elevated : C.inset, border: `1px solid ${tempUnits === u ? C.blue : C.borderInput}`, color: tempUnits === u ? "#fff" : "#9aa3b5" }}>{u}</button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -338,7 +333,9 @@ export default function SettingsScreen({
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               <label style={label}>Voice Engine</label>
               <div style={{ display: "flex", gap: 8 }}>
-                {[["kokoro", "Kokoro AI", "local", C.purple], ["browser", "System", "instant", C.cyan]].map(([id, name, tag, dot]) => {
+                {/* Dots follow the skin: Kokoro = primary accent, System = secondary accent.
+                    Fallbacks (purple / cyan) keep the Default skin's original look. */}
+                {[["kokoro", "Kokoro AI", "local", C.accent1], ["browser", "System", "instant", C.accent2]].map(([id, name, tag, dot]) => {
                   const active = engine === id;
                   return (
                     <button key={id} onClick={() => setVoicePrefs(p => ({ ...p, engine: id }))} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start",
@@ -396,10 +393,115 @@ export default function SettingsScreen({
             </div>
           </div>
 
+          {/* Trace Configurator + Calibrator */}
+          <div style={card}>
+            <span style={eyebrow}>Trace Configurator</span>
+            <button onClick={onOpenCalibrator} style={{ width: "100%", padding: 13, borderRadius: 9, border: `1px solid ${C.blue}`,
+              background: "linear-gradient(135deg,#16243f,#11151d)", color: "#fff", fontSize: 13, fontWeight: 800, letterSpacing: .5,
+              cursor: "pointer", fontFamily: FONT.ui, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              Open Trace Configurator <span style={{ fontSize: 15 }}>→</span>
+            </button>
+            <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
+              The Calibrator traces a reference lap from an onboard image to build the benchmark the Coach measures you against.
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT */}
+        <div style={{ flex: "1 1 420px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Appearance · Team Skin — recolours the whole app; selecting applies live */}
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={eyebrow}>Appearance · Team Skin</span>
+              {activeDriver && <span style={perDriverNote}>Saved for {activeDriver}</span>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {SKINS.map((s) => {
+                const on = activeSkin === s.id;
+                return (
+                  <button key={s.id} onClick={() => setActiveSkin(s.id)} title={`Apply ${s.name} skin`} style={{
+                    display: "flex", alignItems: "center", gap: 13, textAlign: "left", width: "100%",
+                    background: on ? C.elevated : C.inset,
+                    border: `1px solid ${on ? C.blue : C.borderInput}`,
+                    borderRadius: 10, padding: "11px 13px", cursor: "pointer", fontFamily: FONT.ui,
+                    boxShadow: on ? `0 0 0 1px ${C.accent55}` : "none" }}>
+                    <span style={{ display: "flex", gap: 3, flex: "none" }}>
+                      <span style={{ width: 10, height: 26, borderRadius: 2, background: s.chips[0] }} />
+                      <span style={{ width: 10, height: 26, borderRadius: 2, background: s.chips[1], border: `1px solid ${C.borderStrong}` }} />
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: on ? "#fff" : C.textHi }}>{s.name}</div>
+                      <div style={{ fontSize: 10, color: C.textDim, fontFamily: FONT.mono, marginTop: 2 }}>{s.descriptor}</div>
+                    </div>
+                    <span style={{ width: 20, height: 20, borderRadius: "50%", flex: "none",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      background: on ? C.accent : "transparent",
+                      border: on ? "none" : `2px solid ${C.borderStrong}` }}>
+                      {on && (
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: C.onAccent }}>
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+              Selecting a skin restyles the whole app — surfaces, accents, textures and numerals — and applies instantly. Data colours (sector purple / green / yellow) are held constant across every skin so timing always reads the same.
+            </div>
+          </div>
+
+          {/* Driver Profile · Backup — export the active driver's whole profile to a
+              file (laps + sectors + track maps + photo + prefs) and import it back. */}
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={eyebrow}>Driver Profile · Backup</span>
+              {activeDriver && <span style={perDriverNote}>{activeDriver}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+              Save <b style={{ color: C.textMuted }}>{activeDriver || "the active driver"}</b>'s whole profile — every lap with telemetry, sector times, saved track maps, photo and preferences — to one file, to keep as a backup or move to another PC. Your API key is never included.
+            </div>
+            <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+              <button onClick={exportActiveProfile} disabled={backupBusy || !activeDriver}
+                style={{ ...testBtn, border: `1px solid ${C.blue}`, background: "#16243f", color: "#fff", opacity: backupBusy || !activeDriver ? .5 : 1, cursor: backupBusy || !activeDriver ? "default" : "pointer" }}>
+                ⭳ Export Profile
+              </button>
+              <input ref={profileFileRef} type="file" accept="application/json,.json" onChange={pickProfileFile} style={{ display: "none" }} />
+              <button onClick={() => profileFileRef.current?.click()} disabled={backupBusy}
+                style={{ ...testBtn, opacity: backupBusy ? .5 : 1, cursor: backupBusy ? "default" : "pointer" }}>
+                ⭱ Import Profile…
+              </button>
+            </div>
+
+            {pendingImport && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9, background: C.inset, border: `1px solid ${C.borderInput}`, borderRadius: 9, padding: "12px 13px" }}>
+                <div style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>“{pendingImport.name}” is already on the roster</div>
+                <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+                  Bring it in as a separate copy, or overwrite that profile's current laps, track maps, photo and preferences?
+                </div>
+                <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+                  <button onClick={() => runImport(pendingImport.payload, { name: uniqueCopyName(pendingImport.name), overwrite: false })}
+                    style={{ ...testBtn, border: `1px solid ${C.blue}`, background: "#16243f", color: "#fff" }}>Import as copy</button>
+                  <button onClick={() => runImport(pendingImport.payload, { name: pendingImport.name, overwrite: true })}
+                    style={{ ...testBtn, border: `1px solid ${C.red}`, color: C.red }}>Overwrite {pendingImport.name}</button>
+                  <button onClick={() => setPendingImport(null)} style={testBtn}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {backupMsg && (
+              <div style={{ fontSize: 11, color: backupMsg.kind === "ok" ? C.green : C.red, fontFamily: FONT.mono, lineHeight: 1.5 }}>
+                {backupMsg.kind === "ok" ? "✓ " : "✗ "}{backupMsg.text}
+              </div>
+            )}
+          </div>
+
           {/* Driver Roster */}
           <div style={card}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={eyebrow}>Driver Roster · Sign Up</span>
+              <span style={eyebrow}>Driver Roster · {editingName ? "Edit" : "Sign Up"}</span>
               <span style={{ fontSize: 9, letterSpacing: 1, color: C.blue, fontWeight: 700, fontFamily: FONT.mono }}>{drivers.length} SIGNED</span>
             </div>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
@@ -440,24 +542,33 @@ export default function SettingsScreen({
                     </button>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "flex-start" }}>
                       <button onClick={() => fileRef.current?.click()} style={{ ...testBtn, padding: "7px 12px" }}>{sAvatar ? "Change" : "Upload photo"}</button>
-                      {sAvatar && <button onClick={() => { setSAvatar(null); setAvatarErr(""); }} style={{ background: "none", border: "none", color: C.textDim,
+                      {sAvatar && <button onClick={() => { setSAvatar(null); setAvatarErr(""); setAvatarTouched(true); }} style={{ background: "none", border: "none", color: C.textDim,
                         fontSize: 10, letterSpacing: .5, cursor: "pointer", padding: 0, fontFamily: FONT.ui }}>Remove</button>}
                     </div>
                   </div>
                   {avatarErr && <span style={{ fontSize: 10, color: C.red }}>{avatarErr}</span>}
                 </div>
-                <button onClick={signUp} disabled={!sName.trim()} style={{ width: "100%", padding: 13, borderRadius: 9, border: `1px solid ${C.blue}`,
-                  background: sName.trim() ? "linear-gradient(135deg,#3671C6,#2a5aa0)" : C.inset, color: sName.trim() ? "#fff" : C.textFaint,
-                  fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: sName.trim() ? "pointer" : "default", fontFamily: FONT.ui,
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                  SIGN DRIVER <span style={{ fontSize: 15 }}>→</span>
-                </button>
+                {formErr && <span style={{ fontSize: 10, color: C.red }}>{formErr}</span>}
+                <div style={{ display: "flex", gap: 9 }}>
+                  <button onClick={submit} disabled={!sName.trim()} style={{ flex: 1, padding: 13, borderRadius: 9, border: `1px solid ${C.blue}`,
+                    background: sName.trim() ? "linear-gradient(135deg,#3671C6,#2a5aa0)" : C.inset, color: sName.trim() ? "#fff" : C.textFaint,
+                    fontSize: 13, fontWeight: 800, letterSpacing: 1, cursor: sName.trim() ? "pointer" : "default", fontFamily: FONT.ui,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    {editingName ? "SAVE CHANGES" : <>SIGN DRIVER <span style={{ fontSize: 15 }}>→</span></>}
+                  </button>
+                  {editingName && (
+                    <button onClick={resetForm} style={{ ...testBtn, padding: "13px 16px" }}>Cancel</button>
+                  )}
+                </div>
               </div>
               <div style={{ flex: "1 1 200px", minWidth: 200, display: "flex", flexDirection: "column", gap: 9 }}>
                 <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase" }}>Current Roster</span>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto", paddingRight: 4 }}>
-                  {drivers.map(d => (
-                    <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 10, background: C.inset, border: `1px solid ${d.name === activeDriver ? d.color : C.line}`, borderRadius: 9, padding: "8px 11px" }}>
+                  {drivers.map(d => {
+                    const beingEdited = editingName === d.name;
+                    return (
+                    <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 10, background: beingEdited ? C.elevated : C.inset,
+                      border: `1px solid ${beingEdited ? C.blue : d.name === activeDriver ? d.color : C.line}`, borderRadius: 9, padding: "8px 11px" }}>
                       <span style={{ width: 30, height: 30, flex: "none", borderRadius: 8, overflow: "hidden", background: d.color + "1f", border: `1px solid ${d.color}`,
                         display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT.cond, fontWeight: 700, fontSize: 15, color: d.color }}>
                         {avatars[d.name]
@@ -468,13 +579,19 @@ export default function SettingsScreen({
                         <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.name}</div>
                         <div style={{ fontSize: 10, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.team || "Unassigned"}</div>
                       </div>
+                      {onEditDriver && (
+                        <button onClick={() => startEdit(d)} title={`Edit ${d.name}`} aria-label={`Edit ${d.name}`} style={{ flex: "none",
+                          width: 24, height: 24, borderRadius: 6, border: `1px solid ${beingEdited ? C.blue : C.line}`, background: "transparent",
+                          color: beingEdited ? C.blue : C.textDim, cursor: "pointer", fontSize: 12, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>✎</button>
+                      )}
                       {onDeleteDriver && drivers.length > 1 && (
-                        <button onClick={() => onDeleteDriver(d.name)} title={`Remove ${d.name}`} aria-label={`Remove ${d.name}`} style={{ flex: "none",
+                        <button onClick={() => { if (editingName === d.name) resetForm(); onDeleteDriver(d.name); }} title={`Remove ${d.name}`} aria-label={`Remove ${d.name}`} style={{ flex: "none",
                           width: 24, height: 24, borderRadius: 6, border: `1px solid ${C.line}`, background: "transparent", color: C.textDim,
                           cursor: "pointer", fontSize: 12, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>

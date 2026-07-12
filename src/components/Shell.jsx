@@ -14,6 +14,7 @@ const NAV = [
   ["live",      "Live"],
   ["compare",   "Analytics"],
   ["coach",     "Coach"],
+  ["ffb",       "FFB"],
 ];
 
 const navBtn = (active) => ({
@@ -55,8 +56,8 @@ const GearIcon = () => (
 
 export default function Shell({
   tab, onTab, onSettings,
-  wsConnected, llmConnected,
-  activeDriver, driverColor = C.blue, driverCount = 1, onDriverChip,
+  wsConnected, llmConnected, ffbConnected = false,
+  activeDriver, driverColor = "#3671C6", driverCount = 1, onDriverChip,
   children,
 }) {
   const settingsActive = tab === "setup";
@@ -73,14 +74,15 @@ export default function Shell({
         {/* Brand */}
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
           <div style={{
-            width: 34, height: 34, borderRadius: 9, background: C.blue,
+            width: 69, height: 69, borderRadius: 16, background: C.blue,
             display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: `0 0 20px ${C.blue}55`, flex: "none",
+            boxShadow: `0 0 20px ${C.accentGlow}`, flex: "none", overflow: "hidden",
           }}>
-            <span style={{ fontFamily: FONT.cond, fontWeight: 700, fontSize: 20, letterSpacing: -1 }}>F1</span>
+            <img src="/brand-logo.png" alt="Box, Box"
+              style={{ width: "100%", height: "100%", objectFit: "contain", padding: 3, boxSizing: "border-box" }} />
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 900, letterSpacing: 2.5, lineHeight: 1 }}>COACH</div>
+            <div style={{ fontSize: 15, fontWeight: 900, letterSpacing: 1.5, lineHeight: 1 }}>Box, Box</div>
             <div style={{ fontSize: 8, letterSpacing: 2.5, color: C.textFaint, textTransform: "uppercase", marginTop: 3 }}>
               Telemetry &amp; AI Coach
             </div>
@@ -102,6 +104,7 @@ export default function Shell({
           <div style={{ width: 1, height: 20, background: C.borderModal, margin: "0 2px" }} />
           <StatusPill on={wsConnected} label="UDP" blink />
           <StatusPill on={llmConnected} label="AI" />
+          <StatusPill on={ffbConnected} label="FFB" />
           <button onClick={onSettings} title="Settings" aria-label="Settings" style={{
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: "7px 9px", borderRadius: 8,
