@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "1.0.0"
-description = "F1 Coach — native shell"
-authors = ["F1 Coach"]
+description = "Box, Box — native shell"
+authors = ["Box, Box"]
 license = ""
 repository = ""
 edition = "2021"
@@ -15,7 +15,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "F1coach"
+name = "boxbox"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -27,4 +27,14 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
-tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+# Lock-free hand-off of the latest telemetry snapshot from the UDP thread to the
+# FFB thread (and the UI emitter) — no mutex on the real-time read path.
+arc-swap = "1"
+# Force-feedback output to the wheel via SDL2's haptic API. `bundled` builds SDL2
+# from source and `static-link` folds it into the exe, so no SDL2.dll is shipped
+# (needs the MSVC C compiler + CMake, already installed).
+sdl2 = { version = "0.36", features = ["bundled", "static-link"] }
+# Enumerate this machine's LAN IPv4 addresses so console players can see which
+# address to point the game's telemetry output at (the app runs on a 2nd device).
+local-ip-address = "0.6"

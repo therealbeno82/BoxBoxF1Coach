@@ -1,0 +1,8 @@
+# The `sdl2` crate's `bundled` feature builds SDL2 from source with CMake. The
+# vendored SDL2 CMakeLists declares an old `cmake_minimum_required` that CMake 4.x
+# rejects ("Compatibility with CMake < 3.5 has been removed"). CMake ≥3.31 reads
+# this env var as the default policy minimum, so setting it lets the vendored SDL2
+# configure cleanly on modern CMake. Applied to every cargo build in this crate so
+# a fresh checkout builds without extra setup.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
