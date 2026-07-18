@@ -153,7 +153,7 @@ fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
 fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let shared = {
         let core = app.state::<CoreState>();
-        let core = core.core.lock().unwrap();
+        let core = core.core.lock().unwrap_or_else(|e| e.into_inner());
         core.shared.clone()
     };
     let ffb = app.state::<Arc<FfbHandle>>().inner().clone();

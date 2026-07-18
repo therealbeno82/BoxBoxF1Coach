@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "EA F1 driving coach — compares your telemetry against Esports reference traces and coaches you with a local LLM.",
+  "description": "EA F1 driving coach — compares your telemetry against Esports reference traces and coaches you with an LLM race engineer.",
   "scripts": {
     "copy-ort": "node scripts/copy-ort.mjs",
     "predev": "node scripts/copy-ort.mjs",

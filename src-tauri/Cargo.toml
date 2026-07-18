@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "1.0.0"
-description = "Box, Box — native shell"
-authors = ["Box, Box"]
+description = "F1 Coach — native shell"
+authors = ["F1 Coach"]
 license = ""
 repository = ""
 edition = "2021"

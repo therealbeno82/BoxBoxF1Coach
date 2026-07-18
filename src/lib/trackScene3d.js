@@ -14,7 +14,10 @@
 //   lines: [{ id, color(hex int|css), pts:[{x,y?,z}], distAt:[0..1], timeAt:[0..1], paceAt? }]
 //   opts:  { camMode, track }  — track = model from trackGeometry.loadTrackModel()
 //   controller: { setPlayback(frac, axis), zoomBy(f), setCamMode(m), frame(),
-//                 resize(), dispose() }
+//                 updateLines(lines), resize(), dispose() }
+// updateLines() refreshes the painted lines + car paths IN PLACE for the same set
+// of line ids (a live lap growing new samples) — the road, renderer and camera
+// survive, so a growing lap doesn't rebuild the whole scene every sample bin.
 import * as THREE from "three";
 import { makeF1Car } from "./carModel3d.js";
 import { buildHeuristicTrack } from "./trackGeometry.js";
@@ -126,11 +129,22 @@ export function createTrackScene(canvas, lines, opts = {}) {
     { x: 0, y: 0, z: 0 });
   c.x /= allPts.length; c.y /= allPts.length; c.z /= allPts.length;
   const hasY = allPts.some(p => typeof p.y === "number");
+  // Center a raw line into the scene frame and fit its spline. Reused by
+  // updateLines(), which keeps the ORIGINAL centroid so refreshed lines stay
+  // aligned with the road that was built against it.
+  const buildLine = (l) => {
+    const bl = {
+      ...l,
+      vpts: l.pts.map(p => new THREE.Vector3(p.x - c.x, hasY ? (p.y || 0) - c.y : 0, p.z - c.z)),
+    };
+    // Smooth spline through the captured points; the car and the painted line both
+    // follow it, so corners stay clean and the car never drifts off its own line.
+    // Centripetal parameterization avoids overshoot/cusps on uneven sample spacing.
+    bl.curve = new THREE.CatmullRomCurve3(bl.vpts, false, "centripetal");
+    return bl;
+  };
   // Build centered Vector3 lists (drop raw Y when absent → flat plane).
-  const built = lines.map(l => ({
-    ...l,
-    vpts: l.pts.map(p => new THREE.Vector3(p.x - c.x, hasY ? (p.y || 0) - c.y : 0, p.z - c.z)),
-  }));
+  const built = lines.map(buildLine);
 
   const disposables = [];
   const track = (obj) => { disposables.push(obj); return obj; };
@@ -318,23 +332,25 @@ export function createTrackScene(canvas, lines, opts = {}) {
   scene.add(ground);
 
   // ── Racing lines painted on the road surface + the cars ──
-  const cars = [];
-  for (const l of built) {
-    const col = new THREE.Color(l.color);
-    // Smooth spline through the captured points; the car and the painted line both follow
-    // it, so corners stay clean and the car never drifts off its own line. Centripetal
-    // parameterization avoids overshoot/cusps when sample spacing is uneven.
-    l.curve = new THREE.CatmullRomCurve3(l.vpts, false, "centripetal");
-    // A thin ribbon hugging the road surface (curb hops included), swept along
-    // densely-sampled spline points — reads as a painted line, not a 3D tube.
-    const smooth = l.curve.getPoints(Math.min(2000, Math.max(l.vpts.length * 4, 64)));
+  // A thin ribbon hugging the road surface (curb hops included), swept along
+  // densely-sampled spline points — reads as a painted line, not a 3D tube.
+  const lineRibbon = (bl) => {
+    const smooth = bl.curve.getPoints(Math.min(2000, Math.max(bl.vpts.length * 4, 64)));
     for (const p of smooth) p.y = onSurface(p.x, p.y, p.z, 0.05);
-    const lineGeo = track(sweepRibbon(smooth, 0.12));
+    return sweepRibbon(smooth, 0.12);
+  };
+  const cars = [];
+  const lineMeshes = new Map(); // id → painted-ribbon mesh, for in-place refresh
+  for (const l of built) {
     const lineMat = track(new THREE.MeshBasicMaterial({
-      color: col, side: THREE.DoubleSide,
+      color: new THREE.Color(l.color), side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     }));
-    scene.add(new THREE.Mesh(lineGeo, lineMat));
+    // Geometry is NOT in `disposables`: updateLines() disposes replaced ribbons
+    // itself, and dispose()'s scene traversal covers whichever one is current.
+    const mesh = new THREE.Mesh(lineRibbon(l), lineMat);
+    scene.add(mesh);
+    lineMeshes.set(l.id, mesh);
 
     const car = makeF1Car(l.color);
     scene.add(car);
@@ -441,6 +457,24 @@ export function createTrackScene(canvas, lines, opts = {}) {
     zoomBy(f) { zoom = Math.max(0.35, Math.min(4, zoom * f)); requestFrame(); },
     setCamMode(m) { if (CAM_MODES.includes(m)) camMode = m; requestFrame(); },
     cycleCamMode() { camMode = CAM_MODES[(CAM_MODES.indexOf(camMode) + 1) % CAM_MODES.length]; requestFrame(); return camMode; },
+    // In-place refresh for a live lap growing new samples: same line ids, new
+    // points. Swaps each painted ribbon's geometry and re-splines the car paths;
+    // road, renderer and camera survive untouched. Returns false when the line
+    // set itself changed — the caller must rebuild the scene instead.
+    updateLines(newLines) {
+      if (newLines.length !== lineMeshes.size ||
+          newLines.some(l => !lineMeshes.has(l.id) || !l.pts?.length)) return false;
+      for (const l of newLines) {
+        const bl = buildLine(l);
+        const mesh = lineMeshes.get(l.id);
+        mesh.geometry.dispose();
+        mesh.geometry = lineRibbon(bl);
+        const rec = cars.find(c2 => c2.line.id === l.id);
+        if (rec) rec.line = bl;
+      }
+      requestFrame();
+      return true;
+    },
     resetView() { orbitYaw = 0; orbitPitch = 0; zoom = 1; camInit = false; requestFrame(); },
     resize,
     dispose() {

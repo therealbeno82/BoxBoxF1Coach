@@ -69,7 +69,7 @@ export function parseProfileFile(text) {
   catch { throw new Error("Could not parse the file — it isn't valid JSON."); }
 
   if (!json || json.kind !== PROFILE_KIND || !json.driver || !json.driver.name) {
-    throw new Error("Not a Box, Box profile backup — use “Export Profile” to create one.");
+    throw new Error("Not an F1 Coach profile backup — use “Export Profile” to create one.");
   }
   return json;
 }

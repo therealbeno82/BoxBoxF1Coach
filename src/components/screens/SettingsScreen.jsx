@@ -1,5 +1,5 @@
 // ─── SETTINGS SCREEN ────────────────────────────────────────────────────────
-// System configuration: AI provider/model, the telemetry-bridge WebSocket, the
+// System configuration: AI provider/model, the telemetry UDP port, the
 // trace configurator + calibrator, general preferences (speed units), the coach
 // voice (engine + voice + rate), the Appearance · Team Skin picker, and the driver
 // roster sign-up. Replaces the legacy SetupPanel.
@@ -40,7 +40,7 @@ export default function SettingsScreen({
   const [availVoices, setAvailVoices] = useState([]);
 
   // Draft text for the UDP port field so the user can clear/retype freely; only a
-  // valid 1–65535 value is committed up to the app (which pushes it to the bridge).
+  // valid 1–65535 value is committed up to the app (which pushes it to the Rust core).
   const [portDraft, setPortDraft] = useState(String(udpPort));
   useEffect(() => { setPortDraft(String(udpPort)); }, [udpPort]);
   const commitPort = () => {
@@ -162,7 +162,8 @@ export default function SettingsScreen({
     // where the ONLY system voices are Microsoft ones — that filter emptied the list.
     const load = () => setAvailVoices(window.speechSynthesis.getVoices().filter(v => v.lang.startsWith("en")));
     load();
-    window.speechSynthesis.onvoiceschanged = load;
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
   }, []);
 
   const loadOrModels = async () => {

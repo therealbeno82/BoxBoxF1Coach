@@ -23,6 +23,7 @@ use crate::telemetry::SharedTelemetry;
 /// Owns the FFB thread and exposes the shared handle for commands + the emitter.
 pub struct FfbSystem {
     pub handle: Arc<FfbHandle>,
+    shared: Arc<SharedTelemetry>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -40,16 +41,25 @@ impl FfbSystem {
         });
         let thread = {
             let handle = handle.clone();
+            let shared = shared.clone();
             std::thread::spawn(move || ffb_thread(handle, shared, rx))
         };
         FfbSystem {
             handle,
+            shared,
             thread: Some(thread),
         }
     }
 
     pub fn stop(&mut self) {
         self.handle.running.store(false, Ordering::Relaxed);
+        // The thread is usually parked in wait_timeout_while on the frame condvar
+        // (up to 250 ms with no wheel open) — wake it so shutdown is immediate.
+        {
+            let wake = &self.shared.stats.wake;
+            let _g = wake.0.lock().unwrap_or_else(|e| e.into_inner());
+            wake.1.notify_one();
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }

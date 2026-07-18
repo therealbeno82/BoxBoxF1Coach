@@ -78,11 +78,11 @@ export default function Shell({
             display: "flex", alignItems: "center", justifyContent: "center",
             boxShadow: `0 0 20px ${C.accentGlow}`, flex: "none", overflow: "hidden",
           }}>
-            <img src="/brand-logo.png" alt="Box, Box"
+            <img src="/brand-logo.png" alt="F1 Coach"
               style={{ width: "100%", height: "100%", objectFit: "contain", padding: 3, boxSizing: "border-box" }} />
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 900, letterSpacing: 1.5, lineHeight: 1 }}>Box, Box</div>
+            <div style={{ fontSize: 15, fontWeight: 900, letterSpacing: 1.5, lineHeight: 1 }}>F1 Coach</div>
             <div style={{ fontSize: 8, letterSpacing: 2.5, color: C.textFaint, textTransform: "uppercase", marginTop: 3 }}>
               Telemetry &amp; AI Coach
             </div>

@@ -240,18 +240,6 @@ export async function putTrackMap(driver, slug, track, path) {
   } catch { /* best-effort */ }
 }
 
-export async function deleteTrackMap(driver, slug) {
-  if (!driver || !slug) return;
-  try {
-    const db = await openDb();
-    await new Promise((resolve, reject) => {
-      const req = trackMapTx(db, "readwrite").delete(trackMapKey(driver, slug));
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
-  } catch { /* ignore */ }
-}
-
 // Every saved circuit outline owned by `driver`, as portable rows
 // { slug, track, path, savedAt } (the composite key is dropped — it's rebuilt
 // from driver+slug on import). Used by the profile backup export. Resolves to []

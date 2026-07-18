@@ -246,7 +246,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               <div style={{ fontSize: 30, marginBottom: 10 }}>📊</div>
               <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6 }}>No laps yet for {name}</div>
               <div style={{ fontSize: 12, color: C.textMid, maxWidth: 400, lineHeight: 1.55 }}>
-                Connect the UDP bridge and drive a lap — completed laps are saved to this driver's
+                Start the game (or fake mode) and drive a lap — completed laps are saved to this driver's
                 profile and their stats appear here.
               </div>
             </div>
@@ -353,7 +353,4 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
 
 const cardStyle = {
   background: C.surface, border: `1px solid ${C.line}`, borderRadius: "var(--r-lg, 16px)", padding: "18px 20px",
-};
-const insetTile = {
-  background: C.inset, border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 11px",
 };

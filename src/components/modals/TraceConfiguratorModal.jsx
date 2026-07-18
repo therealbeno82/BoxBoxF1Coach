@@ -1,6 +1,6 @@
 // ─── TRACE CONFIGURATOR MODAL ───────────────────────────────────────────────
 // Toggle which telemetry channels the trace pipeline records. Display/config only —
-// the bridge forwards whatever the game sends; this records the driver's preference
+// the telemetry core forwards whatever the game sends; this records the driver's preference
 // and an estimated bandwidth. Opened from the Settings "Trace Configurator" button.
 
 import { useEffect } from "react";

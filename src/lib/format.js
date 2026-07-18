@@ -20,7 +20,7 @@ export function formatLapTime(seconds, decimals = 1) {
   return `${m}:${sec}`;
 }
 
-// Convert a km/h speed to the active unit and round to an integer. The bridge
+// Convert a km/h speed to the active unit and round to an integer. The telemetry core
 // always reports km/h (m_speed); the UI can show km/h or mph (a user pref).
 // Returns the numeric value — callers append the unit label themselves.
 export function toSpeed(kmh, units = "km/h") {
@@ -34,7 +34,7 @@ export function speedUnitLabel(units = "km/h") {
 }
 
 // Convert a Celsius tyre temp to the active unit and round to an integer. The
-// bridge always reports °C; the UI can show °C or °F (a user pref).
+// telemetry core always reports °C; the UI can show °C or °F (a user pref).
 export function toTemp(celsius, tempUnits = "°C") {
   if (typeof celsius !== "number" || Number.isNaN(celsius)) return NaN;
   return Math.round(tempUnits === "°F" ? celsius * 9 / 5 + 32 : celsius);
@@ -75,7 +75,7 @@ export function speakable(text) {
     .replace(/ {2,}/g, " ");                         // collapse the spaces the glued-unit fixes introduce
 }
 
-// Coarse session-type label for the numeric m_sessionType the bridge forwards
+// Coarse session-type label for the numeric m_sessionType the telemetry core forwards
 // (F1 25/26 Format 2025 numbering). Granular Q1/Q2/Q3 and Sprint Shootout
 // variants collapse into one bucket so the dashboard groups laps as the driver
 // thinks of them — "Qualifying", "Time Trial", "Practice", "Race". Returns null

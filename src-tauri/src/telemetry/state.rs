@@ -430,7 +430,7 @@ impl AppStats {
     }
     /// Bump the motion sequence and wake the FFB engine (one fresh frame arrived).
     pub fn notify_frame(&self) {
-        let _g = self.wake.0.lock().unwrap();
+        let _g = self.wake.0.lock().unwrap_or_else(|e| e.into_inner());
         self.motion_seq.fetch_add(1, Ordering::Relaxed);
         self.wake.1.notify_one();
     }

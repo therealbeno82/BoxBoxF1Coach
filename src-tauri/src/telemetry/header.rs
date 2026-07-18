@@ -34,13 +34,10 @@ impl Header {
         self.packet_format == 2025 || self.packet_format == 2026
     }
 
-    /// Cars in a per-car array for this format. 2026 added grid slots (24);
-    /// 2025 and earlier are 22. Mirrors the C++ `maxCarsFor`.
+    /// Cars in a per-car array. The 2026 grid is 22 cars (11 teams, Cadillac
+    /// included) — the same array size as 2025. (The C++ `maxCarsFor` this was
+    /// ported from wrongly assumed 2026 grew the arrays to 24 slots.)
     pub fn max_cars(&self) -> usize {
-        if self.packet_format == 2026 {
-            24
-        } else {
-            22
-        }
+        22
     }
 }

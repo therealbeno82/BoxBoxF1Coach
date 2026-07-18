@@ -2,8 +2,8 @@
 //! format-aware per-car stride. This mirrors the C++ `udp_receiver.cpp` (which
 //! reads the player slice by offset) and the field layouts in
 //! `bridge/f1-2026-parser.cjs`. Reading only the player slice — rather than
-//! parsing full 22/24-car arrays — is both faster and immune to the 22-vs-24
-//! car-count ambiguity, since the player index alone locates the slice.
+//! parsing full per-car arrays — is both faster and immune to array slot-count
+//! questions, since the player index alone locates the slice.
 //!
 //! `payload` is the datagram *after* the 29-byte header.
 
@@ -158,13 +158,13 @@ pub fn parse_lap_data(payload: &[u8], h: &Header, l: &mut Latest) -> Option<u8> 
 pub fn parse_participants_ai(payload: &[u8], h: &Header) -> Option<bool> {
     // Payload = 1 byte m_numActiveCars, then m_participants[CARS]; the AI flag is
     // the first byte of each participant. Derive the stride from the payload so
-    // it self-adjusts to the (2025/2026) struct size and car count.
+    // it self-adjusts to the (2025/2026) struct size. The grid is 22 cars in both
+    // formats; also tolerate a 24-slot padded array so a game build that ships one
+    // degrades to a correct parse instead of disabling AI detection entirely.
     const HEADER_BYTE: usize = 1;
-    let cars = h.max_cars();
-    if payload.len() <= HEADER_BYTE || (payload.len() - HEADER_BYTE) % cars != 0 {
-        return None;
-    }
-    let stride = (payload.len() - HEADER_BYTE) / cars;
+    let body = payload.len().checked_sub(HEADER_BYTE).filter(|&b| b > 0)?;
+    let cars = [h.max_cars(), 24].into_iter().find(|&c| body % c == 0)?;
+    let stride = body / cars;
     let base = HEADER_BYTE + h.player_car_index as usize * stride;
     Some(u8_at(payload, base)? != 0)
 }
@@ -277,7 +277,34 @@ mod tests {
         assert_eq!(h.packet_id, 6);
         assert_eq!(h.overall_frame_identifier, 4242);
         assert_eq!(h.player_car_index, 3);
-        assert_eq!(h.max_cars(), 24);
+        assert_eq!(h.max_cars(), 22);
+    }
+
+    #[test]
+    fn participants_ai_22_car_array() {
+        // 1 count byte + 22 participants × 5-byte stride; player index 3 is AI.
+        let mut p = vec![0u8; 1 + 22 * 5];
+        p[0] = 20; // m_numActiveCars (irrelevant to the slot count)
+        p[1 + 3 * 5] = 1;
+        assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(true));
+        p[1 + 3 * 5] = 0;
+        assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(false));
+    }
+
+    #[test]
+    fn participants_ai_tolerates_24_slot_padding() {
+        // 24 × 7-byte stride (168 is not divisible by 22, so the fallback fires).
+        let mut p = vec![0u8; 1 + 24 * 7];
+        p[1 + 3 * 7] = 1;
+        assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(true));
+    }
+
+    #[test]
+    fn participants_ai_rejects_bad_length() {
+        // 100 body bytes divides by neither 22 nor 24 → refuse rather than guess.
+        let p = vec![0u8; 1 + 100];
+        assert_eq!(parse_participants_ai(&p, &hdr(4, 0)), None);
+        assert_eq!(parse_participants_ai(&[], &hdr(4, 0)), None);
     }
 
     #[test]

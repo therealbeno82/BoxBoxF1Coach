@@ -35,6 +35,8 @@ export const DEBRIEF_SCHEMA = {
 };
 
 const SEVERITIES = new Set(["info", "minor", "major"]);
+// maxWords is deliberately looser than the "max 20 words" the prompt asks for
+// (prompts.js): the prompt sets the target, this hard cap only trims runaways.
 const TIP_LIMITS = { maxSentences: 1, maxWords: 24 };
 const SUMMARY_LIMITS = { maxSentences: 3, maxWords: 60 };
 

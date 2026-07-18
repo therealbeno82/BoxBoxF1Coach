@@ -27,6 +27,12 @@ export async function configureTransformers() {
   // here, after import and before any model loads). The CDN is blocked by the
   // packaged app's CSP; a same-origin "/ort/" path passes 'self' and stays offline.
   // BASE_URL is "/" in the Tauri build → resolves to "/ort/" (see scripts/copy-ort.mjs).
-  env.backends.onnx.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`;
+  // Production only: the Vite dev server 500s on module-importing public/ files
+  // (ORT dynamically imports the .mjs glue), so dev falls back to the CDN. Plain
+  // browser dev has no CSP; `tauri dev` enforces devCsp, which explicitly allows
+  // cdn.jsdelivr.net (script-src + connect-src) for exactly this fallback.
+  if (import.meta.env.PROD) {
+    env.backends.onnx.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`;
+  }
   _configured = true;
 }

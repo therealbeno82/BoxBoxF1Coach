@@ -152,6 +152,14 @@ impl Engine {
         }
     }
 
+    /// Reset the Auto-Max-Force peak tracker. Clearing the lateral-force LP
+    /// alongside the atomic matters: compute() re-publishes any peak above the
+    /// stored one, so a stale LP value would instantly undo the reset.
+    fn reset_peak(&mut self, stats: &AppStats) {
+        self.lat_force_lp = 0.0;
+        stats.set_peak_lat_force(0.0);
+    }
+
     /// Zero everything and re-arm the ramps (the safety-release path).
     fn release(&mut self, stats: &AppStats, steer: f32) {
         self.smooth_torque = 0.0;
@@ -483,7 +491,7 @@ pub fn ffb_thread(
                     wheel.close_device();
                     push_status(&handle, &wheel, String::new());
                 }
-                FfbCommand::ResetPeak => stats.set_peak_lat_force(0.0),
+                FfbCommand::ResetPeak => engine.reset_peak(stats),
             }
         }
 
@@ -498,8 +506,9 @@ pub fn ffb_thread(
         }
 
         // 2) Compute + send.
+        let settings = handle.settings.load();
         let hz = {
-            let h = handle.settings.load().ffb_update_hz;
+            let h = settings.ffb_update_hz;
             if h < FFB_MIN_HZ { 90 } else { h.min(FFB_MAX_HZ) }
         };
         let interval = Duration::from_nanos((1_000_000_000i64 / hz as i64) as u64);
@@ -510,7 +519,6 @@ pub fn ffb_thread(
             dt = 1.0 / hz as f32;
         }
 
-        let settings = handle.settings.load();
         let enabled = handle.enabled.load(Ordering::Relaxed);
         let telem: FfbTelemetry = **shared.ffb.load();
 
@@ -628,7 +636,7 @@ pub fn ffb_thread(
             } else {
                 250
             });
-            let guard = stats.wake.0.lock().unwrap();
+            let guard = stats.wake.0.lock().unwrap_or_else(|e| e.into_inner());
             let running = &handle.running;
             let _ = stats.wake.1.wait_timeout_while(guard, deadline, |_| {
                 running.load(Ordering::Relaxed)

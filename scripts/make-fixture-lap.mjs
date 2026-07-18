@@ -82,6 +82,7 @@ let dist = 0, time = 0;
 const samples = [];
 const OUT_EVERY = Math.max(1, Math.round(10 / spacing)); // ~10 m bins like real capture
 let prev = null;
+let prevSpeed = 0; // km/h at the previous sample — integrates segment time below
 for (let i = 0; i < n; i++) {
   const p = line[i];
   const mz = MIRROR ? -p.z : p.z;
@@ -93,7 +94,7 @@ for (let i = 0; i < n; i++) {
     time += d / Math.max(1, prevSpeed / 3.6);
   }
   const speed = Math.max(62, 318 * (1 - 0.74 * p.sat)); // km/h, slow in corners
-  var prevSpeed = speed;
+  prevSpeed = speed;
   if (i % OUT_EVERY === 0) {
     const frac = dist;
     samples.push({

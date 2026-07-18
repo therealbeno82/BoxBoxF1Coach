@@ -81,12 +81,16 @@ export async function loadKokoro(onProgress) {
       const { KokoroTTS, env: kokoroEnv } = await import("kokoro-js");
       // kokoro-js's bundled ORT defaults to the jsdelivr CDN, which the packaged
       // app's CSP blocks — point it at the same local copy transformersConfig.js
-      // uses for Whisper (see scripts/copy-ort.mjs).
-      kokoroEnv.wasmPaths = `${import.meta.env.BASE_URL}ort/`;
-      const webgpu = typeof navigator !== "undefined" && !!navigator.gpu;
+      // uses for Whisper (see scripts/copy-ort.mjs). Production only: the Vite dev
+      // server refuses to serve public/ files as module imports (ORT dynamically
+      // imports the .mjs glue), so dev falls back to the CDN default — allowed by
+      // the browser (no CSP) and by devCsp, which whitelists cdn.jsdelivr.net.
+      if (import.meta.env.PROD) {
+        kokoroEnv.wasmPaths = `${import.meta.env.BASE_URL}ort/`;
+      }
       const tts = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype:  "q8", // the only precision bundled locally — see header comment
-        device: webgpu ? "webgpu" : "wasm",
+        dtype:  "q8",  // the only precision bundled locally — see header comment
+        device: "wasm", // q8 on webgpu yields garbled audio; kokoro-js pairs webgpu with fp32 only
         progress_callback: onProgress,
       });
       _tts = tts;

@@ -1,5 +1,5 @@
 // ─── FORCE FEEDBACK SCREEN ──────────────────────────────────────────────────
-// Mirrors the original F1 FFB app's cockpit, reskinned in the Box, Box theme:
+// Mirrors the original F1 FFB app's cockpit, reskinned in the F1 Coach theme:
 //   • A controls band across the top — Wheel Device + Profile.
 //   • Below it, two columns:
 //       LEFT  = live monitor (wheel torque + clip, output-history scope, the four

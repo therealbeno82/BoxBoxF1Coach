@@ -275,7 +275,7 @@ function deriveZonesFromTrace(trace) {
 // is always a whole number, throttle/brake are 0–100 %, steer is ±100 %. Clamp and
 // round every channel as a trace loads so a stray 5.5 gear or -1 throttle from the
 // Calibrator never reaches the coaching logic or the readouts. (-1 gear = reverse,
-// 0 = neutral are kept legal to match the live bridge's gear range.)
+// 0 = neutral are kept legal to match the live telemetry's gear range.)
 function sanitizeTraceSamples(samples) {
   if (!Array.isArray(samples)) return samples;
   return samples.map(s => {
@@ -299,10 +299,17 @@ function getThrottleColor(p) {
   return "#ff1744";
 }
 
+// Nearest reference sample to a lap distance. Samples are ordered by dist, so
+// binary-search the neighbours — this runs on every telemetry tick.
 function findRefSample(samples, distM) {
   if (!samples || samples.length === 0) return null;
-  return samples.reduce((best, s) =>
-    Math.abs(s.dist - distM) < Math.abs(best.dist - distM) ? s : best, samples[0]);
+  let lo = 0, hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid].dist < distM) lo = mid + 1; else hi = mid;
+  }
+  const cur = samples[lo], prev = samples[lo - 1];
+  return prev && Math.abs(prev.dist - distM) <= Math.abs(cur.dist - distM) ? prev : cur;
 }
 
 // MoTeC-style time readout (3 dp) — delegates to the shared lap-time formatter.
@@ -633,7 +640,7 @@ function useLLM(llmConfig) {
 // dashboard stats survive restarts. Distance-binning (~10 m) keeps a ~90 s / 30 Hz
 // lap to a few hundred samples. The user can still export a lap to a file too.
 
-// Idle telemetry reading shown before the live UDP bridge delivers a snapshot.
+// Idle telemetry reading shown before the Rust telemetry core delivers a snapshot.
 const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3,
   ersHarvestLimit:0, overtakeAvailable:0, overtakeActive:0, overtakeActivationDistance:0, activeAeroMode:0, activeAeroAvailable:0, activeAeroActivationDistance:0, regs2026:0, sessionUid:"0" };
 
@@ -715,9 +722,9 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
       const total = (typeof lastLapTime === "number" && lastLapTime > 0)
         ? lastLapTime : (buf.lastLapTime || 0);
       // A "ghost" crossing isn't a real timed lap: the car was on an out-lap / in-lap
-      // / in the pits / the lap was flagged invalid (buf.tainted). When the bridge
+      // / in the pits / the lap was flagged invalid (buf.tainted). When the telemetry
       // supplies driver/pit status (driverStatus is a number) taint already catches
-      // all of those, so we trust it alone. Only an OLDER bridge that omits those
+      // all of those, so we trust it alone. Only an OLDER data source that omits those
       // signals falls back to the game's lastLapTime==0 (an out-lap from the pit box
       // reports no completed time). That fallback must NOT run when we have status
       // signals: lastLapTime is also 0 on the FIRST genuine flying lap (no prior lap
@@ -1420,44 +1427,69 @@ function CompareDrivingLines({ referenceLap, comparisonLap, referenceLabel, comp
   // comes from live telemetry (trackId) when available, else from the track name
   // (covers imported-trace sessions). loadTrackModel caches per slug + line set and
   // falls back to a curvature-heuristic road on any miss, so this resolves fast.
+  // A LIVE lap grows a new sample every ~10 m; re-fitting the alignment per sample
+  // would churn, so growth only re-fits every REFIT_EVERY new samples (the fit
+  // still converges over the first lap). The loading state (trackModel = null) is
+  // only entered when the circuit/line set changes — a background re-fit keeps the
+  // current road (and scene) up until the refreshed model lands.
   const slug = trackSlug || resolveSlug(trackName);
+  const lineIds = lines3D.map(l => l.id).join("|");
+  const REFIT_EVERY = 64;
+  const fitBucket = Math.floor(lines3D.reduce((s, l) => s + (l.pts?.length || 0), 0) / REFIT_EVERY);
+  const fitKeyRef = useRef("");
   useEffect(() => {
-    if (!lines3D.length) { setTrackModel(false); return; }
+    if (!lines3D.length) { setTrackModel(false); fitKeyRef.current = ""; return; }
+    const key = `${slug}|${lineIds}`;
+    if (fitKeyRef.current !== key) { fitKeyRef.current = key; setTrackModel(null); }
     let live = true;
-    setTrackModel(null);
     import("./lib/trackGeometry.js")
       .then((m) => m.loadTrackModel(slug, lines3D))
       .then((model) => { if (live) setTrackModel(model || false); })
       .catch(() => { if (live) setTrackModel(false); });
     return () => { live = false; };
-  }, [lines3D, slug]);
+  }, [lineIds, fitBucket, slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 3D scene lifecycle ──────────────────────────────────────────────────────
   const canvasRef = useRef(null);
   const sceneRef  = useRef(null);
-  // (Re)build the scene whenever the drawable lines or the track model change; waits
-  // for the model so the road appears fully formed. Stored laps have a stable sample
-  // count so this runs once; a growing live lap rebuilds as it lengthens.
+  const sceneRoRef = useRef(null);
+  const sceneBuiltRef = useRef(null); // { model, ids } the live scene was built with
+  const disposeScene = () => {
+    sceneRoRef.current?.disconnect(); sceneRoRef.current = null;
+    sceneRef.current?.dispose();      sceneRef.current = null;
+    sceneBuiltRef.current = null;
+  };
+  // Build the scene when the drawable lines or the track model change; waits for
+  // the model so the road appears fully formed. Stored laps have a stable sample
+  // count so this builds once. A growing LIVE lap refreshes the painted lines
+  // in place via updateLines() — the full teardown/rebuild (renderer, road,
+  // camera) only happens when the line set or the fitted model itself changes.
   useEffect(() => {
-    if (!canvasRef.current || !lines3D.length || trackModel === null) { sceneRef.current = null; return; }
-    let cancelled = false, ctrl = null, ro = null;
+    if (!canvasRef.current || !lines3D.length || trackModel === null) { disposeScene(); return; }
+    const built = sceneBuiltRef.current;
+    if (sceneRef.current && built && built.model === trackModel && built.ids === lineIds &&
+        sceneRef.current.updateLines(lines3D)) {
+      return; // refreshed in place — scene survives
+    }
+    disposeScene();
+    let cancelled = false;
     // three.js is heavy and only needed on this tab — code-split it out of startup
     // via a dynamic import; build the scene once the module resolves.
     import("./lib/trackScene3d.js").then(({ createTrackScene }) => {
       if (cancelled || !canvasRef.current) return;
-      ctrl = createTrackScene(canvasRef.current, lines3D, { camMode, track: trackModel || null });
+      const ctrl = createTrackScene(canvasRef.current, lines3D, { camMode, track: trackModel || null });
       sceneRef.current = ctrl;
+      sceneBuiltRef.current = { model: trackModel, ids: lineIds };
       ctrl.setPlayback(playhead, axis); // late-loaded scene starts at the current playhead
-      ro = new ResizeObserver(() => ctrl.resize());
+      const ro = new ResizeObserver(() => ctrl.resize());
       ro.observe(canvasRef.current);
+      sceneRoRef.current = ro;
     });
-    return () => {
-      cancelled = true;
-      if (ro) ro.disconnect();
-      if (ctrl) ctrl.dispose();
-      sceneRef.current = null;
-    };
+    return () => { cancelled = true; };
   }, [lines3D, trackModel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tear the scene down for good when the tab unmounts.
+  useEffect(() => () => disposeScene(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Push the current playback fraction to the scene's own render loop.
   useEffect(() => { sceneRef.current?.setPlayback(playhead, axis); }, [playhead, axis]);
@@ -1685,7 +1717,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const [carSetup, setCarSetup] = useState(null); // { track, time, date, color, setup } | null
   const [traceOpen, setTraceOpen] = useState(false); // Trace Configurator modal
   // Which telemetry channels the trace pipeline records (display/config only — the
-  // bridge forwards what the game sends). Persisted so the choice sticks.
+  // telemetry core forwards what the game sends). Persisted so the choice sticks.
   const [traceChannels, setTraceChannels] = useState(() => {
     try { const s = JSON.parse(localStorage.getItem("f1coach.traceChannels") || "null"); if (s) return s; } catch {}
     return { throttle:true, brake:true, steering:true, gear:true, speed:true, rpm:false, ers:true, drs:true, tyreTemp:false, gforce:true };
@@ -1762,12 +1794,12 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // the dashboard. null until (and unless) a newer version is published.
   const appUpdate = useUpdateCheck();
 
-  // Speed units — the bridge always reports km/h; the driver can read km/h or
+  // Speed units — the telemetry core always reports km/h; the driver can read km/h or
   // mph across the Live KPIs, Telemetry readouts and Corner table. Persisted.
   const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
   useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
 
-  // Tyre temp units — the bridge always reports °C; the driver can read °C or °F
+  // Tyre temp units — the telemetry core always reports °C; the driver can read °C or °F
   // in the Telemetry Studio's Tyre Temps panel. Persisted.
   const [tempUnits, setTempUnits] = useState(() => localStorage.getItem("f1coach.tempUnits") || "°C");
   useEffect(() => { localStorage.setItem("f1coach.tempUnits", tempUnits); }, [tempUnits]);
@@ -1936,7 +1968,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Connection state
   const [wsConnected,  setWsConnected]  = useState(false);
   const [liveTel,      setLiveTel]      = useState(null);
-  // A drive "session": a fresh id minted each time the live bridge connects, so
+  // A drive "session": a fresh id minted each time live telemetry connects, so
   // laps recorded during one connection share it and the dashboard can count
   // distinct sessions per driver.
   const [sessionId,    setSessionId]    = useState(null);
@@ -1951,14 +1983,14 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // doesn't depend on storedLaps (which comes out of the recorder downstream).
   const loadedRefTrace = useMemo(() => refTraces.find(t=>t.id===activeTraceId)||null, [refTraces,activeTraceId]);
 
-  // Telemetry comes solely from the live UDP bridge. Until a connection delivers a
+  // Telemetry comes solely from the Rust telemetry core. Until a connection delivers a
   // snapshot, fall back to a zeroed reading so the UI renders an idle state.
   const rawTel = liveTel || EMPTY_TEL;
 
-  // Identify the circuit from the m_trackId the bridge forwards in each snapshot.
+  // Identify the circuit from the m_trackId the telemetry core forwards in each snapshot.
   const trackInfo = useMemo(() => getTrack(rawTel.trackId ?? -1), [rawTel.trackId]);
 
-  // Coarse game mode (Time Trial / Qualifying / …) from the bridge's sessionType,
+  // Coarse game mode (Time Trial / Qualifying / …) from the telemetry core's sessionType,
   // tagged onto each recorded lap so the dashboard can split fastest laps by mode.
   const sessionTypeLabel = useMemo(() => sessionTypeName(rawTel.sessionType), [rawTel.sessionType]);
 
@@ -2133,7 +2165,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const trackName = trackInfo?.name || activeTrace?.meta?.track || null;
 
   // Derive the active strategy zone from lap position here (not in the source):
-  // live packets off the UDP bridge only carry lapPct, not the zone.
+  // live snapshots from the telemetry core only carry lapPct, not the zone.
   const currentZone = useMemo(
     () => zones.find(z => rawTel.lapPct >= z.start && rawTel.lapPct <= z.end) || null,
     [rawTel.lapPct, zones]
@@ -2472,6 +2504,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     reader.readAsText(file);
   };
 
+  // Append a line to the pit-wall cue feed (kept to the last 60 entries).
+  const addCue = useCallback((text, type="info") => {
+    const t = new Date();
+    const time = `${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}`;
+    setCues(prev => [...prev.slice(-59), { text, time, type }]);
+  }, []);
+
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its
   // action point. Seconds → lap-fraction uses current speed and the lap length.
@@ -2528,7 +2567,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       speak("Battery critical — conserve ERS", "urgent");
       addCue("⚠️ Battery critical", "info");
     }
-  }, [tel.lapPct, audioOn, announceCalls, liveCues, leadSeconds]);
+  }, [tel.lapPct, tel.speed, tel.lapDistance, tel.lapTime, tel.ersBattery,
+      tel.gamePaused, tel.driverStatus, tel.pitStatus, wsConnected,
+      audioOn, announceCalls, liveCues, leadSeconds, speak, beep, addCue]);
 
   // ── AI between-lap coach: one improvement tip when a lap completes ───────
   // Fires once per freshly-completed lap (at the start/finish line), grounded in
@@ -2564,12 +2605,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     date: lap?.recordedAt ? new Date(lap.recordedAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "",
     color: activeDriverObj?.color || "#3671C6", setup: lap?.setup || null,
   });
-
-  const addCue = (text, type="info") => {
-    const t = new Date();
-    const time = `${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}`;
-    setCues(prev => [...prev.slice(-59), { text, time, type }]);
-  };
 
   // ── Tab button style ────────────────────────────────────────────────────
   const tabBtn = (t) => ({

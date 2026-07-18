@@ -32,8 +32,8 @@ export const isRankable = (l) => !l?.invalid;
 // driven-lap dropdowns: this drive's laps, never archived ("Reset Session Laps"
 // hides them for good). THE single definition of that scope so the Live and
 // Analytics panels can't drift apart.
-//   • With a live sessionId (bridge connected) → exactly that session's laps.
-//   • With none (app just booted, no live bridge yet) → we do NOT fall back to
+//   • With a live sessionId (telemetry connected) → exactly that session's laps.
+//   • With none (app just booted, no live telemetry yet) → we do NOT fall back to
 //     the driver's entire history across every track and session. We show only
 //     the most recently driven session's laps, so a fresh launch opens on the
 //     last drive rather than a career-spanning grab-bag of mixed tracks.

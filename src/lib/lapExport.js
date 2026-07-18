@@ -132,7 +132,7 @@ export function parseSessionLaps(text) {
   catch { throw new Error("Could not parse the file — it isn't valid JSON."); }
 
   if (!json || json.kind !== SESSION_KIND || !Array.isArray(json.laps)) {
-    throw new Error("Not a Box, Box session file — use “Save Session” to create one.");
+    throw new Error("Not an F1 Coach session file — use “Save Session” to create one.");
   }
   const laps = json.laps.filter(
     (l) => l && typeof l.lapTime === "number" && Array.isArray(l.samples));

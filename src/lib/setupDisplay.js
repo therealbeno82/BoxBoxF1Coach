@@ -1,5 +1,5 @@
 // ─── SETUP DISPLAY ──────────────────────────────────────────────────────────
-// Turn the raw CarSetups packet fields (m_frontWing, m_brakeBias, …) the bridge
+// Turn the raw CarSetups packet fields (m_frontWing, m_brakeBias, …) the telemetry core
 // forwards into grouped, game-style rows for the Setup popup. Mirrors the layout
 // of the in-game garage screen so the numbers read the way the driver set them.
 // Null-safe: returns [] when a lap carries no setup (older exports / not yet

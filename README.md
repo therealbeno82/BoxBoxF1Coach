@@ -1,13 +1,13 @@
-# Box, Box
+# F1 Coach
 
-**An AI race engineer for EA SPORTS F1™ 25/26.** Box, Box reads the game's live UDP
+**An AI race engineer for EA SPORTS F1™ 25/26.** F1 Coach reads the game's live UDP
 telemetry, compares your driving against Esports-grade reference traces, and coaches you
 over "team radio" — with real-time braking/ERS calls in the corner and an LLM race
 engineer you can talk to between laps, by voice or text.
 
-> Windows desktop app built with **Tauri 2** (Rust shell) + **React 18 / Vite** frontend,
-> with a bundled **Node** telemetry bridge sidecar. Small installer, low RAM — designed to
-> run alongside the game.
+> Windows desktop app built with **Tauri 2** (Rust shell) + **React 18 / Vite** frontend.
+> Telemetry parsing and force feedback run in-process in the Rust core. Small installer,
+> low RAM — designed to run alongside the game.
 
 ---
 
@@ -37,23 +37,24 @@ engineer you can talk to between laps, by voice or text.
 ## Architecture
 
 ```
- ┌────────────────────┐   UDP :20777    ┌─────────────────────┐   WS :9001    ┌──────────────────────┐
- │  F1 25/26 (game)   │ ──────────────▶ │  Node bridge        │ ────────────▶ │  React UI (WebView)  │
- │  UDP telemetry      │   format 2025   │  (Tauri sidecar)    │   JSON frames │  in the Tauri shell  │
- └────────────────────┘                 └─────────────────────┘               └──────────┬───────────┘
-                                                                                          │
-                                                                          ┌───────────────┴───────────────┐
-                                                                          │  Coaching                       │
-                                                                          │  • Rule engine (real-time calls)│
-                                                                          │  • LLM (between-lap analyst+chat)│
-                                                                          │  • Whisper STT / Kokoro TTS      │
-                                                                          └─────────────────────────────────┘
+ ┌────────────────────┐   UDP :20777    ┌─────────────────────┐  Tauri events  ┌──────────────────────┐
+ │  F1 25/26 (game)   │ ──────────────▶ │  Rust telemetry core│ ─────────────▶ │  React UI (WebView)  │
+ │  UDP telemetry      │   format 2026   │  (in-process)       │  ~30 Hz, only  │  in the Tauri shell  │
+ └────────────────────┘                 └──────────┬──────────┘   on change    └──────────┬───────────┘
+                                                   │ lock-free snapshot                    │
+                                                   ▼ (full rate)               ┌───────────┴───────────────────┐
+                                        ┌─────────────────────┐               │  Coaching                       │
+                                        │  FFB engine (Rust)  │               │  • Rule engine (real-time calls)│
+                                        │  → wheel via SDL2   │               │  • LLM (between-lap analyst+chat)│
+                                        └─────────────────────┘               │  • Whisper STT / Kokoro TTS      │
+                                                                              └─────────────────────────────────┘
 ```
 
-**Why a bridge?** Browsers can't read raw UDP, so a small native Node process (bundled as a
-Tauri sidecar) listens on the game's UDP port and re-broadcasts each frame over a localhost
-WebSocket the UI subscribes to. The Tauri shell spawns and tears down this sidecar
-automatically — no manual step.
+**Why an in-process core?** The webview can't read raw UDP, so the Rust shell owns a single
+UDP listener that parses the game's packets and publishes a lock-free snapshot. Two consumers
+read it: the force-feedback engine at full rate (UI cadence never adds FFB latency), and an
+emitter thread that forwards changes to the UI as Tauri events at ~30 Hz. No sidecar process,
+no WebSocket — it starts and stops with the app.
 
 **Why two coaching layers?** An LLM is too slow to make on-the-mark corner calls, so all
 real-time calls live in a deterministic rule engine that always runs (and is the fallback
@@ -76,14 +77,15 @@ wrapping.
 
 ## Tech stack
 
-| Layer        | Tech                                                                 |
-|--------------|----------------------------------------------------------------------|
-| Native shell | Tauri 2 (Rust), `tauri-plugin-shell`, `tauri-plugin-log`             |
-| Frontend     | React 18, Vite 6, Three.js (3D track view)                          |
-| Telemetry    | Node bridge (`ws`, `@deltazeroproduction/f1-udp-parser`)            |
-| Speech       | `@huggingface/transformers` (Whisper STT), `kokoro-js` (TTS), ONNX  |
-| LLM          | OpenRouter                                                          |
-| Packaging    | `@yao-pkg/pkg` (bridge sidecar), Tauri NSIS installer               |
+| Layer          | Tech                                                                 |
+|----------------|----------------------------------------------------------------------|
+| Native shell   | Tauri 2 (Rust), `tauri-plugin-opener`, `tauri-plugin-log`            |
+| Frontend       | React 18, Vite 6, Three.js (3D track view)                          |
+| Telemetry      | In-process Rust UDP parser (2026 packet format), lock-free `arc-swap` snapshot |
+| Force feedback | Rust FFB engine → wheel via SDL2 haptics (statically linked)        |
+| Speech         | `@huggingface/transformers` (Whisper STT), `kokoro-js` (TTS), ONNX  |
+| LLM            | OpenRouter                                                          |
+| Packaging      | Tauri NSIS installer                                                |
 
 ---
 
@@ -96,9 +98,10 @@ src/                     React app
   lib/coach/             LLM persona, prompts, guardrails, lap analysis, provider client
   lib/                   Track data, tyres, formatting, Whisper/Kokoro wrappers, 3D scene
   hooks/                 useCoachChat, useLlmHealth, useSpeechRecognition
-bridge/f1-bridge.cjs     UDP → WebSocket bridge (Tauri sidecar)
 scripts/copy-ort.mjs     Copies ONNX runtime wasm into /public/ort (CSP: served same-origin, not via CDN)
-src-tauri/               Rust shell: spawns/stops the bridge sidecar, window + CSP config
+src-tauri/src/telemetry/ Rust core: UDP listener + 2026-format packet parsing, shared snapshot
+src-tauri/src/ffb/       Rust FFB engine: reads the snapshot, drives the wheel via SDL2
+src-tauri/src/lib.rs     Tauri commands + the ~30 Hz change-only event emitter; window + CSP config
 public/ort/              Self-hosted ONNX runtime wasm
 ```
 
@@ -141,10 +144,7 @@ stored locally on your machine.
 ## Building the installer
 
 ```bash
-# 1. Build the bridge sidecar (≈55 MB packaged Node binary)
-npm run build:bridge
-
-# 2. Build the Tauri app + NSIS installer
+# Build the Tauri app + NSIS installer (frontend build runs automatically first)
 npm run tauri:build
 ```
 
@@ -156,13 +156,12 @@ Outputs:
 
 ## Configuration reference
 
-| Setting            | Default                       | Where                                   |
-|--------------------|-------------------------------|-----------------------------------------|
-| UDP port           | `20777`                       | bridge (`setUdpPort` over WS)           |
-| Bridge WebSocket   | `ws://localhost:9001`         | `bridge/f1-bridge.cjs`                  |
-| Broadcast rate     | 30 Hz                         | `BROADCAST_HZ` in the bridge            |
-| UDP format         | `2025`                        | in-game telemetry settings              |
-| OpenRouter model   | `anthropic/claude-3.5-haiku`  | `src/lib/coach/config.js` / Setup tab   |
+| Setting            | Default                       | Where                                        |
+|--------------------|-------------------------------|----------------------------------------------|
+| UDP port           | `20777`                       | Rust core (`set_udp_port` Tauri command / Settings tab) |
+| UI event rate      | ~30 Hz, change-only           | emitter thread in `src-tauri/src/lib.rs`     |
+| UDP format         | `2026`                        | in-game telemetry settings                   |
+| OpenRouter model   | `anthropic/claude-3.5-haiku`  | `src/lib/coach/config.js` / Setup tab        |
 
 ---
 
@@ -170,16 +169,16 @@ Outputs:
 
 A full review lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
-- The Tauri attack surface is minimal — capabilities grant only `core:default`, the shell
-  plugin is internal (not exposed to the frontend), and the CSP is tightly scoped
-  (`object-src 'none'`, `frame-src 'none'`, `base-uri 'self'`).
+- The Tauri attack surface is minimal — capabilities grant only `core:default` and
+  `opener:default`, and the CSP is tightly scoped (`object-src 'none'`, `frame-src 'none'`,
+  `base-uri 'self'`).
 - The LLM layer has real prompt-injection defenses (grounding, scope rule, `<< >>` data
   wrapping, output sanitization).
 - **Your OpenRouter API key is stored in plaintext** in the app's local data
   (`localStorage`). It never leaves your machine except in requests to OpenRouter, but a
   local process or anyone with disk access could read it. Treat it accordingly.
-- The bridge WebSocket currently binds all interfaces — fine on a trusted LAN, but consider
-  binding to loopback if that's a concern.
+- The UDP listener binds all interfaces so console players can point a second device at the
+  PC's LAN IP — it only ever *receives* game telemetry; nothing is served on the network.
 
 ---
 
