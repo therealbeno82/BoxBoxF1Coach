@@ -11,13 +11,12 @@ import CarSetupModal from "./components/modals/CarSetupModal.jsx";
 import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.jsx";
 import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
-import CoachChat from "./components/CoachChat.jsx";
 import TelemetryStudio from "./components/TelemetryStudio.jsx";
 import { exportLapToFile, exportSessionToFile, parseSessionLaps } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
 import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
 import { buildLapEvidence } from "./lib/lapEvidence.js";
-import { buildLapLog, buildTrends, buildCornerProfiles } from "./lib/lapHistory.js";
+import { buildTrends } from "./lib/lapHistory.js";
 import { makeTrackLabeler } from "./lib/trackLabels.js";
 // trackScene3d (and its three.js dependency) is loaded on demand inside the Driving
 // Lines tab — see the dynamic import in CompareDrivingLines — so three stays out of
@@ -50,9 +49,6 @@ const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
 // input (evidence, structured log, trends, corner profiles) to the current form on
 // THIS circuit rather than the driver's entire back-catalogue across all tracks.
 const COACH_LAP_WINDOW = 20;
-// How many older-session laps (same track) the coach also sees, clearly labelled
-// as previous-session material — trends/progress only, never "lap N" answers.
-const COACH_PREV_LAP_WINDOW = 10;
 
 // Colour per call/zone type. ERS zones colour by their ERS mode (see zoneFill);
 // the bare ZONE_COLORS.ers is only used for the toggle chip / legend swatch.
@@ -1775,12 +1771,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   useEffect(() => { localStorage.setItem("f1coach.openRouterKey", openRouterKey); }, [openRouterKey]);
   useEffect(() => { localStorage.setItem("f1coach.openRouterModel", openRouterModel); }, [openRouterModel]);
 
-  // One config object threaded to both LLM call sites (tips + chat).
+  // One config object threaded to the LLM call sites (tips + debrief).
   const llmConfig = useMemo(
     () => ({ openRouterKey, openRouterModel }),
     [openRouterKey, openRouterModel]
   );
-  const activeModelLabel = openRouterModel;
 
   // Live reachability of the LLM backend — polls on mount, on config change, and on
   // a slow interval. This drives the header
@@ -2144,7 +2139,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const announcedRef    = useRef({ set: new Set(), lastPct: 0 });
   const lastTrackLenRef = useRef(5000);
   const lastBatteryCallRef = useRef(0);
-  const coachCtxRef = useRef(null);
   // Live track map: world positions accumulated into ~12 m distance bins as you
   // drive, so the map draws the actual circuit. mapVersion bumps re-render on reset.
   const trackPathRef = useRef({ bins: new Map(), lastX: null, lastZ: null });
@@ -2309,47 +2303,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     && isKnownTrackName(drivenTrackName) && isKnownTrackName(refTrackName)
     && !sameTrack(drivenTrackName, refTrackName);
 
-  // Laps the coach is allowed to reason about, partitioned so "lap N" is never
-  // ambiguous (lap numbers restart every session, so an all-time list shows the
-  // model several identical "Lap 2" rows):
+  // Laps the coach is allowed to reason about:
   //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
-  //     another track (that mixed history is what made the log claim "55 laps");
-  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
-  //   • split into the AUTHORITATIVE session (live session, else the most recent
-  //     session on this track when the app is opened offline to review data) and a
-  //     short, clearly-labelled tail of older-session laps (trends/progress only).
-  // Partitioning happens BEFORE any windowing so a long current session is never
-  // truncated in favour of stale laps.
+  //     another track (mixed history produced nonsense cross-track claims);
+  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps).
   const trackLaps = useMemo(
     () => storedLaps.filter((l) => isRankable(l) && sameTrack(l.meta?.track, drivenTrackName)),
     [storedLaps, drivenTrackName]);
-
-  // The session whose laps answer bare "lap N" questions: the live game session
-  // when UDP is flowing, else the session of the newest recorded lap on this track
-  // (same fallback as visibleSessionLaps in driverStats.js). Null when no lap
-  // carries a sessionId at all (legacy history) — then there is no authoritative
-  // block and everything is presented as older material.
-  const coachSessionId = useMemo(() => {
-    if (sessionId) return sessionId;
-    let latest = null;
-    for (const l of trackLaps) {
-      if (!l.meta?.sessionId) continue;
-      if (!latest || (l.recordedAt || 0) > (latest.recordedAt || 0)) latest = l;
-    }
-    return latest?.meta?.sessionId ?? null;
-  }, [trackLaps, sessionId]);
-
-  const currentSessionLaps = useMemo(
-    () => coachSessionId
-      ? trackLaps.filter((l) => l.meta?.sessionId === coachSessionId).slice(-COACH_LAP_WINDOW)
-      : [],
-    [trackLaps, coachSessionId]);
-
-  // Older-session laps on this track (includes legacy laps without a sessionId).
-  const previousSessionLaps = useMemo(() => {
-    const cur = new Set(currentSessionLaps.map((l) => l.id));
-    return trackLaps.filter((l) => !cur.has(l.id)).slice(-COACH_PREV_LAP_WINDOW);
-  }, [trackLaps, currentSessionLaps]);
 
   // Aggregate window for inputs that don't cite lap numbers (evidence, trends,
   // structured log) — the most recent laps on this track regardless of session.
@@ -2378,15 +2338,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       { labelAt: trackLabeler, setup: lap.setup, lapsAnalysed: coachableLaps.length });
   }, [coachableLaps, activeTrace, trackLabeler, tracksMismatch]);
 
-  // History views for the conversational coach, all scoped to the current circuit:
-  // a session-partitioned per-lap log (bare "lap N" questions resolve against the
-  // current/last session; older sessions are listed separately for trends) and
-  // cross-lap trends (recurring corner issues on this track).
-  // Recomputed only when a lap completes or the reference/zones change.
-  const lapLog = useMemo(
-    () => buildLapLog(currentSessionLaps, previousSessionLaps,
-      { live: !!sessionId, max: COACH_LAP_WINDOW }),
-    [currentSessionLaps, previousSessionLaps, sessionId]);
+  // Cross-lap trends (recurring corner issues on this track), scoped to the
+  // current circuit. Recomputed only when a lap completes or the reference changes.
   const sessionTrends = useMemo(() => {
     if (coachableLaps.length < 2) return null;
     // A wrong-track reference must not seed the "vs reference" trend lines — pass no
@@ -2394,23 +2347,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const ref = tracksMismatch ? null : (activeTrace?.samples || null);
     return buildTrends(coachableLaps, ref, { labelAt: trackLabeler });
   }, [coachableLaps, activeTrace, trackLabeler, tracksMismatch]);
-  // Per-corner profile history (current/last session only — it cites lap numbers,
-  // which restart every session) — speed/gear/throttle/brake/steer carried through
-  // each corner — so the coach can field specific "what did I do at T# on lap N"
-  // recall. Null for unknown tracks (no corner DB).
-  const cornerProfiles = useMemo(
-    () => buildCornerProfiles(currentSessionLaps, { corners: trackCorners, max: COACH_LAP_WINDOW }),
-    [currentSessionLaps, trackCorners]
-  );
-
-  // The driver's current position as a corner/sector name, for the live coach
-  // context. Lap length comes from the reference trace, else from lapPct.
-  const liveLapLen = useMemo(() => {
-    const s = activeTrace?.samples;
-    if (Array.isArray(s) && s.length) return s[s.length - 1].dist || 0;
-    return (tel.lapPct > 0.02 && tel.lapDistance) ? tel.lapDistance / tel.lapPct : 0;
-  }, [activeTrace, tel.lapDistance, tel.lapPct]);
-  const posLabel = trackLabeler(tel.lapDistance, liveLapLen);
 
   // LLM
   const { ask, askLap, thinking, lastAdvice } = useLLM(llmConfig);
@@ -2624,11 +2560,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const zoneLabel   = zone?.type==="brake"?"BRAKE":zone?.type==="lico"?"LIFT AND COAST":zone?.type==="ers"?`ERS — ${ERS_MODES[zone.ersMode]?.toUpperCase()}`:"CLEAR";
   const zoneColor   = zone ? zoneFill(zone) : "var(--text-faintest)";
 
-  // Live snapshot for the Voice Coach — keeps telemetry context current even
-  // when a question arrives via an async speech-recognition callback.
-  coachCtxRef.current = { tel, refSample, zone, trace: activeTrace?.meta || null, evidence: lapEvidence, lapLog, trends: sessionTrends, cornerProfiles, posLabel,
-    trackMismatch: tracksMismatch ? { refTrack: refTrackName, drivenTrack: drivenTrackName } : null };
-
   return (
     <Shell
       tab={tab} onTab={setTab} onSettings={()=>setTab("setup")}
@@ -2693,7 +2624,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           trackName={trackName} sessionLabel={sessionTypeLabel}
           laps={sessionLaps} units={units} zones={zones}
           activeTrace={activeTrace} comparisonLap={comparisonLap}
-          telemetry={tel} refSample={refSample}
           referenceSources={[...refTraces, ...sessionLaps]}
           referenceId={activeTraceId} onSelectReference={setActiveTraceId}
           comparisonSources={sessionLaps}
@@ -2712,8 +2642,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
             sessionPath={recordedPath} trackName={trackName} trackSlug={trackInfo?.slug || null}
             zones={zones} />}
-          chatSlot={<CoachChat llmConfig={llmConfig} modelLabel={activeModelLabel}
-            contextRef={coachCtxRef} speak={speak} health={llmHealth} />}
         />
         );
       })()}

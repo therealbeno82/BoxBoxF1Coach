@@ -1,15 +1,13 @@
-// ─── TRANSFORMERS.JS RUNTIME CONFIG (shared by Whisper STT + Kokoro TTS) ───────
-// Both the offline speech-to-text (whisperSTT.js) and the neural voice
-// (kokoroTTS.js → kokoro-js) run on the SAME @huggingface/transformers instance
-// (npm dedupes it to one copy), so its global `env` is shared. We configure it
-// once, here, and call configureTransformers() from each model's lazy loader
-// before the first pipeline call.
+// ─── TRANSFORMERS.JS RUNTIME CONFIG (Kokoro TTS) ──────────────────────────────
+// The neural voice (kokoroTTS.js → kokoro-js) runs on @huggingface/transformers;
+// we configure its global `env` once, here, and call configureTransformers()
+// from the model's lazy loader before the first pipeline call.
 //
 // Policy: DOWNLOAD-ON-FIRST-USE (weights are not bundled in the installer).
 //   • allowLocalModels = false  → we ship no local model files, so don't waste a
 //     round-trip 404-ing for `/models/...` before falling back to the CDN.
 //   • allowRemoteModels = true  → fetch weights from the Hugging Face CDN the
-//     first time the driver uses voice in/out.
+//     first time the driver uses the voice.
 //   • useBrowserCache = true    → persist them in the WebView's Cache storage so
 //     every launch after the first works fully offline (no network needed).
 
