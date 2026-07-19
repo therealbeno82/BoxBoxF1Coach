@@ -2430,15 +2430,16 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     onReceivingChange: setWsConnected,
   });
 
-  // Drive-session identity comes from the GAME's per-session UID (in every UDP
-  // header), not from the receiving on/off edge — the game stops sending packets
-  // while paused, so an edge-based session id reset the Session Laps panel and lap
-  // numbering after any pause longer than the receive timeout. A manual "Reset
-  // Session Laps" still mints its own id (resetSessionLaps), which sticks until
-  // the game starts a genuinely new session (new UID).
+  // Drive-session identity is minted from the GAME's per-session UID (in every UDP
+  // header), but ONLY to open a panel that has none yet. A new UID deliberately does
+  // NOT re-scope the panel: restarting a session in-game (the normal way to run
+  // repeated qualy/practice stints on the same circuit) would otherwise drop every
+  // lap driven so far. The panel therefore persists across session restarts and is
+  // only cleared by a different circuit (the auto-reset effect above) or the manual
+  // "Reset Session Laps" button — both of which mint their own id.
   useEffect(() => {
     const uid = rawTel.sessionUid;
-    if (uid && uid !== "0") setSessionId(`s-${uid}`);
+    if (uid && uid !== "0") setSessionId(prev => prev || `s-${uid}`);
   }, [rawTel.sessionUid]);
 
   // Push a UDP-port change to the native core; it rebinds its listener live.
