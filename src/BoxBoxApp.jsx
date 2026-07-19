@@ -18,9 +18,9 @@ import { exportProfile as exportProfileFile, importProfile as importProfileData 
 import { buildLapEvidence } from "./lib/lapEvidence.js";
 import { buildTrends } from "./lib/lapHistory.js";
 import { makeTrackLabeler } from "./lib/trackLabels.js";
-// trackScene3d (and its three.js dependency) is loaded on demand inside the Driving
-// Lines tab — see the dynamic import in CompareDrivingLines — so three stays out of
-// the app's startup bundle.
+// trackScene3d (and its three.js dependency) is loaded on demand when the Analytics
+// Overview mounts — see the dynamic import in CompareDrivingLines — so three stays
+// out of the app's startup bundle.
 import { getTrack, sameTrack, isKnownTrackName } from "./lib/trackData.js";
 import { getCorners, cornerLabel, resolveSlug } from "./lib/cornerData.js";
 import { synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE } from "./lib/kokoroTTS.js";
@@ -2634,7 +2634,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
             zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
-            visibleTraces={visibleTraces} onToggleTrace={toggleTrace} />}
+            visibleTraces={visibleTraces} onToggleTrace={toggleTrace} compact />}
           ersSlot={<CompareTrackMaps referenceLap={activeTrace} comparisonLap={comparisonLap}
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
             sessionPath={recordedPath} trackName={trackName} telemetry={tel} />}

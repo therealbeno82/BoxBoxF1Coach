@@ -1,12 +1,13 @@
 // ─── ANALYTICS SCREEN (Performance Center) ──────────────────────────────────
-// Post-session lap analysis. Reference/driven lap selectors feed four sub-tabs:
-//   • Consistency — per-lap sector-delta matrix + the AI Race Engineer chat
-//   • Telemetry   — the MoTeC trace stack + live-vs-reference readouts
+// Post-session lap analysis. Reference/driven lap selectors feed three sub-tabs:
+//   • Overview    — the combined view: 3D racing lines beside the telemetry trace
+//                   stack, with the lap-consistency sector matrix as a collapsible
+//                   strip along the bottom (no tab-flicking while analysing a lap)
 //   • ERS & Lico  — side-by-side reference/driven track maps
-//   • Driving Lines — the 3D racing-line view + a corner-by-corner apex table
-// The heavy reusable views (traces / maps / 3D / chat) are passed in as slots so
-// they keep their existing engine; this screen owns the chrome + the new matrix
-// and corner table.
+//   • Corners     — the corner-by-corner apex-speed table
+// The heavy reusable views (traces / maps / 3D) are passed in as slots so they
+// keep their existing engine; this screen owns the chrome + the matrix and
+// corner table.
 
 import { useMemo, useRef, useState, useEffect } from "react";
 import { C, FONT, SECTOR_COLORS, fmtDelta } from "../../lib/ui/tokens.js";
@@ -14,10 +15,9 @@ import { formatLapTime, toSpeed, speedUnitLabel } from "../../lib/format.js";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 
 const SUBTABS = [
-  ["consistency", "Consistency"],
-  ["telemetry", "Telemetry"],
+  ["overview", "Overview"],
   ["ers", "ERS & Lico Maps"],
-  ["lines", "Driving Lines"],
+  ["corners", "Corners"],
 ];
 
 const subTabStyle = (active) => ({
@@ -70,9 +70,11 @@ export default function AnalyticsScreen({
   referenceSources = [], referenceId, onSelectReference, onLoadTrace, onRemoveTrace,
   comparisonSources = [], comparisonId, onSelectComparison, onDeleteLap, onExportLap,
   labelFor = (s) => s?.id, onOpenSetup, onResetSessionLaps,
-  tracesSlot, ersSlot, linesSlot, chatSlot,
+  tracesSlot, ersSlot, linesSlot,
 }) {
-  const [subTab, setSubTab] = useState("consistency");
+  const [subTab, setSubTab] = useState("overview");
+  // Overview: is the consistency strip along the bottom expanded?
+  const [stripOpen, setStripOpen] = useState(true);
   const fileRef = useRef(null);
 
   // Lap awaiting a save; when set, the "hide setup?" dialog is open. We only ask
@@ -244,86 +246,98 @@ export default function AnalyticsScreen({
       </div>
 
       {/* ── Tab content ── */}
-      {subTab === "consistency" && (
-        <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: "1.5 1 420px", minWidth: 320, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-              <span style={{ fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 }}>Consistency Matrix · Sector Times vs Best</span>
-              <div style={{ display: "flex", gap: 14 }}>
-                {[["Best sector", C.green], ["Slower", C.yellow], ["Gap to best", C.red]].map(([l, c]) => (
-                  <span key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9, color: C.textMuted }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 2, background: c }} />{l}
-                  </span>
-                ))}
-              </div>
+      {subTab === "overview" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Top row: 3D racing lines (left) + telemetry trace stack (right) */}
+          <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 14 }}>
+            <div style={{ flex: "1.2 1 0", minWidth: 0, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
+              {linesSlot}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, marginBottom: 9, padding: "0 10px" }}>
-              {["Lap", "S1", "S2", "S3", "Lap Time", ""].map((h, i) => (
-                <div key={i} style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
-                  textAlign: i === 0 ? "left" : i === 4 ? "right" : "center" }}>{h}</div>
-              ))}
-            </div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 7 }}>
-              {matrix.rows.length === 0 && (
-                <div style={{ margin: "auto", textAlign: "center", color: C.textFaint, fontSize: 12, lineHeight: 1.6, padding: 20 }}>
-                  No laps with sector splits yet.<br />Drive laps with sector timing to build the matrix.
-                </div>
-              )}
-              {matrix.rows.map(({ lap, cells }) => {
-                const cur = lap.id === comparisonId;
-                const invalid = !!lap.invalid;
-                return (
-                  <div key={lap.id} style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, alignItems: "center",
-                    background: cur ? C.elevated : C.inset, border: `1px solid ${cur ? C.blue : invalid ? C.red : C.line}`, borderRadius: 8, padding: "11px 10px" }}>
-                    <div style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, color: invalid ? C.textDim : cur ? "#fff" : C.textMuted }}>{lap.lapNumber ?? "?"}</div>
-                    {cells.map((c, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
-                        <span style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 700, color: c.color }}>{c.time}</span>
-                        {c.delta && (
-                          <span style={{ fontFamily: FONT.mono, fontSize: 10, fontWeight: 600, color: C.red }}>{c.delta}</span>
-                        )}
-                      </div>
-                    ))}
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                      <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, textAlign: "right", color: invalid ? C.textDim : C.textBody2, textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(lap.lapTime, 3)}</span>
-                      {invalid && (
-                        <span title="Lap time deleted by the game (track limits / corner cut)" style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>Invalidated</span>
-                      )}
-                    </div>
-                    <WrenchBtn onClick={() => onOpenSetup(lap)} has={!!lap.setup} />
-                  </div>
-                );
-              })}
-            </div>
-            {/* Theoretical best — the best possible lap from the fastest sectors set this session */}
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}`, display: "flex",
-              alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Theoretical Best</div>
-                <div style={{ fontFamily: FONT.mono, fontSize: 24, fontWeight: 800, color: C.purple, marginTop: 4, lineHeight: 1 }}>
-                  {matrix.best.every((s) => typeof s === "number" && s > 0)
-                    ? formatLapTime(matrix.best.reduce((a, b) => a + b, 0), 3) : "—"}
-                </div>
-                <div style={{ fontSize: 9, color: C.textFaint, marginTop: 4 }}>Fastest sectors set this session</div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {[0, 1, 2].map((i) => (
-                  <div key={i} style={{ minWidth: 58, textAlign: "center", background: C.inset, border: `1px solid ${C.line}`,
-                    borderTop: `2px solid ${SECTOR_COLORS[i]}`, borderRadius: 8, padding: "7px 9px" }}>
-                    <div style={{ fontSize: 8, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>S{i + 1}</div>
-                    <div style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 700, marginTop: 3 }}>{fmtSec(matrix.best[i])}</div>
-                  </div>
-                ))}
-              </div>
+            {/* TelemetryStudio (compact) draws its own card */}
+            <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column" }}>
+              {tracesSlot}
             </div>
           </div>
-          <div style={{ flex: "1 1 360px", minWidth: 300, ...card, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
-            {chatSlot}
+
+          {/* Bottom: collapsible lap-consistency strip */}
+          <div style={{ flex: "none", ...card, overflow: "hidden" }}>
+            <button onClick={() => setStripOpen((o) => !o)} title={stripOpen ? "Collapse" : "Expand"}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "11px 16px",
+                background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT.ui, textAlign: "left" }}>
+              <span style={{ fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 }}>
+                Lap Consistency · Sector Times vs Best</span>
+              <span style={{ marginLeft: "auto", display: "flex", alignItems: "baseline", gap: 7 }}>
+                <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase" }}>Theoretical Best</span>
+                <span style={{ fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
+                  {matrix.best.every((s) => typeof s === "number" && s > 0)
+                    ? formatLapTime(matrix.best.reduce((a, b) => a + b, 0), 3) : "—"}
+                </span>
+              </span>
+              <span style={{ color: C.textDim, fontSize: 11 }}>{stripOpen ? "▾" : "▸"}</span>
+            </button>
+            {stripOpen && (
+              <div style={{ padding: "0 16px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} style={{ minWidth: 58, textAlign: "center", background: C.inset, border: `1px solid ${C.line}`,
+                        borderTop: `2px solid ${SECTOR_COLORS[i]}`, borderRadius: 8, padding: "5px 9px" }}>
+                        <div style={{ fontSize: 8, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>S{i + 1}</div>
+                        <div style={{ fontFamily: FONT.mono, fontSize: 13, fontWeight: 700, marginTop: 2 }}>{fmtSec(matrix.best[i])}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 14 }}>
+                    {[["Best sector", C.green], ["Slower", C.yellow], ["Gap to best", C.red]].map(([l, c]) => (
+                      <span key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9, color: C.textMuted }}>
+                        <span style={{ width: 9, height: 9, borderRadius: 2, background: c }} />{l}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, marginBottom: 8, padding: "0 10px" }}>
+                  {["Lap", "S1", "S2", "S3", "Lap Time", ""].map((h, i) => (
+                    <div key={i} style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
+                      textAlign: i === 0 ? "left" : i === 4 ? "right" : "center" }}>{h}</div>
+                  ))}
+                </div>
+                <div style={{ maxHeight: 230, overflowY: "auto", display: "flex", flexDirection: "column", gap: 7 }}>
+                  {matrix.rows.length === 0 && (
+                    <div style={{ margin: "auto", textAlign: "center", color: C.textFaint, fontSize: 12, lineHeight: 1.6, padding: 20 }}>
+                      No laps with sector splits yet. Drive laps with sector timing to build the matrix.
+                    </div>
+                  )}
+                  {matrix.rows.map(({ lap, cells }) => {
+                    const cur = lap.id === comparisonId;
+                    const invalid = !!lap.invalid;
+                    return (
+                      <div key={lap.id} style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, alignItems: "center",
+                        background: cur ? C.elevated : C.inset, border: `1px solid ${cur ? C.blue : invalid ? C.red : C.line}`, borderRadius: 8, padding: "9px 10px" }}>
+                        <div style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, color: invalid ? C.textDim : cur ? "#fff" : C.textMuted }}>{lap.lapNumber ?? "?"}</div>
+                        {cells.map((c, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
+                            <span style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 700, color: c.color }}>{c.time}</span>
+                            {c.delta && (
+                              <span style={{ fontFamily: FONT.mono, fontSize: 10, fontWeight: 600, color: C.red }}>{c.delta}</span>
+                            )}
+                          </div>
+                        ))}
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                          <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, textAlign: "right", color: invalid ? C.textDim : C.textBody2, textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(lap.lapTime, 3)}</span>
+                          {invalid && (
+                            <span title="Lap time deleted by the game (track limits / corner cut)" style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>Invalidated</span>
+                          )}
+                        </div>
+                        <WrenchBtn onClick={() => onOpenSetup(lap)} has={!!lap.setup} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
-
-      {subTab === "telemetry" && tracesSlot}
 
       {subTab === "ers" && (
         <div style={{ flex: 1, minHeight: 0, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
@@ -331,12 +345,9 @@ export default function AnalyticsScreen({
         </div>
       )}
 
-      {subTab === "lines" && (
-        <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: "1.6 1 460px", minWidth: 320, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
-            {linesSlot}
-          </div>
-          <div style={{ flex: "1 1 360px", minWidth: 300, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+      {subTab === "corners" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+          <div style={{ flex: 1, minWidth: 0, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
             <span style={{ fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600, marginBottom: 12 }}>Corner Analysis · Apex Speed vs Reference</span>
             <div style={{ display: "grid", gridTemplateColumns: "1.2fr 60px 64px 56px 60px", gap: 8, padding: "0 12px 9px" }}>
               {["Corner", "Gear", "Apex", "Ref", "Δ"].map((h, i) => (

@@ -255,6 +255,9 @@ export default function TelemetryStudio({
   compareSamples = [], referenceSamples = [], lapLength = 0,
   zones = [], sectorDists = [], units = "km/h", tempUnits = "°C", corners: cornerDb = [],
   visibleTraces = null, onToggleTrace = null,
+  // Compact mode drops the right-hand readout column so the trace stack can sit
+  // beside another view (the combined Analytics overview) without overflowing.
+  compact = false,
 }) {
   const [cursor, setCursor] = useState(0.5);      // 0–1 across the visible window
   const [playing, setPlaying] = useState(false);
@@ -520,7 +523,7 @@ export default function TelemetryStudio({
       </div>
 
       {/* ── Right: live-vs-reference readouts + corner info ── */}
-      <div style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
+      {!compact && <div style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
         {readouts.map((k) => (
           <div key={k.label} style={{ flex: 1, maxHeight: 110, ...cardStyle, padding: "9px 16px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{k.label}</div>
@@ -541,7 +544,7 @@ export default function TelemetryStudio({
             <span style={{ fontWeight: 700, fontSize: 16, lineHeight: 1.2, color: C.textBody2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nearCorner?.note || ""}</span>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
