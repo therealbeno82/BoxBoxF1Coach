@@ -13,6 +13,10 @@ src-tauri/target
 # ~90 MB, near GitHub's 100 MB hard limit); re-fetch with `node scripts/fetch-kokoro-model.mjs`
 public/kokoro/
 
+# Dev-only synthetic lap (scripts/make-fixture-lap.mjs) — never commit; it would
+# ship in the packaged app from public/
+public/dev-fixture-lap.json
+
 # Editor / OS
 .DS_Store
 .vscode/*
