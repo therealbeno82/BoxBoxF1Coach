@@ -52,6 +52,16 @@ export function visibleSessionLaps(laps = [], sessionId = null) {
   return latestSid ? visible.filter((l) => l.meta?.sessionId === latestSid) : visible;
 }
 
+// A "run" is one continuous block of driving in the same game session type on the
+// same track within one drive — a qualifying stint, then the race that follows it.
+// The Live lap log prints a conditions header per run and restarts its lap count
+// at 1 in each, and the recorder numbers laps against the same key, so the panel's
+// blocks and the stored lapNumbers can't drift. Track is part of the key so a
+// track change (which also mints a new sessionId) can never merge two circuits.
+export function lapRunKey({ sessionId, sessionType, track } = {}) {
+  return `${sessionId ?? "∅"}::${sessionType ?? "?"}::${track ?? "?"}`;
+}
+
 export function computeDriverStats(laps = [], opts = {}) {
   const recentCount = opts.recent || 10;
   // Bests, PBs and theoretical-optimal sectors ignore game-invalidated laps — see

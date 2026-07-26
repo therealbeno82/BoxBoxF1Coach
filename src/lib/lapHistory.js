@@ -1,34 +1,66 @@
 // ─── LAP HISTORY ──────────────────────────────────────────────────────────────
-// History views of the driver's completed laps for the coaching LLM, so it can
+// A history view of the driver's completed laps for the coaching LLM, so it can
 // reason beyond the single most-recent lap that buildLapEvidence sees:
 //
-//   buildLapLog — a compact per-lap table (time, sector splits, gap to the
-//     personal best), partitioned by session so a bare "lap N" question is
-//     never ambiguous: lap numbers restart at 1 every session, so the current
-//     (or last) session is the authoritative block and older same-track
-//     sessions are listed separately as trends-only material.
 //   buildTrends — cross-lap pattern detection: issues that recur across MOST of
 //     the laps rather than appearing once, which is what makes "you KEEP doing
 //     X in turn 3" coaching honest. Detects consistently-slow corners, a wrong
 //     gear held lap after lap, persistent over-rotation, and inconsistency.
 //
+// The laps it is handed are already scoped to one circuit, one bucket
+// (qualifying, or a race stint on one compound — see lib/lapBuckets.js) AND past
+// that bucket's pace gate, so a "trend" here is always drawn from comparable laps
+// that were all the same exercise.
+//
+// WHY IT IS CORNER-ANCHORED, NOT GRID-ANCHORED
+// An earlier version compared speeds every 50 m of track. That reads fine on
+// paper and is badly wrong in a braking zone, where speed falls about 1 km/h per
+// metre: braking 15 m later than the reference shows up as a 15 km/h "deficit"
+// that costs nothing at all, and those artefacts out-ranked every real finding
+// because the ranking was in km/h. Corners are now detected from the reference's
+// own speed minima and each lap is compared MINIMUM-SPEED-TO-MINIMUM-SPEED
+// through the corner — the number a driver actually recognises, and one that is
+// immune to where in the braking zone the sample happened to land.
+//
+// Everything is then ranked by the SECONDS it costs (the same 1/v segment model
+// coach/lapAnalysis.js uses), not by raw km/h, so the biggest number can no
+// longer beat the most expensive problem.
+//
 // Laps share the reference-trace sample shape
 // ({ dist, throttle, brake, speed, steer, gear, ersMode, ersSpent }).
 
-import { formatLapTime } from "./format.js";
-import { tyreLabel, tyreCondition } from "./tyres.js";
-import { cornerLabel } from "./cornerData.js";
 import { isRankable } from "./driverStats.js";
 
-// Nearest sample by track distance (samples are sorted by dist). Local copy so
-// this module stays independent of lapEvidence.js (which keeps its own).
-function sampleAt(samples, d) {
-  let best = samples[0], bd = Math.abs(samples[0].dist - d);
-  for (let i = 1; i < samples.length; i++) {
-    const x = Math.abs(samples[i].dist - d);
-    if (x < bd) { bd = x; best = samples[i]; }
-  }
-  return best;
+const GRID_STEP = 25;          // m, resolution the reference speed curve is read at
+const CORNER_HALF = 90;        // m either side of an apex that counts as "the corner"
+const CORNER_LEN = 2 * CORNER_HALF;
+const MIN_CORNER_GAP = 250;    // m, two apexes closer than this are one corner
+const SPEED_FLOOR_KMH = 12;    // guards the 1/v time model against pit/standstill samples
+const MAX_TREND_LAPS = 10;     // the recent laps a trend is drawn from (see buildTrends)
+
+// A systematic deficit this large across EVERY corner isn't driving — it's a
+// reference on different fuel, a different setup or a different car. Beyond it we
+// stop reporting corners as if each were its own fixable problem.
+const BASELINE_OFFSET_KMH = 3.5;
+
+// ── small numeric helpers ────────────────────────────────────────────────────
+
+const asc = (nums) => [...nums].sort((a, b) => a - b);
+
+function quantile(sortedAsc, q) {
+  if (!sortedAsc.length) return null;
+  const pos = (sortedAsc.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return lo === hi ? sortedAsc[lo] : sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
+}
+const median = (nums) => quantile(asc(nums), 0.5);
+
+// Seconds lost covering `len` metres at `vu` instead of `vr` (km/h in, s out).
+// Positive = slower than the reference. The same physical model as lapAnalysis.
+function timeCost(vu, vr, len = CORNER_LEN) {
+  const a = Math.max(SPEED_FLOOR_KMH, vu) / 3.6;
+  const b = Math.max(SPEED_FLOOR_KMH, vr) / 3.6;
+  return len / a - len / b;
 }
 
 // Most frequent value in a list (ignoring null/undefined) — used to find the
@@ -45,203 +77,221 @@ function modal(values) {
   return { value: best, count: bestCount };
 }
 
-const fmtSec = (s) => (typeof s === "number" && s > 0 ? s.toFixed(1) : "—");
+// ── sampling ─────────────────────────────────────────────────────────────────
 
-// Lap-wide top speed (km/h) from the lap's binned samples, rounded — or null when a
-// lap carries no samples (e.g. an imported time-only lap).
-function topSpeedOf(lap) {
-  if (!Array.isArray(lap?.samples) || !lap.samples.length) return null;
-  let mx = 0;
-  for (const s of lap.samples) if (typeof s.speed === "number" && s.speed > mx) mx = s.speed;
-  return mx > 0 ? Math.round(mx) : null;
+// Interpolated sample at track distance `d`, or NULL when `d` falls outside the
+// span this lap actually recorded. The null matters: the old nearest-sample
+// lookup clamped instead, so a lap whose recording started late or ended early
+// had its first/last sample compared against reference data hundreds of metres
+// away — the single largest source of impossible speed gaps.
+function sampleAt(samples, d) {
+  const last = samples.length - 1;
+  if (d < samples[0].dist || d > samples[last].dist) return null;
+  let lo = 0, hi = last;
+  if (d === samples[0].dist) return samples[0];
+  if (d === samples[last].dist) return samples[last];
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid].dist <= d) lo = mid; else hi = mid;
+  }
+  const a = samples[lo], b = samples[hi];
+  const t = (d - a.dist) / ((b.dist - a.dist) || 1);
+  const lerp = (x, y) => (x ?? 0) + ((y ?? 0) - (x ?? 0)) * t;
+  return {
+    dist: d,
+    speed: lerp(a.speed, b.speed), throttle: lerp(a.throttle, b.throttle),
+    brake: lerp(a.brake, b.brake), steer: lerp(a.steer, b.steer),
+    gear: t < 0.5 ? a.gear : b.gear,
+    ersMode: t < 0.5 ? a.ersMode : b.ersMode,
+  };
 }
 
-// ── Per-lap log ───────────────────────────────────────────────────────────────
-// Short human date for a session sub-header ("28 Jun"); null when the lap has no
-// usable recordedAt.
-function shortDate(ts) {
-  const d = ts != null ? new Date(ts) : null;
-  return d && !Number.isNaN(d.getTime())
-    ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-    : null;
+// How a lap behaves through one corner window: its own slowest point (wherever it
+// falls inside the window), the gear held there, and how hard it was steering.
+// Null when the lap doesn't cover the whole window.
+function cornerPass(samples, d0, d1) {
+  let slowest = null, steerSum = 0, speedSum = 0, n = 0;
+  for (let d = d0; d <= d1; d += GRID_STEP) {
+    const s = sampleAt(samples, d);
+    if (!s) return null;
+    if (!slowest || (s.speed ?? Infinity) < slowest.speed) slowest = s;
+    steerSum += Math.abs(s.steer ?? 0);
+    speedSum += s.speed ?? 0;
+    n++;
+  }
+  if (!slowest || !n) return null;
+  // vMin is the headline (the number the driver recognises); vMean is what the
+  // time cost is computed from — you are only down on the apex figure AT the apex,
+  // so pricing the whole corner at the apex deficit would overstate every finding.
+  return { vMin: slowest.speed ?? 0, dMin: slowest.dist, gear: slowest.gear,
+    steer: steerSum / n, vMean: speedSum / n };
 }
 
-// Two-block log: the AUTHORITATIVE session (live now, or the last session on this
-// track when reviewing offline) followed by older same-track sessions. Lap numbers
-// restart at 1 every session, so the split — plus explicit wording — is what lets
-// the model answer "what was my lap 2?" without picking between namesakes.
-// opts: { live: boolean — a game session is currently active, max: current-lap cap }
-export function buildLapLog(currentLaps, previousLaps, opts = {}) {
-  // Game-invalidated laps (see isRankable) are never fed to the coach — no
-  // advice or history recall should be grounded in a deleted lap.
-  const usable = (laps) => (laps || []).filter((l) => isRankable(l) && typeof l.lapTime === "number" && l.lapTime > 0);
-  const current = usable(currentLaps).slice(-(opts.max || 15)); // cap tokens on a long session
-  const previous = usable(previousLaps);
-  if (!current.length && !previous.length) return null;
+// ── corner detection ─────────────────────────────────────────────────────────
 
-  // Personal best per condition so a wet/inter lap is judged against other wet
-  // laps, not the (unbeatable-in-the-wet) dry best. Untagged laps fold into dry.
-  const bestFor = (rows, cond) => {
-    const t = rows.filter((l) => (tyreCondition(l.tyre) ?? "dry") === cond);
-    return t.length ? Math.min(...t.map((l) => l.lapTime)) : null;
-  };
-  const bestSummary = (dry, wet) => [
-    dry != null ? `dry ${formatLapTime(dry)}` : null,
-    wet != null ? `wet ${formatLapTime(wet)}` : null,
-  ].filter(Boolean).join(", ");
-
-  const curDry = bestFor(current, "dry"), curWet = bestFor(current, "wet");
-  // All-time bests across everything shown — quoted in the previous block's header
-  // and tagged on the lap that holds them.
-  const all = current.concat(previous);
-  const allDry = bestFor(all, "dry"), allWet = bestFor(all, "wet");
-
-  // gaps: current block quotes each lap against the SESSION best; previous laps
-  // carry no per-lap gap (their yardstick is the current session, not each other),
-  // only an "all-time best" tag where earned.
-  const lineFor = (l, { gaps }) => {
-    const s = Array.isArray(l.sectorTimes)
-      ? ` (S1 ${fmtSec(l.sectorTimes[0])} / S2 ${fmtSec(l.sectorTimes[1])} / S3 ${fmtSec(l.sectorTimes[2])})`
-      : "";
-    const cond = tyreCondition(l.tyre) ?? "dry";
-    let gap = "";
-    if (gaps) {
-      const condBest = cond === "wet" ? curWet : curDry;
-      if (condBest != null) {
-        gap = l.lapTime <= condBest + 1e-6 ? ` best (${cond})` : ` +${(l.lapTime - condBest).toFixed(1)} vs ${cond} best`;
-      }
-    } else {
-      const allBest = cond === "wet" ? allWet : allDry;
-      if (allBest != null && l.lapTime <= allBest + 1e-6) gap = ` all-time best (${cond})`;
-    }
-    const tyre = tyreLabel(l.tyre);
-    const tyreTag = tyre ? ` [${tyre}]` : "";
-    const top = topSpeedOf(l);
-    const topTag = top != null ? ` · top ${top} km/h` : "";
-    return `Lap ${l.lapNumber ?? "?"}: ${formatLapTime(l.lapTime)}${s}${tyreTag}${gap}${topTag}`;
-  };
-
-  const parts = [];
-
-  if (current.length) {
-    const type = current[0]?.meta?.sessionType || null;
-    const bests = bestSummary(curDry, curWet);
-    const bestsTag = bests ? ` (session best: ${bests})` : "";
-    const date = shortDate(current[current.length - 1]?.recordedAt);
-    const header = opts.live
-      ? `CURRENT SESSION${type ? ` — ${type}` : ""}, live now. These are THE laps the driver means by "lap N"${bestsTag}:`
-      : `LAST SESSION (most recent on this track${type ? ` — ${type}` : ""}${date ? `, ${date}` : ""}; no live session right now). These are THE laps the driver means by "lap N"${bestsTag}:`;
-    parts.push(header + "\n- " + current.map((l) => lineFor(l, { gaps: true })).join("\n- "));
-  } else if (opts.live) {
-    parts.push(`CURRENT SESSION — live now, no completed laps yet. If the driver asks about "lap N", say no lap has been completed this session; the laps below are from OLDER sessions.`);
-  } else {
-    parts.push(`CURRENT SESSION — none. If the driver asks about "lap N", explain their saved laps are all from older sessions (below) and cite them by session/date.`);
+// Apexes = local minima of the reference speed curve, at least MIN_CORNER_GAP
+// apart and meaningfully slower than the lap's top speed (so a slight lift on a
+// straight isn't promoted to a corner). Detected from the reference when there is
+// one, otherwise from the driver's own most recent lap, so the trends still work
+// with no reference loaded.
+function findCorners(samples, from, to) {
+  const curve = [];
+  for (let d = from; d <= to; d += GRID_STEP) {
+    const s = sampleAt(samples, d);
+    if (s) curve.push({ d, v: s.speed ?? 0 });
   }
+  if (curve.length < 10) return [];
+  const vMax = Math.max(...curve.map((p) => p.v));
+  const win = Math.max(2, Math.round(CORNER_HALF / GRID_STEP));
 
-  if (previous.length) {
-    // Group per session, newest session first; legacy laps without a sessionId
-    // form one trailing group. Laps arrive oldest → newest, so a group's last lap
-    // is its newest.
-    const groups = new Map();
-    for (const l of previous) {
-      const k = l.meta?.sessionId || "";
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(l);
+  const mins = [];
+  for (let i = win; i < curve.length - win; i++) {
+    const v = curve[i].v;
+    if (v > vMax * 0.92) continue; // still essentially flat out — not a corner
+    let isMin = true;
+    for (let j = i - win; j <= i + win; j++) {
+      if (curve[j].v < v) { isMin = false; break; }
     }
-    const ordered = [...groups.entries()].sort((a, b) => {
-      if (!a[0]) return 1;
-      if (!b[0]) return -1;
-      return (b[1][b[1].length - 1]?.recordedAt || 0) - (a[1][a[1].length - 1]?.recordedAt || 0);
-    });
-    const blocks = ordered.map(([k, rows]) => {
-      const head = k
-        ? `[${rows[0]?.meta?.sessionType || "Session"} · ${shortDate(rows[0]?.recordedAt) || "date unknown"}]`
-        : "[Older laps · session unknown]";
-      return head + "\n- " + rows.map((l) => lineFor(l, { gaps: false })).join("\n- ");
-    });
-    const bests = bestSummary(allDry, allWet);
-    parts.push(
-      `PREVIOUS SESSIONS on this track — OLDER laps, for trends/progress ONLY. Lap numbers restart at 1 every session: "Lap 2" below is NOT the driver's current lap 2. Never answer a bare "lap N" question from this list${bests ? ` (all-time track best: ${bests})` : ""}:` +
-      "\n" + blocks.join("\n")
-    );
+    if (isMin) mins.push(curve[i]);
   }
-
-  return parts.join("\n\n");
+  // Collapse clusters: keep the slowest point of each group of nearby minima.
+  const corners = [];
+  for (const m of mins) {
+    const prev = corners[corners.length - 1];
+    if (prev && m.d - prev.d < MIN_CORNER_GAP) {
+      if (m.v < prev.v) corners[corners.length - 1] = m;
+      continue;
+    }
+    corners.push(m);
+  }
+  return corners.map((c) => ({ d: c.d, vMin: c.v }));
 }
 
 // ── Cross-lap trends ──────────────────────────────────────────────────────────
 // labelAt(dist, lapLen) → corner/zone name or null, so findings can read
 // "T3 Apex (340m)" instead of a bare distance.
+//
+// opts: { step, labelAt, maxLaps }
 export function buildTrends(laps, refSamples, opts = {}) {
-  const valid = (laps || []).filter((l) => isRankable(l) && Array.isArray(l.samples) && l.samples.length > 5);
+  const all = (laps || []).filter((l) => isRankable(l) && Array.isArray(l.samples) && l.samples.length > 5);
+  if (all.length < 2) return null;
+
+  // A partially recorded lap (telemetry joined late, app started mid-lap) would
+  // otherwise drag the analysable window down to its own span and blind the coach
+  // to a third of the circuit. Drop those laps instead of shrinking the track.
+  const span = (l) => (l.samples[l.samples.length - 1]?.dist ?? 0) - (l.samples[0]?.dist ?? 0);
+  const fullSpan = Math.max(...all.map(span));
+  const complete = all.filter((l) => span(l) >= fullSpan * 0.9);
+
+  // A trend describes how you're driving NOW; twenty laps back is history. The
+  // caller's window may be wider (evidence and the pace read want it), so the
+  // trend takes only the most recent slice of it.
+  const valid = complete.slice(-(opts.maxLaps || MAX_TREND_LAPS));
   if (valid.length < 2) return null; // a single lap is a data point, not a trend
 
   const ref = Array.isArray(refSamples) && refSamples.length > 5 ? refSamples : null;
-  const lapLen = Math.max(
-    ...valid.map((l) => l.samples[l.samples.length - 1]?.dist || 0),
-    ref ? ref[ref.length - 1].dist : 0
-  );
-  if (!(lapLen > 0)) return null;
 
-  const STEP = opts.step || 50;
-  const need = Math.max(2, Math.ceil(valid.length * 0.6)); // "most laps" → a real habit
+  // Only ever look at track every lap in the set actually recorded. Taking the
+  // MAXIMUM lap length (as this once did) meant the shortest recording in the set
+  // decided nothing and got clamped everywhere past its own end.
+  const from = Math.max(...valid.map((l) => l.samples[0]?.dist ?? 0), ref ? ref[0].dist : 0);
+  const to = Math.min(...valid.map((l) => l.samples[l.samples.length - 1]?.dist ?? 0),
+    ref ? ref[ref.length - 1].dist : Infinity);
+  const lapLen = Math.max(...valid.map((l) => l.samples[l.samples.length - 1]?.dist || 0));
+  if (!(to - from > 500)) return null; // the laps barely overlap — nothing honest to say
+
   const labelAt = opts.labelAt || (() => null);
   const where = (d) => labelAt(d, lapLen) || `${Math.round(d)}m`;
 
+  // Corners come from the reference when it's comparable, else from the newest lap.
+  const corners = findCorners(ref || valid[valid.length - 1].samples, from + CORNER_HALF, to - CORNER_HALF);
+  if (!corners.length) return null;
+
+  // Per corner: every lap's pass through it, plus the reference's.
+  const rows = [];
+  for (const c of corners) {
+    const d0 = c.d - CORNER_HALF, d1 = c.d + CORNER_HALF;
+    const passes = valid.map((l) => cornerPass(l.samples, d0, d1));
+    if (passes.some((p) => !p)) continue; // not every lap covers it — say nothing
+    const rp = ref ? cornerPass(ref, d0, d1) : null;
+    rows.push({ d: c.d, label: where(c.d), passes, ref: rp });
+  }
+  if (!rows.length) return null;
+
+  // ── Is the reference even a like-for-like car? ─────────────────────────────
+  // Fuel load and setup are invisible to refMatch (nothing in the packets carries
+  // them), so a low-fuel qualifying reference against a heavy race stint is
+  // genuinely slower EVERYWHERE — and the corner rules would then flag all twenty
+  // corners as if each were a separate mistake. Measure that baseline once, and
+  // when it's real, compare each corner against it rather than against zero.
+  let baseline = 0;
+  if (ref) {
+    const perCorner = rows.filter((r) => r.ref).map((r) => median(r.passes.map((p) => p.vMin)) - r.ref.vMin);
+    if (perCorner.length >= 3) {
+      const m = median(perCorner);
+      if (m < -BASELINE_OFFSET_KMH) baseline = m; // negative = down on the reference everywhere
+    }
+  }
+
+  const need = Math.max(2, Math.ceil(valid.length * 0.6)); // "most laps" → a real habit
   const findings = [];
-  for (let d = 0; d <= lapLen; d += STEP) {
-    const us = valid.map((l) => sampleAt(l.samples, d)).filter(Boolean);
-    if (us.length < valid.length) continue; // require every lap to cover this point
-    const r = ref ? sampleAt(ref, d) : null;
-    const lbl = where(d);
 
-    const speeds = us.map((u) => u.speed ?? 0);
-    const minS = Math.min(...speeds), maxS = Math.max(...speeds);
-    const meanS = speeds.reduce((a, b) => a + b, 0) / speeds.length;
+  for (const r of rows) {
+    const vMins = r.passes.map((p) => p.vMin);
+    const sorted = asc(vMins);
+    const medV = median(vMins);
+    const q1 = quantile(sorted, 0.25), q3 = quantile(sorted, 0.75);
+    const meansAsc = asc(r.passes.map((p) => p.vMean));
+    const medMean = quantile(meansAsc, 0.5);
 
-    // 1) Consistently slower than the reference through a corner/section.
-    if (r && r.speed != null) {
-      const slowLaps = us.filter((u) => (u.speed ?? 0) < r.speed - 5).length;
-      if (slowLaps >= need && meanS < r.speed - 5) {
-        findings.push({ d, kind: "slow", score: r.speed - meanS, label: lbl,
-          text: `${lbl}: consistently ~${Math.round(r.speed - meanS)} km/h slower than the reference (you ~${Math.round(meanS)} vs ${Math.round(r.speed)} km/h) — carry more minimum speed` });
+    if (r.ref) {
+      const target = r.ref.vMin + baseline;  // the reference, brought onto your baseline
+
+      // 1) Consistently slower through the corner than the reference. The median
+      //    (not the mean) and the requirement that the upper quartile is also down
+      //    mean one bad lap in the set can no longer invent a "recurring" issue.
+      const slowLaps = r.passes.filter((p) => p.vMin < target - 3).length;
+      if (slowLaps >= need && medV < target - 4 && q3 < target - 2) {
+        const cost = timeCost(medMean, r.ref.vMean + baseline);
+        findings.push({ d: r.d, kind: "slow", cost, label: r.label,
+          text: `${r.label}: consistently ~${Math.round(target - medV)} km/h slower through the corner (you ~${Math.round(medV)} vs ${Math.round(target)} km/h at the apex, ~${cost.toFixed(2)}s) — carry more minimum speed` });
+      }
+
+      // 2) Wrong gear at the apex, lap after lap.
+      if (r.ref.gear != null) {
+        const g = modal(r.passes.map((p) => p.gear));
+        if (g.value != null && g.value !== r.ref.gear && g.count >= need) {
+          findings.push({ d: r.d, kind: "gear", cost: 0.05, label: r.label,
+            text: `${r.label}: you apex this in gear ${g.value} where the reference uses gear ${r.ref.gear} — wrong gear` });
+        }
+      }
+
+      // 3) Over-rotation: more lock than the reference through a genuine corner.
+      if (r.ref.steer > 25) {
+        const medSteer = median(r.passes.map((p) => p.steer));
+        const overLaps = r.passes.filter((p) => p.steer > r.ref.steer + 15).length;
+        if (overLaps >= need && medSteer > r.ref.steer + 15) {
+          findings.push({ d: r.d, kind: "steer", cost: 0.04, label: r.label,
+            text: `${r.label}: too much steering rotation (you ~${Math.round(medSteer)}% vs reference ${Math.round(r.ref.steer)}%) — ease the lock and let the car run` });
+        }
       }
     }
 
-    // 2) Wrong gear: you hold a different gear than the reference here, lap after lap.
-    if (r && r.gear != null) {
-      const g = modal(us.map((u) => u.gear));
-      if (g.value != null && g.value !== r.gear && g.count >= need && Math.abs(g.value - r.gear) >= 1) {
-        findings.push({ d, kind: "gear", score: 4, label: lbl,
-          text: `${lbl}: you take this in gear ${g.value} where the reference uses gear ${r.gear} — wrong gear` });
-      }
-    }
-
-    // 3) Over-rotation: too much steering vs the reference at a genuine corner.
-    if (r && typeof r.steer === "number" && Math.abs(r.steer) > 25) {
-      const refSteer = Math.abs(r.steer);
-      const meanSteer = us.reduce((a, u) => a + Math.abs(u.steer ?? 0), 0) / us.length;
-      const overLaps = us.filter((u) => Math.abs(u.steer ?? 0) > refSteer + 15).length;
-      if (overLaps >= need && meanSteer > refSteer + 15) {
-        findings.push({ d, kind: "steer", score: 3, label: lbl,
-          text: `${lbl}: too much steering rotation (you ~${Math.round(meanSteer)}% vs reference ${Math.round(refSteer)}%) — ease the lock and let the car run` });
-      }
-    }
-
-    // 4) Inconsistency: speed at the same point swings lap-to-lap (≥3 laps to mean it).
-    if (valid.length >= 3 && maxS - minS > 12) {
-      findings.push({ d, kind: "consistency", score: maxS - minS, label: lbl,
-        text: `${lbl}: inconsistent — speed here swings ${Math.round(minS)}–${Math.round(maxS)} km/h across your laps (±${Math.round((maxS - minS) / 2)}) — repeat the same line` });
+    // 4) Inconsistency: the corner speed itself swings lap to lap. Measured on the
+    //    interquartile band, so it describes the body of your laps rather than the
+    //    single best and single worst of them. Self-referential — no reference needed.
+    if (valid.length >= 3 && q3 - q1 > 7) {
+      findings.push({ d: r.d, kind: "consistency",
+        cost: timeCost(quantile(meansAsc, 0.25), quantile(meansAsc, 0.75)), label: r.label,
+        text: `${r.label}: inconsistent — apex speed sits anywhere from ${Math.round(q1)} to ${Math.round(q3)} km/h across your laps (worst to best ${Math.round(sorted[0])}–${Math.round(sorted[sorted.length - 1])}) — repeat the same line` });
     }
   }
 
   if (!findings.length) return null;
 
-  // Strongest finding first, then keep them spread out: suppress the SAME kind of
-  // issue at the same corner/sector or within 200 m (one cluster = one finding),
-  // but allow two different kinds at the same corner (e.g. wrong gear AND
-  // over-rotation in the same turn).
-  findings.sort((a, b) => b.score - a.score);
+  // Most expensive first, then keep them spread out: one finding of each kind per
+  // corner (a corner may still raise both a wrong gear AND over-rotation).
+  findings.sort((a, b) => b.cost - a.cost);
   const picked = [];
   for (const f of findings) {
     if (picked.every((p) => p.kind !== f.kind || (p.label !== f.label && Math.abs(p.d - f.d) > 200))) picked.push(f);
@@ -249,83 +299,12 @@ export function buildTrends(laps, refSamples, opts = {}) {
   }
   picked.sort((a, b) => a.d - b.d);
 
-  return (
-    `CROSS-LAP TRENDS — recurring patterns across your last ${valid.length} laps on this track, possibly spanning sessions${ref ? ", vs the reference" : ""} (only things that happen on most laps):` +
-    "\n- " + picked.map((f) => f.text).join("\n- ")
-  );
-}
+  const scope = `CROSS-LAP TRENDS — recurring patterns across your last ${valid.length} comparable laps on this track, possibly spanning sessions` +
+    `${ref ? ", vs the reference" : ""} (corner apex speeds, only things that happen on most laps):`;
+  const caveat = baseline
+    ? `\n- NOTE: the reference is about ${Math.abs(Math.round(baseline))} km/h quicker through EVERY corner, which is a fuel load, setup or car difference rather than driving. ` +
+      `The corner figures below are measured against that baseline, so they are the corners that are worse than your own average — do not quote the raw gap to the reference as time the driver can take back.`
+    : "";
 
-// ── Per-corner profile history ──────────────────────────────────────────────────
-// For each named corner, the figures the driver carried through it on every lap —
-// minimum speed, apex gear, minimum throttle (lift depth), peak brake and peak
-// steering (lock). Lets the coach answer specific recall questions ("how fast / what
-// gear / how much throttle through the hairpin on lap 3?", "am I braking too hard into
-// T1?") rather than only reasoning over the single most-recent lap. Corner apexes come
-// from the curated per-track DB (cornerData.js, { n, name, f } with f = apex as a lap
-// fraction). Returns null for unknown tracks (no corners) or when no lap carries usable
-// samples — the caller then simply omits the block.
-export function buildCornerProfiles(laps, opts = {}) {
-  const corners = (Array.isArray(opts.corners) ? opts.corners : [])
-    .filter((c) => c && typeof c.f === "number")
-    .slice()
-    .sort((a, b) => a.f - b.f);
-  if (!corners.length) return null;
-
-  const valid = (laps || [])
-    .filter((l) => isRankable(l) && Array.isArray(l.samples) && l.samples.length > 5 && typeof l.lapTime === "number" && l.lapTime > 0)
-    .slice(-(opts.max || 15));
-  if (!valid.length) return null;
-
-  // Non-overlapping window per corner: the midpoint to the previous/next apex (in lap
-  // fraction), clamped to [0,1]. This partitions the lap so each corner's figures are
-  // taken from its own stretch of track — robust to the hand-estimated apex positions.
-  const windows = corners.map((c, i) => ({
-    lo: i === 0 ? 0 : (corners[i - 1].f + c.f) / 2,
-    hi: i === corners.length - 1 ? 1 : (c.f + corners[i + 1].f) / 2,
-  }));
-
-  // One pass over a lap's samples in [loFrac, hiFrac] of THIS lap (each lap has its own
-  // length): min speed (+ the gear at that apex sample), min throttle, peak brake, peak
-  // |steer|. null when the lap doesn't cover the window.
-  const profileIn = (samples, lapLen, loFrac, hiFrac) => {
-    const dLo = loFrac * lapLen, dHi = hiFrac * lapLen;
-    let minSpeed = Infinity, apexGear = null, minThr = Infinity, maxBrk = -Infinity, maxSteer = -Infinity, n = 0;
-    for (const s of samples) {
-      if (s.dist < dLo || s.dist > dHi) continue;
-      n++;
-      if (typeof s.speed === "number" && s.speed < minSpeed) { minSpeed = s.speed; if (typeof s.gear === "number") apexGear = s.gear; }
-      if (typeof s.throttle === "number" && s.throttle < minThr) minThr = s.throttle;
-      if (typeof s.brake === "number" && s.brake > maxBrk) maxBrk = s.brake;
-      if (typeof s.steer === "number" && Math.abs(s.steer) > maxSteer) maxSteer = Math.abs(s.steer);
-    }
-    if (!n) return null;
-    return {
-      speed: minSpeed === Infinity ? null : Math.round(minSpeed),
-      gear: apexGear,
-      throttle: minThr === Infinity ? null : Math.round(minThr),
-      brake: maxBrk === -Infinity ? null : Math.round(maxBrk),
-      steer: maxSteer === -Infinity ? null : Math.round(maxSteer),
-    };
-  };
-
-  // Per-channel row of values across the laps, in lap order; "—" where a lap has no data.
-  const chan = (profs, key) => profs.map((p) => (p && p[key] != null ? String(p[key]) : "—")).join(", ");
-
-  const lapNums = valid.map((l) => l.lapNumber ?? "?");
-  const lines = corners.map((c, i) => {
-    const profs = valid.map((l) => {
-      const lapLen = l.samples[l.samples.length - 1]?.dist || 0;
-      return lapLen > 0 ? profileIn(l.samples, lapLen, windows[i].lo, windows[i].hi) : null;
-    });
-    const label = cornerLabel(c) || `T${c.n ?? i + 1}`;
-    return `${label}: speed ${chan(profs, "speed")} · gear ${chan(profs, "gear")} · throttle ${chan(profs, "throttle")} · brake ${chan(profs, "brake")} · steer ${chan(profs, "steer")}`;
-  });
-
-  const order = lapNums.map((n) => `L${n}`).join(", ");
-  return (
-    `CORNER PROFILES — what you carried through each corner on every lap THIS SESSION, each channel listing one value per lap ` +
-    `in the order [${order}]. Channels: speed = minimum km/h (lower = slower through the corner); gear = gear at the apex; ` +
-    `throttle = minimum % (lower = a bigger lift); brake = peak % (higher = harder braking); steer = peak steering lock %:` +
-    "\n- " + lines.join("\n- ")
-  );
+  return scope + caveat + "\n- " + picked.map((f) => f.text).join("\n- ");
 }

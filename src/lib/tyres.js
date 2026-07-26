@@ -40,3 +40,24 @@ export function tyreLabel(tyre) {
   if (!name) return null;
   return name === "Intermediate" ? "Inter" : name;
 }
+
+// The sidewall colours F1 uses for each compound. These carry DATA meaning (which
+// rubber is on the car), so — like flags and ERS modes — they stay fixed and are
+// never routed through the skin vars.
+const COMPOUND_COLOR = {
+  Soft: "#e8283c", Medium: "#f5d020", Hard: "#e8e8e8",
+  "Super Hard": "#e8e8e8", Intermediate: "#3fc45f", Wet: "#2f7fe0",
+};
+export function tyreColor(tyre) {
+  return COMPOUND_COLOR[tyreName(typeof tyre === "number" ? tyre : tyre?.visual)] || null;
+}
+
+// Worst-wheel wear % for a lap's tyre tag — the number that actually limits a
+// stint, so it's what the lap log shows. null when the lap carries no wear data
+// (laps recorded before wear was collected, or a game that never sent Car Damage).
+export function tyreWearPct(tyre) {
+  const w = tyre?.wear;
+  if (!Array.isArray(w) || w.length !== 4) return null;
+  const max = Math.max(...w.map((v) => (typeof v === "number" && isFinite(v) ? v : 0)));
+  return isFinite(max) ? max : null;
+}
