@@ -3,7 +3,7 @@
 //
 //   loadTrackModel(slug, lines3D) → Promise<model | null>
 //     Fetches the bundled real-circuit centerline + widths (public/tracks/<slug>.json,
-//     from the TUMFTM racetrack-database) and rigidly aligns it into the game's world
+//     built by scripts/fetch-tracks.mjs) and rigidly aligns it into the game's world
 //     frame so the recorded lines sit on the real road — apexes, curbs and all. The
 //     recorded lines are NEVER modified; only the track is transformed. Falls back to
 //     buildHeuristicTrack() when the circuit isn't covered, the fetch fails, or the
@@ -26,6 +26,10 @@
 // }
 //
 // Pure math — no three.js import, so the scene chunk stays the only heavy one.
+// (The one exception is the corner-anchor cache: a real fit is the only place the
+// start/finish line and traversal direction are recoverable, so loadTrackModel
+// records them for src/lib/cornerAnchors.js.)
+import { setAnchor } from "./cornerAnchors.js";
 
 const FIT_N = 512;          // resample count for the alignment solve
 const RMSE_ACCEPT = 12;     // meters — reject fits worse than this (line legitimately
@@ -33,8 +37,8 @@ const RMSE_ACCEPT = 12;     // meters — reject fits worse than this (line legi
 const HEUR_HALF_W = 6.5;    // heuristic road half-width (m)
 const KAPPA_SAT = 1 / 50;   // curvature (1/m) treated as a "full" corner
 const EDGE_MARGIN = 1.0;    // meters added to each real-track edge: the driven line is the
-                            // car CENTER and the ~1.9 m car straddles it; TUMFTM widths stop
-                            // at the white line, but kerbs are drivable. Keeps cars on-track
+                            // car CENTER and the ~1.9 m car straddles it; the shipped widths
+                            // stop at the white line, but kerbs are drivable. Keeps cars on-track
                             // at the edge instead of hanging into the grass on corner exits.
 
 // ── small vector helpers on {x, z} ──────────────────────────────────────────────
@@ -353,7 +357,7 @@ function makeElevAt(rows) {
   };
 }
 
-function finishModel(rows, { status, closed, rmse = null, attribution = null }, lines3D) {
+function finishModel(rows, { status, closed, rmse = null, attribution = null, reverse = false, apexes = null }, lines3D) {
   drapeElevation(rows, lines3D, closed);
   const kStep = Math.max(2, Math.round(6 / Math.max(1, arcSpacing(rows, closed))));
   const kappa = boxBlur(signedCurvature(rows, kStep, closed), Math.round(kStep * 2.5), 2, closed);
@@ -369,8 +373,38 @@ function finishModel(rows, { status, closed, rmse = null, attribution = null }, 
       const d = (r.x - p0.x) ** 2 + (r.z - p0.z) ** 2;
       if (d < bd) { bd = d; startIndex = i; }
     });
+    // p0 is the lap's FIRST SAMPLE, which is only the start/finish line when the
+    // recorder happened to catch the lap from the line. A lap taken from session
+    // history often opens some way down the road; trusting it there puts S/F that
+    // far past the line, which rotates every corner NUMBER while leaving each
+    // marker sitting on a real corner. The lap's own distance channel says how far
+    // past the line it opened, so walk that much back up the road (rows are already
+    // ordered in the driving direction).
+    const lead = p0.dist;
+    if (closed && typeof lead === "number" && isFinite(lead) && lead > 0) {
+      let back = 0;
+      while (back < lead) {
+        const prev = (startIndex - 1 + rows.length) % rows.length;
+        back += hyp(rows[prev].x, rows[prev].z, rows[startIndex].x, rows[startIndex].z);
+        startIndex = prev;
+      }
+    }
   }
-  return { status, centerline: rows, closed, startIndex, rmse, attribution, elevAt: makeElevAt(rows) };
+  // Start/finish expressed back in the DATA's own frame: a fraction of the shipped
+  // centerline's arc length, in file order. That's the frame public/tracks/<slug>.json
+  // `apexes` live in, so this is the one number needed to number the corners from
+  // the real start/finish — see src/lib/cornerAnchors.js. Only meaningful for a
+  // real fit; the heuristic road has no file to refer back to.
+  const n = rows.length;
+  const sfFrac = status === "real" && n
+    ? (reverse ? n - 1 - startIndex : startIndex) / n
+    : null;
+
+  return {
+    status, centerline: rows, closed, startIndex, rmse, attribution,
+    reverse, sfFrac, apexes,
+    elevAt: makeElevAt(rows),
+  };
 }
 
 function arcSpacing(rows, closed) {
@@ -448,11 +482,32 @@ export function buildHeuristicTrack(lines3D) {
 
 // ── Real circuit loader ─────────────────────────────────────────────────────────
 const modelCache = new Map();
+const MODEL_CACHE_MAX = 24;   // a growing live lap re-keys every refit; don't accumulate forever
+
+// A cheap 32-bit signature of what a line actually LOOKS like. Sample count alone
+// isn't enough to identify a lap: two different laps on the same circuit with the
+// same number of samples would share a cache key, and the second would be handed
+// the first one's model — corner markers placed off the road (they're read from
+// model.centerline), and a wrong start/finish taught to the corner-anchor cache.
+// Sampling fixed fractions keeps this O(1) however long the lap is; coordinates are
+// rounded to the metre so sub-metre jitter doesn't needlessly invalidate a fit.
+function lineSignature(line) {
+  const pts = line?.pts;
+  if (!pts?.length) return "0";
+  const SAMPLES = 12;
+  let h = 0x811c9dc5;
+  for (let s = 0; s < SAMPLES; s++) {
+    const p = pts[Math.round((s / (SAMPLES - 1)) * (pts.length - 1))];
+    h = Math.imul(h ^ Math.round(p?.x || 0), 0x01000193) >>> 0;
+    h = Math.imul(h ^ Math.round(p?.z || 0), 0x01000193) >>> 0;
+  }
+  return pts.length.toString(36) + "." + h.toString(36);
+}
 
 export async function loadTrackModel(slug, lines3D) {
   const anchor = anchorLine(lines3D);
   if (!anchor) return null;
-  const cacheKey = (slug || "none") + "::" + (lines3D || []).map((l) => l.id + ":" + (l.pts?.length || 0)).join(",");
+  const cacheKey = (slug || "none") + "::" + (lines3D || []).map((l) => l.id + ":" + lineSignature(l)).join(",");
   if (modelCache.has(cacheKey)) return modelCache.get(cacheKey);
 
   let model = null;
@@ -470,6 +525,13 @@ export async function loadTrackModel(slug, lines3D) {
     }
   }
   if (!model) model = buildHeuristicTrack(lines3D);
+  // A real fit is the only place the start/finish line and the traversal direction
+  // are actually known, so teach the anchor cache here — that's what lets corner
+  // numbering work on this circuit before a lap has been fitted next session.
+  if (model.status === "real" && model.sfFrac != null) {
+    setAnchor(slug, { sfFrac: model.sfFrac, reverse: model.reverse });
+  }
+  if (modelCache.size >= MODEL_CACHE_MAX) modelCache.clear();
   modelCache.set(cacheKey, model);
   return model;
 }
@@ -478,8 +540,13 @@ function fitRealTrack(data, anchor, lines3D) {
   const t0 = performance.now();
   const fit = solveAlignment(data.points, anchor.pts);
   const ms = Math.round(performance.now() - t0);
-  console.info(`[trackGeometry] ${data.slug}: fit RMSE ${fit.rmse.toFixed(1)} m` +
-    ` (mirror=${fit.mirror}, reverse=${fit.reverse}, ${ms} ms)`);
+  // Dev-only fit diagnostic — useful when tuning the alignment solver, but noise
+  // in the packaged app. The rejection warning below is NOT gated: that one
+  // reports a circuit whose geometry didn't fit, which is a real problem.
+  if (import.meta.env.DEV) {
+    console.info(`[trackGeometry] ${data.slug}: fit RMSE ${fit.rmse.toFixed(1)} m` +
+      ` (mirror=${fit.mirror}, reverse=${fit.reverse}, ${ms} ms)`);
+  }
   if (!(fit.rmse < RMSE_ACCEPT)) {
     console.warn(`[trackGeometry] ${data.slug}: fit rejected (RMSE ${fit.rmse.toFixed(1)} m ≥ ${RMSE_ACCEPT}) — using heuristic road`);
     return null;
@@ -495,5 +562,6 @@ function fitRealTrack(data, anchor, lines3D) {
   });
   return finishModel(rows, {
     status: "real", closed: true, rmse: fit.rmse, attribution: data.attribution || null,
+    reverse: fit.reverse, apexes: Array.isArray(data.apexes) ? data.apexes : null,
   }, lines3D);
 }
