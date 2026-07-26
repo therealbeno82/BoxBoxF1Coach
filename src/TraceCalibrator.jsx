@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { C, FONT } from "./lib/ui/tokens.js";
 import { clamp } from "./lib/format.js";
+import { TRACKS } from "./lib/trackData.js";
 
 // ─── CHANNEL DEFINITIONS (matching MoTeC colour conventions) ─────────────────
 const DEFAULT_CHANNELS = [
@@ -26,6 +27,15 @@ const STEP_LABELS = {
 // ─── REFERENCE-LAP METADATA OPTIONS ─────────────────────────────────────────
 const SESSIONS = ["Time Trial", "Qualifying", "Race Pace"];
 const TYRES    = ["Softs", "Medium", "Hards", "Inters", "Wets"];
+
+// Track is a PICKER, not free text. lib/coach/refMatch.js blocks a reference whose
+// meta.track doesn't resolve to the circuit being driven, and sameTrack() only
+// accepts a calendar display name or its asset slug — so a plausible-looking
+// hand-typed name ("Miami, USA", "Albert Park", "Interlagos") silently muted every
+// corner call. The blank first entry exports "Unknown Track", which the guard
+// treats as no identity and therefore fails OPEN.
+const TRACK_UNSET  = "";
+const TRACK_OPTIONS = [TRACK_UNSET, ...Object.values(TRACKS).map(t => t.name).sort((a, b) => a.localeCompare(b))];
 
 /** Parse "m:ss.mmm", "ss.mmm", or blank into seconds; null if blank/invalid. */
 function parseLapTime(str) {
@@ -715,7 +725,7 @@ export default function TraceCalibrator({ onExit }) {
                 <SideLabel>Driver name</SideLabel>
                 <SideInput value={driverName} onChange={e => setDriverName(e.target.value)} placeholder="e.g. Jarno Opmeer" />
                 <SideLabel>Track</SideLabel>
-                <SideInput value={trackName} onChange={e => setTrackName(e.target.value)} placeholder="e.g. Melbourne" />
+                <SideSelect value={trackName} onChange={e => setTrackName(e.target.value)} options={TRACK_OPTIONS} />
                 <SideLabel>Session</SideLabel>
                 <SideSelect value={session} onChange={e => setSession(e.target.value)} options={SESSIONS} />
                 <SideLabel>Tyres</SideLabel>
@@ -830,7 +840,7 @@ export default function TraceCalibrator({ onExit }) {
                 <SideLabel>Driver name</SideLabel>
                 <SideInput value={driverName} onChange={e => setDriverName(e.target.value)} placeholder="e.g. Jarno Opmeer" />
                 <SideLabel>Track</SideLabel>
-                <SideInput value={trackName} onChange={e => setTrackName(e.target.value)} placeholder="e.g. Melbourne" />
+                <SideSelect value={trackName} onChange={e => setTrackName(e.target.value)} options={TRACK_OPTIONS} />
                 <SideLabel>Session</SideLabel>
                 <SideSelect value={session} onChange={e => setSession(e.target.value)} options={SESSIONS} />
                 <SideLabel>Tyres</SideLabel>
@@ -1074,7 +1084,7 @@ function SideSelect({ value, onChange, options, style = {} }) {
         borderRadius: 8, color: C.textBody, padding: "8px 10px", fontSize: 12,
         fontFamily: FONT.ui, outline: "none", boxSizing: "border-box", ...style,
       }}>
-      {options.map(o => <option key={o} value={o}>{o}</option>)}
+      {options.map(o => <option key={o} value={o}>{o === "" ? "— not specified —" : o}</option>)}
     </select>
   );
 }

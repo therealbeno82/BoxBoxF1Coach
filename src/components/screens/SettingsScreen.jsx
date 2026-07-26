@@ -26,6 +26,7 @@ export default function SettingsScreen({
   openRouterKey, setOpenRouterKey, openRouterModel, setOpenRouterModel,
   wsConnected,
   udpPort, setUdpPort,
+  fakeMode, setFakeMode,
   units, setUnits,
   tempUnits, setTempUnits,
   activeSkin, setActiveSkin,
@@ -188,7 +189,12 @@ export default function SettingsScreen({
     resetForm();
   };
 
-  const coreColor = wsConnected ? C.green : C.red;
+  // Demo mode drives `wsConnected` true (the core stamps packet times as it
+  // synthesises), so the status readouts must call it out explicitly — otherwise
+  // they'd claim "TELEMETRY LIVE · Receiving on UDP 20777" while nothing is
+  // arriving on that port at all.
+  const coreColor = fakeMode ? C.yellow : wsConnected ? C.green : C.red;
+  const coreLabel = fakeMode ? "DEMO TELEMETRY" : wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY";
 
   return (
     <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px 28px 22px",
@@ -206,7 +212,7 @@ export default function SettingsScreen({
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 7, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 13px" }}>
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: coreColor, boxShadow: `0 0 8px ${coreColor}` }} />
-          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#fff" }}>{wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY"}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: "#fff" }}>{coreLabel}</span>
         </div>
       </div>
 
@@ -255,13 +261,40 @@ export default function SettingsScreen({
                 style={{ ...input, color: portValid ? C.cyan : C.red }}
               />
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.inset, border: `1px solid ${wsConnected ? "#1d3a2a" : "#3a1d23"}`, borderRadius: 9, padding: "12px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.inset, border: `1px solid ${fakeMode ? "#3a331d" : wsConnected ? "#1d3a2a" : "#3a1d23"}`, borderRadius: 9, padding: "12px 14px" }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: coreColor, boxShadow: `0 0 8px ${coreColor}`, flex: "none" }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: .5, color: "#fff" }}>{wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY"}</div>
-                <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>{wsConnected ? `Receiving on UDP ${udpPort}` : inTauri ? "Waiting for the game's UDP stream" : "Telemetry needs the native app (tauri dev)"}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: .5, color: "#fff" }}>{coreLabel}</div>
+                <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>{
+                  fakeMode ? "Synthetic lap — the game is not being read"
+                  : wsConnected ? `Receiving on UDP ${udpPort}`
+                  : inTauri ? "Waiting for the game's UDP stream"
+                  : "Telemetry needs the native app (tauri dev)"}</div>
               </div>
             </div>
+
+            {/* Demo mode — synthetic telemetry from the native core, so the whole
+                pipeline can be driven with no game running. Hidden in plain-browser
+                dev, where there is no core to toggle. */}
+            {inTauri && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <label style={label}>Demo Mode · no game needed</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[["Off", false], ["Demo lap", true]].map(([text, on]) => (
+                    <button key={text} onClick={() => setFakeMode(on)} style={{
+                      padding: "9px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: .3, fontFamily: FONT.ui,
+                      background: fakeMode === on ? C.elevated : C.inset,
+                      border: `1px solid ${fakeMode === on ? (on ? C.yellow : C.blue) : C.borderInput}`,
+                      color: fakeMode === on ? "#fff" : "#9aa3b5" }}>{text}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
+                  Feeds a synthetic 90-second lap so you can try the cockpit, coaching and force
+                  feedback without the game open. Laps driven in demo mode are recorded to this
+                  driver's history like any other — turn it off before a real session.
+                </div>
+              </div>
+            )}
             {/* Console / second-device setup — the game sends telemetry to THIS
                 device's LAN IP, so surface the address(es) to enter in-game. */}
             {inTauri && (

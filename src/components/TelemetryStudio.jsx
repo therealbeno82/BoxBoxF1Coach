@@ -1,12 +1,16 @@
 // ─── TELEMETRY STUDIO (Analytics ▸ Telemetry tab) ───────────────────────────
 // The MoTeC-style trace studio from the cockpit design: stacked channel panels
 // (Throttle/Brake, Speed, Wheel Rotation, Gear, ERS Mode/Used, Tyre Temps)
-// overlaid with sector boundary lines + a white playback cursor, a bottom
-// scrubber with corner tick marks and a draggable knob, and a right column of
-// live-vs-reference readout cards + a corner-info card. Owns its own playback
-// `cursor` (0–1) and `playing` state so every panel value, readout and the
-// cursor line move together when the scrubber is dragged or Play (click any
-// trace) is toggled.
+// overlaid with sector boundary lines + a white playback cursor, and a right
+// column of live-vs-reference readout cards + a corner-info card. Playback
+// comes in two flavours:
+//   • Controlled (the combined Analytics Overview): `playhead` (0–1 lap-distance
+//     fraction) + `playing` props with onSeek/onSetPlaying callbacks. The clock
+//     itself lives in DrivingLinesView, so the trace cursor, the readouts and
+//     the cars on the driving lines all move on ONE shared timeline — and the
+//     scrubber under that map is the only one, so this component hides its own.
+//   • Standalone: owns its own `cursor` (0–1) and `playing` state, swept by an
+//     internal rAF loop, plus its own bottom scrubber (corner ticks + knob).
 //
 // Panels are driven by the PANELS registry below — visibility filtering,
 // rendering, chip toggles and the readout cards all derive from it, so adding
@@ -258,12 +262,21 @@ export default function TelemetryStudio({
   // Compact mode drops the right-hand readout column so the trace stack can sit
   // beside another view (the combined Analytics overview) without overflowing.
   compact = false,
+  // Shared-timeline (controlled) mode — see the header comment.
+  playhead = null, playing: playingProp = null, onSeek = null, onSetPlaying = null,
 }) {
-  const [cursor, setCursor] = useState(0.5);      // 0–1 across the visible window
-  const [playing, setPlaying] = useState(false);
+  const [cursorInt, setCursorInt] = useState(0.5);    // 0–1 across the visible window
+  const [playingInt, setPlayingInt] = useState(false);
   const [zoomSector, setZoomSector] = useState(null); // null = full lap | 0 | 1 | 2
   const barRef = useRef(null);
   const rafRef = useRef(0);
+
+  const controlled = typeof playhead === "number" && typeof onSeek === "function";
+  const playing = controlled ? !!playingProp : playingInt;
+  const setPlaying = (v) => {
+    const next = typeof v === "function" ? v(playing) : v;
+    if (controlled) onSetPlaying?.(next); else setPlayingInt(next);
+  };
 
   const hasData = compareSamples.length > 1 || referenceSamples.length > 1;
   const uLabel = speedUnitLabel(units);
@@ -292,13 +305,23 @@ export default function TelemetryStudio({
   const [d0, d1] = domainFor(zoomSector);
   const winSpan = (d1 - d0) || 1;
 
+  // The cursor as a window fraction. Controlled mode derives it from the shared
+  // lap-fraction playhead (clamped to the zoom window); standalone owns it.
+  const cursor = controlled
+    ? (lapLength ? clamp((clamp(playhead, 0, 1) * lapLength - d0) / winSpan, 0, 1) : clamp(playhead, 0, 1))
+    : cursorInt;
+
   // Zoom in/out, keeping the cursor at the same absolute lap distance (clamped
-  // to the new window) and pausing so playback can't jump mid-frame.
+  // to the new window) and pausing so playback can't jump mid-frame. In
+  // controlled mode the cursor re-derives from the playhead, which never moves
+  // on zoom — only the window does.
   const zoomTo = (next) => {
     setPlaying(false);
-    const oldDist = d0 + cursor * (d1 - d0);
-    const [n0, n1] = domainFor(next);
-    setCursor(n1 > n0 ? clamp((oldDist - n0) / (n1 - n0), 0, 1) : 0.5);
+    if (!controlled) {
+      const oldDist = d0 + cursor * (d1 - d0);
+      const [n0, n1] = domainFor(next);
+      setCursorInt(n1 > n0 ? clamp((oldDist - n0) / (n1 - n0), 0, 1) : 0.5);
+    }
     setZoomSector(next);
   };
 
@@ -321,25 +344,30 @@ export default function TelemetryStudio({
 
   // ── Playback loop: advance the cursor while playing, looping at the line.
   // Sweep time scales with the window so playback speed (m/s) stays constant
-  // whether viewing the full lap or one zoomed sector. ──
+  // whether viewing the full lap or one zoomed sector. Standalone only — in
+  // controlled mode the shared clock (DrivingLinesView) advances the playhead. ──
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || controlled) return;
     const sweep = Math.max(2.5, SWEEP_SECONDS * ((d1 - d0) / (lapLength || 1)));
     let last = performance.now();
     const tick = (now) => {
       const dt = (now - last) / 1000; last = now;
-      setCursor((c) => { let n = c + dt / sweep; if (n >= 1) n = 0; return n; });
+      setCursorInt((c) => { let n = c + dt / sweep; if (n >= 1) n = 0; return n; });
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [playing, d0, d1, lapLength]);
+  }, [playing, controlled, d0, d1, lapLength]);
 
   // ── Scrubbing: pointer down on the bar seeks + starts a drag (pauses play). ──
   const scrubFrom = (clientX) => {
     const el = barRef.current; if (!el) return;
     const r = el.getBoundingClientRect();
-    setCursor(clamp((clientX - r.left) / r.width, 0, 1));
+    const wf = clamp((clientX - r.left) / r.width, 0, 1);
+    // Controlled: window fraction → shared lap fraction, so the driving-line
+    // cars follow the trace scrubber too.
+    if (controlled) onSeek(lapLength ? (d0 + wf * winSpan) / lapLength : wf);
+    else setCursorInt(wf);
   };
   const startScrub = (e) => {
     e.stopPropagation();
@@ -501,8 +529,10 @@ export default function TelemetryStudio({
           ))}
         </div>
 
-        {/* Scrubber */}
-        <div style={{ flex: "none", height: 44, marginTop: 10, display: "flex", alignItems: "center", gap: 16 }}>
+        {/* Scrubber — standalone only. In controlled mode the shared timeline
+            under the driving-lines map is the single scrubber for both views;
+            a second one here would just be a duplicate of it. */}
+        {!controlled && <div style={{ flex: "none", height: 44, marginTop: 10, display: "flex", alignItems: "center", gap: 16 }}>
           <div ref={barRef} onPointerDown={startScrub} style={{ flex: 1, position: "relative", height: 32, display: "flex", alignItems: "center", cursor: "pointer" }}>
             <div style={{ position: "absolute", left: 0, right: 0, height: 6, borderRadius: 3, background: C.line }} />
             <div style={{ position: "absolute", left: 0, height: 6, borderRadius: 3, background: C.blue, width: cursorPct }} />
@@ -519,7 +549,7 @@ export default function TelemetryStudio({
             <div style={{ position: "absolute", left: cursorPct, top: "50%", transform: "translate(-50%,-50%)", width: 16, height: 16, borderRadius: "50%",
               background: C.blue, border: `3px solid ${C.bg}`, boxShadow: `0 0 0 1px ${C.blue},0 0 12px ${C.blue}` }} />
           </div>
-        </div>
+        </div>}
       </div>
 
       {/* ── Right: live-vs-reference readouts + corner info ── */}
