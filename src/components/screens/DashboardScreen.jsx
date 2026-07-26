@@ -15,6 +15,19 @@ import { inTauri } from "../../lib/env.js";
 
 const KOFI_URL = "https://ko-fi.com/rapidbeno";
 
+// Team-skin hero mark: skin id → logo in public/. Only these skins get a badge in
+// the driver hero's top-right; the Default skin (and any unmapped skin) shows none.
+const SKIN_LOGOS = {
+  anthra:   { src: "/Mclaren-logo.png",  alt: "McLaren", h: 160 },
+  ferrari:  { src: "/ferrari-logo.png",  alt: "Ferrari" },
+  mercedes: { src: "/merc-logo.png",     alt: "Mercedes" },
+  redbull:  { src: "/redbull-logo.png",  alt: "Red Bull Racing" },
+  wrl:      { src: "/wrl-logo.png",      alt: "Wallaby Racing League" },
+  // Square poster art rather than a wordmark — sized taller so it stays legible, and
+  // `r` rounds its opaque edges (the other marks are transparent cut-outs, so no radius).
+  shitkickers: { src: "/shitkickers-logo.png", alt: "Shit Kickers", h: 104, r: 12 },
+};
+
 // Opens an external URL in the OS browser when running inside the Tauri shell
 // (webview links don't otherwise escape the app window); falls back to letting
 // the anchor open a normal new tab in `npm run dev`.
@@ -168,15 +181,13 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: heroAccent }} />
             <div style={{ position: "absolute", top: -30, right: -30, width: 220, height: 220, borderRadius: "50%",
               background: heroAccent, opacity: .10, filter: "blur(8px)" }} />
-            {/* Skewed speed-mark trio (team skins only — keeps the Default hero clean) */}
-            {skinned && (
-              <div style={{ position: "absolute", top: 18, right: 18, display: "flex", gap: 5, alignItems: "flex-end",
-                transform: "skewX(-18deg)", pointerEvents: "none" }}>
-                <span style={{ width: 5, height: 26, borderRadius: 1, background: "var(--mark-1, var(--mark, #3671C6))" }} />
-                <span style={{ width: 5, height: 20, borderRadius: 1, background: "var(--mark-2, var(--mark, #3671C6))" }} />
-                <span style={{ width: 5, height: 14, borderRadius: 1, background: "var(--mark-3, var(--mark, #3671C6))" }} />
-              </div>
+            {/* Team mark (top-right of the hero — team skins only) */}
+            {SKIN_LOGOS[activeSkin] && (
+              <img src={SKIN_LOGOS[activeSkin].src} alt={SKIN_LOGOS[activeSkin].alt} style={{ position: "absolute", top: 14, right: 16,
+                height: SKIN_LOGOS[activeSkin].h || 80, width: "auto", objectFit: "contain", pointerEvents: "none",
+                borderRadius: SKIN_LOGOS[activeSkin].r || 0 }} />
             )}
+
             <div style={{ display: "flex", gap: 18, alignItems: "flex-start", position: "relative" }}>
               {/* Avatar + number badge */}
               <div style={{ position: "relative", flex: "none" }}>

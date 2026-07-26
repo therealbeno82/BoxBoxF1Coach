@@ -74,6 +74,35 @@ export const THEMES = {
     "--logo-fg": "#FFC906", "--logo-box-bg": "#223971", "--logo-glow": "#CC1E4A99",
     "--tex-hero": "repeating-linear-gradient(45deg, rgba(255,201,6,.028) 0 3px, transparent 3px 6px), repeating-linear-gradient(-45deg, rgba(204,30,74,.05) 0 3px, transparent 3px 6px)",
   },
+
+  // Wallaby Racing League (WRL) logo — 4FA82E racing-green / FFFFFF white / 0a0e08 near-black green.
+  wrl: {
+    "--bg": "#0a0e08", "--glow": "#12240c", "--surface": "#121711", "--inset": "#0c110a", "--modal": "#0f140d", "--line": "#243024",
+    "--hero-border": "#1f4a1a", "--elevated": "#123210", "--border-modal": "#222a22",
+    "--accent": "#4FA82E", "--on-accent": "#08160a", "--accent-glow": "#4FA82E66", "--accent-1": "#4FA82E", "--accent-2": "#FFFFFF",
+    "--accent-1f": "rgba(79,168,46,.14)", "--accent-33": "rgba(79,168,46,.22)", "--accent-0d": "rgba(79,168,46,.06)",
+    "--accent-44": "rgba(79,168,46,.32)", "--accent-55": "rgba(79,168,46,.45)", "--pb-border": "#1f4a1a",
+    "--mark": "#4FA82E", "--num-italic": "italic", "--r-lg": "8px", "--r-md": "8px", "--r-sm": "6px",
+    "--stat-1": "#4FA82E", "--stat-2": "#FFFFFF", "--stat-3": "#8BD46A",
+    "--mark-1": "#4FA82E", "--mark-2": "#FFFFFF", "--mark-3": "#8BD46A",
+    "--badge-bg": "#4FA82E", "--badge-fg": "#08160a", "--team-swatch": "#4FA82E", "--cat-1": "#4FA82E", "--cat-2": "#FFFFFF",
+    "--tex-hero": "repeating-linear-gradient(45deg, rgba(255,255,255,.03) 0 3px, transparent 3px 6px), repeating-linear-gradient(-45deg, rgba(79,168,46,.05) 0 3px, transparent 3px 6px)",
+  },
+
+  // Shit Kickers team poster — 72388C purple / F2CB60 gold / E49E59 sand / black linework.
+  shitkickers: {
+    "--bg": "#150a1c", "--glow": "#2e1140", "--surface": "#1d1226", "--inset": "#150d1e", "--modal": "#191022", "--line": "#33224a",
+    "--hero-border": "#5a2b7a", "--elevated": "#2a1240", "--border-modal": "#2e2140",
+    "--accent": "#F2CB60", "--on-accent": "#1a0b26", "--accent-glow": "#F2CB6066", "--accent-1": "#F2CB60", "--accent-2": "#9B54C4",
+    "--accent-1f": "rgba(242,203,96,.14)", "--accent-33": "rgba(242,203,96,.22)", "--accent-0d": "rgba(242,203,96,.06)",
+    "--accent-44": "rgba(242,203,96,.32)", "--accent-55": "rgba(242,203,96,.45)", "--pb-border": "#6b501a",
+    "--mark": "#F2CB60", "--num-italic": "italic", "--r-lg": "8px", "--r-md": "8px", "--r-sm": "6px",
+    "--stat-1": "#F2CB60", "--stat-2": "#9B54C4", "--stat-3": "#E49E59",
+    "--mark-1": "#9B54C4", "--mark-2": "#F2CB60", "--mark-3": "#E49E59",
+    "--badge-bg": "#F2CB60", "--badge-fg": "#1a0b26", "--team-swatch": "#9B54C4", "--cat-1": "#9B54C4", "--cat-2": "#F2CB60",
+    "--cta-bg": "#72388C", "--cta-fg": "#F2CB60", "--cta-border": "none",
+    "--tex-hero": "repeating-linear-gradient(45deg, rgba(242,203,96,.03) 0 3px, transparent 3px 6px), repeating-linear-gradient(-45deg, rgba(155,84,196,.06) 0 3px, transparent 3px 6px)",
+  },
 };
 
 // Ordered list for the Settings picker. `chips` are the two preview swatches shown
@@ -84,6 +113,8 @@ export const SKINS = [
   { id: "ferrari",  name: "Ferrari · Rosso",        descriptor: "Red · carbon · italic",     chips: ["#A6051A", "#FFEB00"] },
   { id: "mercedes", name: "Mercedes · Petronas",    descriptor: "Teal · silver · upright",   chips: ["#00A19C", "#C6C6C6"] },
   { id: "redbull",  name: "Red Bull · Racing",      descriptor: "Navy · red · yellow",       chips: ["#223971", "#CC1E4A"] },
+  { id: "wrl",      name: "WRL · Wallaby Racing",   descriptor: "Green · black · white",     chips: ["#4FA82E", "#FFFFFF"] },
+  { id: "shitkickers", name: "Shit Kickers",        descriptor: "Purple · gold · sand",      chips: ["#72388C", "#F2CB60"] },
 ];
 
 export const SKIN_IDS = SKINS.map((s) => s.id);
