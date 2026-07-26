@@ -25,6 +25,7 @@ export const TRACKS = {
   30: { name: 'Miami',          slug: 'miami',        country: 'US' },
   31: { name: 'Las Vegas',      slug: 'lasvegas',     country: 'US' },
   32: { name: 'Losail',         slug: 'qatar',        country: 'QA' },
+  42: { name: 'Madring',        slug: 'madring',      country: 'ES' },
 };
 
 export function getTrack(id) {

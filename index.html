@@ -4,12 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>F1 Coach</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=Saira+Condensed:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- UI fonts are SELF-HOSTED (public/fonts/, vendored by
+         scripts/fetch-fonts.mjs). They used to come from fonts.googleapis.com,
+         which made every launch wait on a render-blocking network request — the
+         app has to work offline (UDP telemetry + a bundled TTS model need no
+         network), and offline that request stalled until it timed out and then
+         fell back to system-ui. Keep this local: re-run the script to change the
+         family/weight set, don't re-add the remote <link>. -->
+    <link rel="stylesheet" href="/fonts/fonts.css" />
     <style>
       /* ─── COCKPIT DESIGN TOKENS ───────────────────────────────────────────
          These :root values are the DEFAULT skin — the original committed dark

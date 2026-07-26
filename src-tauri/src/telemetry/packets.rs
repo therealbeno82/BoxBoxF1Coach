@@ -175,6 +175,11 @@ pub fn parse_participants_ai(payload: &[u8], h: &Header) -> Option<bool> {
 // airTemp@2, totalLaps@3, trackLength@4 (u16), sessionType@6, trackId@7,
 // formula@8, sessionTimeLeft@9, sessionDuration@11, pitSpeedLimit@13, gamePaused@14.
 pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
+    // Weather + temps: the Live screen stamps them on each session block of the
+    // lap log, so a race review shows the conditions each stint was driven in.
+    l.weather = u8_at(payload, 0)?;
+    l.track_temp = i8_at(payload, 1)?;
+    l.air_temp = i8_at(payload, 2)?;
     l.track_length = u16_at(payload, 4)?;
     l.session_type = u8_at(payload, 6)?;
     l.track_id = i8_at(payload, 7)?;
@@ -201,6 +206,24 @@ pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
         }
     }
     Some(game_paused)
+}
+
+// ── Car Damage (id 10): per-wheel tyre wear % for the player car ──
+// `m_tyresWear[4]` (f32 %, wheel order RL RR FL FR) opens each CarDamageData
+// struct, so only the stride — which locates the player's slice — matters. Derive
+// it from the payload (as parse_participants_ai does) so a struct-size change in a
+// future format revision degrades to "no wear" instead of a misaligned read.
+pub fn parse_car_damage(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
+    let cars = [h.max_cars(), 24]
+        .into_iter()
+        .find(|&c| payload.len() % c == 0 && payload.len() / c >= 16)?;
+    let base = h.player_car_index as usize * (payload.len() / cars);
+    let mut wear = [0.0f32; 4];
+    for (i, w) in wear.iter_mut().enumerate() {
+        *w = f32_at(payload, base + i * 4)?;
+    }
+    l.tyre_wear = wear;
+    Some(())
 }
 
 // ── Car Setups (id 5): raw player setup, forwarded verbatim to the UI ──

@@ -1,26 +1,16 @@
 // ─── COACHING-TIP SCHEMA ──────────────────────────────────────────────────────
-// The structured shape for the on-track tip and between-lap debrief. Exported as
-// a JSON Schema (passed to OpenRouter's response_format) plus a JS validator.
-// `repairTip` is the fallback when a model returns non-JSON, so the pipeline
-// never hard-fails.
+// The structured shape for the between-lap debrief. Exported as a JSON Schema
+// (passed to OpenRouter's response_format) plus a JS validator. `repairTip` is the
+// fallback when a model returns non-JSON, so the pipeline never hard-fails.
+//
+// A leaner COACHING_TIP_SCHEMA (no `summary`) sat alongside this one for the
+// on-track tip; it went with that call when the Race Engineer chat was removed.
 
 import { cleanOutput } from "./guardrails.js";
 
-export const COACHING_TIP_SCHEMA = {
-  type: "object",
-  properties: {
-    tip: { type: "string", description: "One short coaching sentence, max ~20 words." },
-    severity: { type: "string", enum: ["info", "minor", "major"] },
-    zone: { anyOf: [{ type: "string" }, { type: "null" }] },
-    grounded: { type: "boolean" },
-  },
-  required: ["tip", "severity", "zone", "grounded"],
-  additionalProperties: false,
-};
-
-// Between-lap debrief: the tip fields plus a short multi-sentence read of the lap
-// shown on the Coach Log screen. `summary` is cleaned + numerically grounded by the
-// caller, same as the tip, so it can't fabricate figures.
+// Between-lap debrief: a one-line tip plus a short multi-sentence read of the lap
+// shown on the Coach Log screen. Both are cleaned + numerically grounded by the
+// caller, so neither can fabricate figures.
 export const DEBRIEF_SCHEMA = {
   type: "object",
   properties: {

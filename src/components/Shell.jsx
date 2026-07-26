@@ -63,7 +63,10 @@ export default function Shell({
   const settingsActive = tab === "setup";
   return (
     <div style={{
-      minHeight: "100vh", background: C.bg, color: "#fff",
+      // Fixed viewport height (not min-height): the shell must never grow past
+      // the window, so panels with their own scroll area (Live's Session Laps)
+      // scroll internally instead of pushing the whole page taller.
+      height: "100vh", overflow: "hidden", background: C.bg, color: "#fff",
       fontFamily: FONT.ui, display: "flex", flexDirection: "column",
     }}>
       {/* ── Top chrome ── */}

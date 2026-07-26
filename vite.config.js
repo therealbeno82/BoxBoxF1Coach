@@ -23,6 +23,13 @@ export default defineConfig({
     port: process.env.PORT ? Number(process.env.PORT) : 1420,
     strictPort: false,
   },
+  // The Kokoro TTS worker (src/lib/kokoroWorker.js) lazily import()s kokoro-js,
+  // which splits the worker bundle into chunks — only the "es" worker format
+  // supports that (the "iife" default errors). Module workers are fine in every
+  // runtime we target (WebView2 + modern browsers).
+  worker: {
+    format: "es",
+  },
   // kokoro-js pulls in @huggingface/transformers + onnxruntime-web, which ship
   // their own .wasm and worker assets. Pre-bundling them with esbuild breaks
   // those asset URLs, so exclude them and let Vite serve them as-is. They're

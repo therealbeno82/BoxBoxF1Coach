@@ -1,7 +1,9 @@
 // ─── COACH LOG (structured per-channel analysis) ────────────────────────────
 // The structured view for the Coach Log screen. It groups the user-vs-reference
 // deltas into per-channel insights (Braking / Throttle / ERS / Line / Gear) and a
-// "potential gain" per channel.
+// "potential gain" per channel. Setup directions used to sit here too; they were
+// rule-of-thumb guesses that couldn't see the actual car balance, so they were
+// dropped in favour of the pace-by-session/compound read (lib/lapBuckets.js).
 //
 // The potential gain is REAL seconds, attributed by the shared physical time model
 // in lapAnalysis.js (the segment-by-segment 1/v time delta), NOT a unit-mixed
@@ -52,8 +54,6 @@ export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
     };
   });
 
-  const setupSuggestions = setupHeuristics(a.channelTime, opts.setup);
-
   const top = rankFindings(a)[0];
   const nextLapFocus = top
     ? `${top.zone}: ${top.text}`
@@ -61,7 +61,6 @@ export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
 
   return {
     channels,
-    setupSuggestions,
     nextLapFocus,
     estimated,
     totalGain: `${estimated ? "~" : ""}−${totalLost.toFixed(2)}s`,
@@ -69,21 +68,3 @@ export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
   };
 }
 
-// Map the dominant evidence (by seconds lost) to a few qualitative setup
-// directions. Rule-of-thumb starting points, shown when there's no LLM.
-function setupHeuristics(channelTime, setup) {
-  const out = [];
-  const push = (abbr, label, color, dir, note) => out.push({ abbr, label, color, dir, note });
-
-  if (channelTime.LINE > 0)     push("FW", "Front Wing", "#2ED573", "+1", "More front grip to lift mid-corner minimum speed.");
-  if (channelTime.BRAKING > 0)  push("BB", "Brake Bias", "#FFC400", "rearward", "Trail deeper without locking the fronts.");
-  if (channelTime.THROTTLE > 0) push("DF", "On-Throttle Diff", "#34c8ff", "softer", "Smoother delivery for traction on exit.");
-  if (channelTime.GEAR > 0)     push("GR", "Gearing", "#b45bff", "review", "Match the reference's gear through the load.");
-  if (channelTime.ERS > 0)      push("ER", "ERS Strategy", "#FF8A3D", "deploy", "Spend the charge where the reference does.");
-
-  // If the lap carries a real setup snapshot, surface a current value too.
-  if (setup && out.length < 5 && typeof setup.m_frontWing === "number") {
-    push("FW", "Front Wing (now)", "#6b7488", String(setup.m_frontWing), "Current front-wing level.");
-  }
-  return out.slice(0, 5);
-}

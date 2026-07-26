@@ -1,25 +1,19 @@
-// ─── KOKORO NEURAL TTS ────────────────────────────────────────────────────────
-// Runs the 82M-parameter Kokoro text-to-speech model 100% locally via
-// Transformers.js. The library is imported LAZILY the first time the user opts
-// into this engine, so the base app stays light.
+// ─── KOKORO NEURAL TTS (main-thread client) ───────────────────────────────────
+// Runs the 82M-parameter Kokoro text-to-speech model 100% locally — but not on
+// this thread. All heavy work (model load + wasm inference) lives in a dedicated
+// module worker (kokoroWorker.js): ORT-web's wasm backend executes on the thread
+// that calls it, so running Kokoro here used to freeze the whole UI for seconds
+// per phrase — worst on the corner-call prewarm that fires when a reference lap
+// is first selected. This module is the thin promise-per-message client, keeping
+// the same API the app always used: loadKokoro / synthesize / isKokoroLoaded.
 //
-// kokoro-js bundles its OWN copy of onnxruntime-web + @huggingface/transformers
-// (rolled up into dist/kokoro.web.js) — it does NOT share the app's copy that
-// src/lib/transformersConfig.js configures, and it has no `env.allowLocalModels`/
-// `localModelPath` escape hatch (only `env.wasmPaths` is exported). So instead of
-// configuring it, we (a) point its ORT wasm at our bundled /ort/ copy the same way
-// transformersConfig.js does for Whisper, and (b) patch `fetch` to redirect its
-// hardcoded Hugging Face Hub requests (model weights, tokenizer, and — for voice
-// style vectors specifically — a fetch that bypasses transformers.js entirely) to
-// the files vendored under public/kokoro/ by scripts/fetch-kokoro-model.mjs. Net
-// result: no network access and no CDN needed at runtime, matching the CSP-block
-// fix already in place for Whisper (see src/lib/transformersConfig.js).
+// Synthesised clips are also cached in IndexedDB (keyed voice|speed|text), so
+// the one-time cost of synthesising a track's corner calls is paid once EVER,
+// not once per app run — after the first session on a track, prewarm is all
+// cache hits and calls are instant from launch. The cache is LRU-pruned so
+// one-shot AI tips/chat replies can't grow it unbounded.
 //
-// Only the q8-quantized weights are bundled (~90 MB) — not fp32 — to keep the
-// installer size down, so dtype is pinned to "q8" regardless of WebGPU support.
-
-const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-const HF_REPO_PREFIX = `https://huggingface.co/${MODEL_ID}/resolve/main/`;
+// The worker is only spawned on first use, so the base app stays light.
 
 // Curated, accent-grouped voice list. Kokoro v1.0 ships American + British
 // English only (no Australian — use the browser engine's Google AU voice for
@@ -48,61 +42,133 @@ export const KOKORO_VOICES = [
 
 export const DEFAULT_KOKORO_VOICE = "bm_george";
 
-let _tts = null;          // the loaded model, once ready
-let _ttsPromise = null;   // in-flight load, so concurrent callers share it
-let _fetchPatched = false;
+// ── Worker plumbing: one lazy worker, promise-per-message by request id ────────
+let _worker = null;
+let _pending = new Map();
+let _nextId = 1;
+let _loaded = false;       // model ready in the worker
+let _loadPromise = null;   // in-flight load, so concurrent callers share it
+let _onProgress = null;    // forwarded download-progress callback for the UI
 
-export function isKokoroLoaded() { return !!_tts; }
-
-// Redirect kokoro-js's hardcoded `https://huggingface.co/onnx-community/Kokoro-…`
-// requests to the local copy vendored under public/kokoro/ (see HF_REPO_PREFIX
-// header comment above for why this can't be done via transformers.js env config).
-function patchFetchForBundledKokoro() {
-  if (_fetchPatched) return;
-  _fetchPatched = true;
-  const localBase = `${import.meta.env.BASE_URL}kokoro/`;
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    const url = typeof input === "string" ? input : input?.url;
-    if (url && url.startsWith(HF_REPO_PREFIX)) {
-      return originalFetch(localBase + url.slice(HF_REPO_PREFIX.length), init);
-    }
-    return originalFetch(input, init);
+function getWorker() {
+  if (_worker) return _worker;
+  _worker = new Worker(new URL("./kokoroWorker.js", import.meta.url), { type: "module" });
+  _worker.onmessage = (e) => {
+    const m = e.data || {};
+    if (m.type === "progress") { _onProgress?.(m.data); return; }
+    const p = _pending.get(m.id);
+    if (!p) return;
+    _pending.delete(m.id);
+    if (m.ok) p.resolve(m);
+    else p.reject(new Error(m.error || "Kokoro worker error"));
   };
+  // A worker-level crash (script load failure etc.) gets no per-id reply — fail
+  // everything in flight so callers' catch paths run instead of hanging forever.
+  _worker.onerror = (e) => {
+    const err = new Error(e?.message || "Kokoro worker failed");
+    for (const p of _pending.values()) p.reject(err);
+    _pending.clear();
+  };
+  return _worker;
 }
 
-// Load (download + initialise) the model. Safe to call repeatedly — the first
-// call kicks off the load and every later call awaits the same promise.
+function callWorker(msg) {
+  const id = _nextId++;
+  return new Promise((resolve, reject) => {
+    _pending.set(id, { resolve, reject });
+    getWorker().postMessage({ id, ...msg });
+  });
+}
+
+export function isKokoroLoaded() { return _loaded; }
+
+// Load (download + initialise) the model in the worker. Safe to call repeatedly —
+// the first call kicks off the load and every later call awaits the same promise.
 export async function loadKokoro(onProgress) {
-  if (_tts) return _tts;
-  if (!_ttsPromise) {
-    _ttsPromise = (async () => {
-      patchFetchForBundledKokoro();
-      const { KokoroTTS, env: kokoroEnv } = await import("kokoro-js");
-      // kokoro-js's bundled ORT defaults to the jsdelivr CDN, which the packaged
-      // app's CSP blocks — point it at the same local copy transformersConfig.js
-      // uses for Whisper (see scripts/copy-ort.mjs). Production only: the Vite dev
-      // server refuses to serve public/ files as module imports (ORT dynamically
-      // imports the .mjs glue), so dev falls back to the CDN default — allowed by
-      // the browser (no CSP) and by devCsp, which whitelists cdn.jsdelivr.net.
-      if (import.meta.env.PROD) {
-        kokoroEnv.wasmPaths = `${import.meta.env.BASE_URL}ort/`;
-      }
-      const tts = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype:  "q8",  // the only precision bundled locally — see header comment
-        device: "wasm", // q8 on webgpu yields garbled audio; kokoro-js pairs webgpu with fp32 only
-        progress_callback: onProgress,
-      });
-      _tts = tts;
-      return tts;
-    })().catch(err => { _ttsPromise = null; throw err; });
+  if (onProgress) _onProgress = onProgress;
+  if (_loaded) return true;
+  if (!_loadPromise) {
+    _loadPromise = callWorker({ type: "load" })
+      .then(() => { _loaded = true; _onProgress = null; return true; })
+      .catch((err) => { _loadPromise = null; _onProgress = null; throw err; });
   }
-  return _ttsPromise;
+  return _loadPromise;
 }
 
 // Synthesise `text` and return raw mono audio ready for the Web Audio API.
+// Persistent-cache first: a hit skips the worker (and even the model load)
+// entirely; a miss synthesises off-thread and stores the clip for next launch.
 export async function synthesize(text, voice = DEFAULT_KOKORO_VOICE, speed = 1) {
-  const tts = await loadKokoro();
-  const raw = await tts.generate(text, { voice, speed });
-  return { audio: raw.audio, sampleRate: raw.sampling_rate };
+  const key = `${voice}|${speed}|${text}`;
+  const hit = await cacheGet(key);
+  if (hit) return hit;
+  await loadKokoro();
+  const { audio, sampleRate } = await callWorker({ type: "synthesize", text, voice, speed });
+  cachePut(key, audio, sampleRate); // fire-and-forget — a failed write just means a re-synth later
+  return { audio, sampleRate };
+}
+
+// ── Persistent clip cache (IndexedDB) ─────────────────────────────────────────
+// Every helper resolves null / no-ops on any failure — IDB being unavailable or
+// corrupt must never break speech, only make it slower.
+const DB_NAME = "boxbox-tts-cache";
+const DB_STORE = "clips";
+const CACHE_CAP = 400; // ~a dozen tracks' call sets + plenty of one-shot tips
+
+let _dbPromise = null;
+function openDb() {
+  if (_dbPromise) return _dbPromise;
+  _dbPromise = new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const store = req.result.createObjectStore(DB_STORE, { keyPath: "key" });
+        store.createIndex("lastUsed", "lastUsed");
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  return _dbPromise;
+}
+
+async function cacheGet(key) {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const store = db.transaction(DB_STORE, "readwrite").objectStore(DB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        const rec = req.result;
+        if (rec?.audio instanceof Float32Array && rec.sampleRate > 0) {
+          rec.lastUsed = Date.now(); // touch so frequently-played calls survive pruning
+          try { store.put(rec); } catch {}
+          resolve({ audio: rec.audio, sampleRate: rec.sampleRate });
+        } else resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function cachePut(key, audio, sampleRate) {
+  const db = await openDb();
+  if (!db) return;
+  try {
+    const store = db.transaction(DB_STORE, "readwrite").objectStore(DB_STORE);
+    store.put({ key, audio, sampleRate, lastUsed: Date.now() });
+    // Bound the store: walk the lastUsed index oldest-first, deleting the excess.
+    const cnt = store.count();
+    cnt.onsuccess = () => {
+      let excess = cnt.result - CACHE_CAP;
+      if (excess <= 0) return;
+      const cursor = store.index("lastUsed").openCursor();
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (c && excess-- > 0) { c.delete(); c.continue(); }
+      };
+    };
+  } catch {}
 }

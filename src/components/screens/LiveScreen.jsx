@@ -7,9 +7,9 @@
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
-import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
-import { computeDriverStats, isRankable, visibleSessionLaps } from "../../lib/driverStats.js";
-import { tyreCondition } from "../../lib/tyres.js";
+import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
+import { computeDriverStats, isRankable, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
+import { tyreCondition, tyreLabel, tyreColor, tyreWearPct } from "../../lib/tyres.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -37,9 +37,102 @@ function StatusChip({ label, value, color, hint }) {
   );
 }
 
+// Header line that opens each run in the lap log: what was being driven, where,
+// and in what conditions. The laps under it count from 1, so a weekend reads as
+// "QUALIFYING · Bahrain · Clear" then "RACE · Bahrain · Light Rain" — the context
+// you need to judge a strategy call after the fact.
+function RunHeader({ run }) {
+  const m = run.meta || {};
+  const conditions = conditionsLabel(m);
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap",
+      padding: "9px 2px 3px", borderBottom: `1px solid ${C.line}`, marginTop: 2 }}>
+      <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.4, textTransform: "uppercase", color: C.textBody2 }}>
+        {m.sessionType || "Session"}
+      </span>
+      <span style={{ color: C.textFaintest }}>·</span>
+      <span style={{ fontSize: 11, fontWeight: 600, color: C.textMid }}>{m.track || "Unknown track"}</span>
+      {conditions && (
+        <>
+          <span style={{ color: C.textFaintest }}>·</span>
+          <span style={{ fontSize: 10, color: C.textDim }}>{conditions}</span>
+        </>
+      )}
+      <span style={{ flex: 1 }} />
+      <span style={{ fontFamily: FONT.mono, fontSize: 9, letterSpacing: 1, color: C.textDim }}>
+        {run.laps.length} LAP{run.laps.length === 1 ? "" : "S"}
+      </span>
+    </div>
+  );
+}
+
+// One lap in the log: number, time, the three sector splits (F1 timing-tower
+// colours via the `sectorColor` the screen owns), the tyre it was set on with its
+// wear, and the gap to the run's best.
+function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
+  const invalid = !!l.invalid;
+  const isPB = !invalid && best != null && Math.abs(l.lapTime - best) < 1e-6;
+  const delta = best != null ? l.lapTime - best : null;
+  const secs = Array.isArray(l.sectorTimes) ? l.sectorTimes : [null, null, null];
+  const tyre = tyreLabel(l.tyre);
+  const wear = tyreWearPct(l.tyre);
+  const tCol = tyreColor(l.tyre) || C.textFaint;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12,
+      background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
+      <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
+      {invalid && (
+        <span title="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</span>
+      )}
+      <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
+      <span style={{ flex: "none", color: C.textFaintest }}>–</span>
+      {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
+      <div style={{ flex: "none", display: "flex", gap: 14, opacity: invalid ? 0.5 : 1 }}>
+        {[0, 1, 2].map((i) => {
+          const v = secs[i];
+          const ok = typeof v === "number" && v > 0;
+          return (
+            <span key={i} style={{ display: "inline-flex", alignItems: "baseline", gap: 4, fontFamily: FONT.mono, fontSize: 11, fontWeight: 700 }}>
+              <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: 0.5, color: C.textDim }}>S{i + 1}</span>
+              <span style={{ color: invalid ? C.textDim : sectorColor(l, i) }}>{ok ? v.toFixed(3) : "—"}</span>
+            </span>
+          );
+        })}
+      </div>
+      {/* Tyre the lap was set on + its wear at the flag — the strategy half of the
+          row, so a stint's degradation reads straight down the list. Compound
+          colours carry data meaning, so they stay fixed (lib/tyres.js). */}
+      {tyre && (
+        <span title={`${tyre}${l.tyre?.age ? ` · ${l.tyre.age} laps old` : ""}${wear != null ? ` · ${wear.toFixed(1)}% worn (worst wheel)` : ""}`}
+          style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: tCol, boxShadow: `0 0 6px ${tCol}66` }} />
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: C.textMid }}>{tyre}</span>
+          {wear != null && (
+            <span style={{ fontFamily: FONT.mono, fontSize: 10, fontWeight: 700,
+              color: wear >= 60 ? C.red : wear >= 35 ? C.yellow : C.textDim }}>{wear.toFixed(0)}%</span>
+          )}
+        </span>
+      )}
+      <span style={{ flex: 1 }} />
+      <span style={{ flex: "none", color: C.textFaintest }}>–</span>
+      <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
+        {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
+      </span>
+      <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
+        justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
+        borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
+        cursor: l.setup ? "pointer" : "default", opacity: l.setup ? 1 : 0.5 }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 export default function LiveScreen({
   tel, units = "km/h", trackName, sessionLabel, liveLapNumber,
-  laps = [], sessionId, activeTrace, lastAdvice,
+  laps = [], sessionId, activeTrace, lastAdvice, refMismatch = null,
   liveMini = { durations: [], current: -1, tyre: null },
   mapSlot, legendChips = [], audioOn, onToggleAudio,
   focusAudioOn = true, onToggleFocusAudio, onOpenSetup, onResetSessionLaps,
@@ -58,9 +151,27 @@ export default function LiveScreen({
     () => [...visibleSessionLaps(laps, sessionId)].sort((a, b) => (b.recordedAt || 0) - (a.recordedAt || 0)),
     [laps, sessionId]);
   const lastLap = sessionLaps[0] || null;
-  const sessionBest = useMemo(() => {
-    const valid = sessionLaps.filter(l => isRankable(l) && typeof l.lapTime === "number" && l.lapTime > 0);
-    return valid.length ? Math.min(...valid.map(l => l.lapTime)) : null;
+
+  // ── Runs ──────────────────────────────────────────────────────────────────
+  // The lap log is grouped into RUNS (see lapRunKey): one block per session type
+  // driven on this track, in the order they were driven — qualifying, then the
+  // race that followed. Each block prints its own header (session type · track ·
+  // weather) and counts laps from 1, so a whole race weekend reads top-to-bottom
+  // as separate stints instead of one running lap count.
+  const runs = useMemo(() => {
+    const byKey = new Map();
+    // Oldest first: blocks appear in the order they were driven, laps ascending
+    // within each — the reading order for reviewing a session after the fact.
+    for (const l of [...sessionLaps].reverse()) {
+      const key = lapRunKey(l.meta);
+      let run = byKey.get(key);
+      if (!run) { run = { key, meta: l.meta || {}, laps: [], best: null }; byKey.set(key, run); }
+      run.laps.push(l);
+      run.meta = l.meta || run.meta; // latest lap's conditions describe the run
+      if (isRankable(l) && typeof l.lapTime === "number" && l.lapTime > 0 &&
+          (run.best == null || l.lapTime < run.best)) run.best = l.lapTime;
+    }
+    return [...byKey.values()];
   }, [sessionLaps]);
 
   // Two-step inline confirm for the manual "Reset Session Laps" button: first click
@@ -76,6 +187,18 @@ export default function LiveScreen({
   // the OS file picker; picking a .json hands it to the parent, then we clear the
   // input's value so re-loading the SAME file fires onChange again.
   const fileInputRef = useRef(null);
+
+  // The lap log reads oldest→newest (qualifying above the race that followed), so
+  // the live lap lands at the BOTTOM. Follow it there as laps complete — but only
+  // while the user is already near the bottom, so scrolling back to review an
+  // earlier stint isn't yanked away the moment the next lap finishes.
+  const lapListRef = useRef(null);
+  useEffect(() => {
+    const el = lapListRef.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (fromBottom < 120) el.scrollTop = el.scrollHeight;
+  }, [sessionLaps.length]);
 
   // ── F1 timing-tower sector colours ────────────────────────────────────────
   // Both the big S1/S2/S3 cards (the last lap's splits) and the session-laps list
@@ -98,14 +221,14 @@ export default function LiveScreen({
     `${track ?? "∅"}|${cond ?? "?"}|${sessionType ?? "?"}`;
   const recordKey = (l) => recordKeyFor(l.meta?.track, tyreCondition(l.tyre), l.meta?.sessionType);
 
-  // Fastest split per sector within each drive (keyed by sessionId) across the laps
-  // shown in the list — the GREEN benchmark. Grouping by sessionId keeps each drive's
-  // bests separate even when the list spans several sessions (e.g. idle, no live run).
+  // Fastest split per sector within each RUN (see lapRunKey) across the laps shown
+  // in the list — the GREEN benchmark. Grouping by run keeps each stint's bests
+  // separate, so a race lap is graded against the race, not against qualifying.
   const sessionBests = useMemo(() => {
     const m = new Map();
     for (const l of sessionLaps) {
       if (!isRankable(l) || !Array.isArray(l.sectorTimes)) continue;
-      const sid = l.meta?.sessionId ?? "∅";
+      const sid = lapRunKey(l.meta);
       let acc = m.get(sid);
       if (!acc) { acc = [null, null, null]; m.set(sid, acc); }
       for (let i = 0; i < 3; i++) {
@@ -142,7 +265,7 @@ export default function LiveScreen({
     // EPS of it means this split is (or ties) the fastest ever for these conditions.
     const record = recordBests.get(recordKey(lap))?.[i];
     if (record != null && v <= record + SECTOR_EPS) return C.purple;
-    const best = sessionBests.get(lap.meta?.sessionId ?? "∅")?.[i];
+    const best = sessionBests.get(lapRunKey(lap.meta))?.[i];
     if (best != null && v <= best + SECTOR_EPS) return C.green; // best of this session
     return C.yellow; // beaten this session
   };
@@ -155,12 +278,12 @@ export default function LiveScreen({
   // Benchmarks come from saved laps' `miniSectors`; the live lap isn't saved yet, so
   // here "fastest ever" means strictly beating (or matching) the stored record.
 
-  // Per-mini-sector best across this session's laps (GREEN benchmark), keyed by sessionId.
+  // Per-mini-sector best across this run's laps (GREEN benchmark), keyed by run.
   const sessionMini = useMemo(() => {
     const m = new Map();
     for (const l of sessionLaps) {
       if (!isRankable(l) || !Array.isArray(l.miniSectors)) continue;
-      const sid = l.meta?.sessionId ?? "∅";
+      const sid = lapRunKey(l.meta);
       let acc = m.get(sid);
       if (!acc) { acc = new Array(MINI_SECTORS).fill(null); m.set(sid, acc); }
       for (let i = 0; i < MINI_SECTORS; i++) {
@@ -190,7 +313,7 @@ export default function LiveScreen({
   // Conditions of the live lap → which record/session buckets its mini-sectors face.
   const liveKey = recordKeyFor(trackName, tyreCondition(liveMini.tyre), sessionLabel);
   const liveRecord = recordMini.get(liveKey);
-  const liveSession = sessionMini.get(sessionId ?? "∅");
+  const liveSession = sessionMini.get(lapRunKey({ sessionId, sessionType: sessionLabel, track: trackName || "Live" }));
   // Colour a just-completed mini-sector of the live lap (null → not driven yet → grey).
   const miniColor = (d, m) => {
     if (typeof d !== "number" || d <= 0) return null;
@@ -202,8 +325,12 @@ export default function LiveScreen({
   };
 
   // vs-reference delta = the most recent completed lap against the reference's lap time.
+  // Suppressed when the reference isn't comparable with what's being driven (see
+  // lib/coach/refMatch.js): "+18.4s" against a dry qualifying lap tells a driver on
+  // Inters in the wet nothing they can act on, and reads as a pace problem.
   const refLapTime = activeTrace ? (activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null) : null;
-  const lapDelta = (lastLap && typeof refLapTime === "number") ? lastLap.lapTime - refLapTime : null;
+  const lapDelta = (!refMismatch && lastLap && typeof refLapTime === "number")
+    ? lastLap.lapTime - refLapTime : null;
   const refLabel = activeTrace
     ? `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
     : "No reference loaded";
@@ -281,6 +408,28 @@ export default function LiveScreen({
         </div>
       </div>
 
+      {/* ── Reference not comparable ──
+          The corner calls are derived from the reference's own braking/ERS traces,
+          so an incomparable reference is muted rather than talked over the driver
+          (BoxBoxApp's liveCalls gate). Say so explicitly — a coach that just goes
+          quiet mid-session reads as a broken app, not a deliberate decision. */}
+      {refMismatch && (
+        <div style={{ flex: "none", background: "#2a1113", border: `1px solid ${C.red || "#ff4d5e"}`,
+          borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "flex-start", gap: 11 }}>
+          <span style={{ fontSize: 15, lineHeight: 1.2 }}>⚠️</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.red || "#ff4d5e" }}>
+              Corner calls muted — reference isn't comparable
+            </div>
+            <div style={{ fontSize: 11, color: C.textMid, marginTop: 3, lineHeight: 1.5 }}>
+              {refMismatch.reasons.map((r) => r.title).join(" · ")}. The calls come from this reference's
+              own braking and ERS traces, so they'd be wrong for what you're driving. Load a reference set
+              in the same conditions — or clear it — to get them back.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── KPI strip ── */}
       <div style={{ display: "flex", gap: 16, flex: "none", flexWrap: "wrap" }}>
         <div style={{ flex: "2 1 480px", minWidth: 0, display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12 }}>
@@ -338,9 +487,11 @@ export default function LiveScreen({
       )}
 
       {/* ── Main: track map + right column ── */}
-      <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap" }}>
+      {/* overflowY: below the wrap threshold the map and the right column stack,
+          so this row scrolls on its own rather than overflowing the fixed shell. */}
+      <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap", overflowY: "auto" }}>
         {/* Track map */}
-        <div style={{ flex: "1.6 1 460px", minWidth: 320, ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "1.6 1 460px", minWidth: 320, maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
             <span style={eyebrow}>Live Track Map</span>
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -381,7 +532,10 @@ export default function LiveScreen({
         </div>
 
         {/* Right: session laps + AI focus */}
-        <div style={{ flex: "1 1 380px", minWidth: 330, display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* maxHeight: a wrapping flex line sizes itself to its content, so without
+            this cap a long lap list stretches the column (and the row) instead of
+            scrolling inside the Session Laps panel below. */}
+        <div style={{ flex: "1 1 380px", minWidth: 330, minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ flex: 1, minHeight: 160, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -390,55 +544,20 @@ export default function LiveScreen({
               </div>
               <span style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, fontFamily: FONT.mono }}>{sessionLaps.length} COMPLETED</span>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, paddingRight: 4 }}>
+            <div ref={lapListRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, paddingRight: 4 }}>
               {sessionLaps.length === 0 && (
                 <div style={{ margin: "auto", textAlign: "center", color: C.textFaint, fontSize: 11, lineHeight: 1.6, padding: 16 }}>
                   No completed laps yet this session.
                 </div>
               )}
-              {sessionLaps.map((l) => {
-                const invalid = !!l.invalid;
-                const isPB = !invalid && sessionBest != null && Math.abs(l.lapTime - sessionBest) < 1e-6;
-                const delta = sessionBest != null ? l.lapTime - sessionBest : null;
-                const secs = Array.isArray(l.sectorTimes) ? l.sectorTimes : [null, null, null];
-                return (
-                  <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 12,
-                    background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
-                    <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
-                    {invalid && (
-                      <span title="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</span>
-                    )}
-                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
-                    <span style={{ flex: "none", color: C.textFaintest }}>–</span>
-                    {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
-                    <div style={{ flex: "none", display: "flex", gap: 14, opacity: invalid ? 0.5 : 1 }}>
-                      {[0, 1, 2].map((i) => {
-                        const v = secs[i];
-                        const ok = typeof v === "number" && v > 0;
-                        return (
-                          <span key={i} style={{ display: "inline-flex", alignItems: "baseline", gap: 4, fontFamily: FONT.mono, fontSize: 11, fontWeight: 700 }}>
-                            <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: 0.5, color: C.textDim }}>S{i + 1}</span>
-                            <span style={{ color: invalid ? C.textDim : sectorColor(l, i) }}>{ok ? v.toFixed(3) : "—"}</span>
-                          </span>
-                        );
-                      })}
-                    </div>
-                    <span style={{ flex: 1 }} />
-                    <span style={{ flex: "none", color: C.textFaintest }}>–</span>
-                    <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
-                      {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
-                    </span>
-                    <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
-                      justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
-                      borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
-                      cursor: l.setup ? "pointer" : "default", opacity: l.setup ? 1 : 0.5 }}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                      </svg>
-                    </button>
-                  </div>
-                );
-              })}
+              {runs.map((run) => (
+                <div key={run.key} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <RunHeader run={run} />
+                  {run.laps.map((l) => (
+                    <LapRow key={l.id} lap={l} best={run.best} sectorColor={sectorColor} onOpenSetup={onOpenSetup} />
+                  ))}
+                </div>
+              ))}
             </div>
             {/* Save / load a whole session of laps to a file, for reviewing a full
                 race later. Save is disabled with nothing to save; Load is always

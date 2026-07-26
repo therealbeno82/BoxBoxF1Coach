@@ -1,85 +1,180 @@
 {
-  "_attribution": "Track geometry: TUMFTM racetrack-database (github.com/TUMFTM/racetrack-database), LGPL-3.0.",
+  "_attribution": "Track geometry: f1-circuits (github.com/bacinger/f1-circuits), MIT © Tomislav Bacinger.",
   "tracks": {
     "australia": {
       "file": "australia.json",
-      "lengthM": 5299,
-      "points": 2119
-    },
-    "china": {
-      "file": "china.json",
-      "lengthM": 5445,
-      "points": 2178
+      "lengthM": 5273,
+      "declaredM": 5278,
+      "points": 2110,
+      "widths": "measured"
     },
     "bahrain": {
       "file": "bahrain.json",
-      "lengthM": 5406,
-      "points": 2162
+      "lengthM": 5418,
+      "declaredM": 5412,
+      "points": 2168,
+      "widths": "measured"
+    },
+    "china": {
+      "file": "china.json",
+      "lengthM": 5448,
+      "declaredM": 5451,
+      "points": 2180,
+      "widths": "measured"
     },
     "spain": {
       "file": "spain.json",
-      "lengthM": 4650,
-      "points": 1860
+      "lengthM": 4664,
+      "declaredM": 4655,
+      "points": 1866,
+      "widths": "measured"
+    },
+    "monaco": {
+      "file": "monaco.json",
+      "lengthM": 3324,
+      "declaredM": 3337,
+      "points": 1330,
+      "widths": "nominal"
     },
     "canada": {
       "file": "canada.json",
-      "lengthM": 4358,
-      "points": 1743
-    },
-    "silverstone": {
-      "file": "silverstone.json",
-      "lengthM": 5887,
-      "points": 2355
-    },
-    "hungary": {
-      "file": "hungary.json",
-      "lengthM": 4377,
-      "points": 1751
-    },
-    "belgium": {
-      "file": "belgium.json",
-      "lengthM": 7000,
-      "points": 2800
-    },
-    "italy": {
-      "file": "italy.json",
-      "lengthM": 5790,
-      "points": 2316
-    },
-    "japan": {
-      "file": "japan.json",
-      "lengthM": 5803,
-      "points": 2321
-    },
-    "abudhabi": {
-      "file": "abudhabi.json",
-      "lengthM": 5547,
-      "points": 2219
-    },
-    "usa": {
-      "file": "usa.json",
-      "lengthM": 5508,
-      "points": 2203
-    },
-    "brazil": {
-      "file": "brazil.json",
-      "lengthM": 4305,
-      "points": 1722
+      "lengthM": 4365,
+      "declaredM": 4361,
+      "points": 1747,
+      "widths": "measured"
     },
     "austria": {
       "file": "austria.json",
-      "lengthM": 4315,
-      "points": 1726
+      "lengthM": 4302,
+      "declaredM": 4318,
+      "points": 1721,
+      "widths": "measured"
+    },
+    "silverstone": {
+      "file": "silverstone.json",
+      "lengthM": 5878,
+      "declaredM": 5891,
+      "points": 2352,
+      "widths": "measured"
+    },
+    "hungary": {
+      "file": "hungary.json",
+      "lengthM": 4376,
+      "declaredM": 4381,
+      "points": 1751,
+      "widths": "measured"
+    },
+    "belgium": {
+      "file": "belgium.json",
+      "lengthM": 6978,
+      "declaredM": 7004,
+      "points": 2792,
+      "widths": "measured"
+    },
+    "italy": {
+      "file": "italy.json",
+      "lengthM": 5787,
+      "declaredM": 5793,
+      "points": 2315,
+      "widths": "measured"
+    },
+    "singapore": {
+      "file": "singapore.json",
+      "lengthM": 4943,
+      "declaredM": 4928,
+      "points": 1978,
+      "widths": "nominal"
+    },
+    "japan": {
+      "file": "japan.json",
+      "lengthM": 5812,
+      "declaredM": 5807,
+      "points": 2325,
+      "widths": "measured"
+    },
+    "usa": {
+      "file": "usa.json",
+      "lengthM": 5520,
+      "declaredM": 5514,
+      "points": 2208,
+      "widths": "measured"
     },
     "mexico": {
       "file": "mexico.json",
-      "lengthM": 4297,
-      "points": 1719
+      "lengthM": 4302,
+      "declaredM": 4304,
+      "points": 1721,
+      "widths": "measured"
+    },
+    "brazil": {
+      "file": "brazil.json",
+      "lengthM": 4298,
+      "declaredM": 4309,
+      "points": 1720,
+      "widths": "measured"
+    },
+    "abudhabi": {
+      "file": "abudhabi.json",
+      "lengthM": 5293,
+      "declaredM": 5281,
+      "points": 2118,
+      "widths": "nominal"
+    },
+    "imola": {
+      "file": "imola.json",
+      "lengthM": 4898,
+      "declaredM": 4909,
+      "points": 1960,
+      "widths": "nominal"
     },
     "netherlands": {
       "file": "netherlands.json",
-      "lengthM": 4316,
-      "points": 1727
+      "lengthM": 4255,
+      "declaredM": 4259,
+      "points": 1703,
+      "widths": "measured"
+    },
+    "saudiarabia": {
+      "file": "saudiarabia.json",
+      "lengthM": 6196,
+      "declaredM": 6175,
+      "points": 2479,
+      "widths": "nominal"
+    },
+    "miami": {
+      "file": "miami.json",
+      "lengthM": 5415,
+      "declaredM": 5412,
+      "points": 2167,
+      "widths": "nominal"
+    },
+    "qatar": {
+      "file": "qatar.json",
+      "lengthM": 5421,
+      "declaredM": 5380,
+      "points": 2169,
+      "widths": "nominal"
+    },
+    "madring": {
+      "file": "madring.json",
+      "lengthM": 5430,
+      "declaredM": 5474,
+      "points": 2173,
+      "widths": "nominal"
+    },
+    "azerbaijan": {
+      "file": "azerbaijan.json",
+      "lengthM": 5942,
+      "declaredM": 6003,
+      "points": 2377,
+      "widths": "nominal"
+    },
+    "lasvegas": {
+      "file": "lasvegas.json",
+      "lengthM": 6221,
+      "declaredM": 6201,
+      "points": 2489,
+      "widths": "nominal"
     }
   }
 }

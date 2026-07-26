@@ -60,6 +60,10 @@ pub struct Latest {
     pub tyre_actual: i8,
     pub tyre_age: u8,
 
+    // ── Car Damage ──
+    /// Per-wheel tyre wear (%), wheel order RL RR FL FR.
+    pub tyre_wear: [f32; 4],
+
     // ── Car Telemetry 2 (2026 boost + active aero) ──
     pub overtake_available: u8,
     pub overtake_active: u8,
@@ -85,6 +89,10 @@ pub struct Latest {
     pub track_id: i8,
     pub session_type: u8,
     pub track_length: u16,
+    /// Session weather (0 clear … 5 storm) + track/air temperature (°C).
+    pub weather: u8,
+    pub track_temp: i8,
+    pub air_temp: i8,
     pub sector2_start: f32,
     pub sector3_start: f32,
     /// The game's per-session UID (from every packet header) — the UI keys its
@@ -131,6 +139,7 @@ impl Default for Latest {
             tyre_visual: -1,
             tyre_actual: -1,
             tyre_age: 0,
+            tyre_wear: [0.0; 4],
             overtake_available: 0,
             overtake_active: 0,
             overtake_activation_distance: 0,
@@ -151,6 +160,9 @@ impl Default for Latest {
             track_id: -1,
             session_type: 0,
             track_length: 0,
+            weather: 0,
+            track_temp: 0,
+            air_temp: 0,
             sector2_start: 0.0,
             sector3_start: 0.0,
             session_uid: 0,
@@ -247,6 +259,12 @@ pub struct Snapshot {
     /// Per-wheel tyre temps (°C), wheel order RL RR FL FR.
     pub tyreSurfaceTemps: [u8; 4],
     pub tyreInnerTemps: [u8; 4],
+    /// Per-wheel tyre wear (%), wheel order RL RR FL FR.
+    pub tyreWear: [f32; 4],
+    /// Session conditions: weather code (0 clear … 5 storm) + temps (°C).
+    pub weather: u8,
+    pub trackTemp: i8,
+    pub airTemp: i8,
     pub driverStatus: u8,
     pub pitStatus: u8,
     pub lapInvalid: u8,
@@ -309,6 +327,10 @@ impl Snapshot {
             tyreAge: l.tyre_age,
             tyreSurfaceTemps: l.tyre_surface_temps,
             tyreInnerTemps: l.tyre_inner_temps,
+            tyreWear: l.tyre_wear,
+            weather: l.weather,
+            trackTemp: l.track_temp,
+            airTemp: l.air_temp,
             driverStatus: l.driver_status,
             pitStatus: l.pit_status,
             lapInvalid: l.lap_invalid,

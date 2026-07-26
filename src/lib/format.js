@@ -15,9 +15,19 @@ export const MINI_SECTORS = MINI_PER_SECTOR * 3; // 18 slices across the whole l
 // render it unconditionally.
 export function formatLapTime(seconds, decimals = 1) {
   if (seconds == null || Number.isNaN(seconds)) return "—";
-  const m = Math.floor(seconds / 60);
-  const sec = (seconds % 60).toFixed(decimals).padStart(decimals + 3, "0"); // 2 int digits + "." + decimals
-  return `${m}:${sec}`;
+  // Format the MAGNITUDE and re-attach the sign. Negative inputs reach this from
+  // the Analytics elapsed readout (an interpolated clock can sit a few ms before
+  // the lap start), and splitting a negative directly produced nonsense: minutes
+  // floor away from zero while the seconds remainder stays negative.
+  const neg = seconds < 0;
+  // Round to the displayed precision FIRST, then split. Splitting first let the
+  // seconds round up to 60 independently of the minute they were taken from, so
+  // 119.98 s printed as "1:60.0" instead of "2:00.0".
+  const scale = 10 ** decimals;
+  const total = Math.round(Math.abs(seconds) * scale) / scale;
+  const m = Math.floor(total / 60);
+  const sec = (total - m * 60).toFixed(decimals).padStart(decimals + 3, "0"); // 2 int digits + "." + decimals
+  return `${neg && total > 0 ? "-" : ""}${m}:${sec}`;
 }
 
 // Convert a km/h speed to the active unit and round to an integer. The telemetry core
@@ -88,6 +98,29 @@ export function sessionTypeName(n) {
   if (n <= 17) return "Race";
   if (n === 18) return "Time Trial";
   return null;
+}
+
+// ─── WEATHER ─────────────────────────────────────────────────────────────────
+// The Session packet's m_weather code → the driver-facing label the Live screen
+// stamps on each session block of the lap log, so a race review shows what the
+// conditions were. null for an unknown/absent code so callers can omit it.
+const WEATHER = ["Clear", "Light Cloud", "Overcast", "Light Rain", "Heavy Rain", "Storm"];
+export function weatherName(code) {
+  return (typeof code === "number" && WEATHER[code]) || null;
+}
+
+// "Overcast · 34°C track / 24°C air" — the conditions half of a session header.
+// Degrades gracefully: temps are dropped when the game hasn't reported them.
+export function conditionsLabel(w) {
+  if (!w) return null;
+  const bits = [];
+  const name = weatherName(w.weather);
+  if (name) bits.push(name);
+  const temps = [];
+  if (typeof w.trackTemp === "number" && w.trackTemp > 0) temps.push(`${w.trackTemp}°C track`);
+  if (typeof w.airTemp === "number" && w.airTemp > 0) temps.push(`${w.airTemp}°C air`);
+  if (temps.length) bits.push(temps.join(" / "));
+  return bits.length ? bits.join(" · ") : null;
 }
 
 // ─── 2026 BOOST / ACTIVE AERO LABELS ─────────────────────────────────────────

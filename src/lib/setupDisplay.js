@@ -85,19 +85,3 @@ export function formatSetup(setup) {
 
   return sections;
 }
-
-// Compact, prompt-ready rendering of the car setup for the coaching LLM. Reuses
-// formatSetup so the field knowledge, units, and null-safety live in one place;
-// flattens each grouped section to a single labelled line and drops "—" cells.
-// Returns "" when no setup is available, so callers can append it unconditionally.
-export function formatSetupForPrompt(setup) {
-  const lines = formatSetup(setup)
-    .map((sec) => {
-      const cells = sec.rows
-        .filter((r) => r.value !== "—")
-        .map((r) => `${r.label} ${r.value}`);
-      return cells.length ? `${sec.title}: ${cells.join(", ")}` : null;
-    })
-    .filter(Boolean);
-  return lines.join("\n");
-}

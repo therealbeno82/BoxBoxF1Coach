@@ -1,20 +1,33 @@
 // ─── FETCH + CONVERT REAL CIRCUIT GEOMETRY ─────────────────────────────────────
 // One-time dev script (NOT wired into predev/prebuild — the output is committed).
-// Downloads centerline + track-width CSVs from the open TUMFTM racetrack-database
-// (github.com/TUMFTM/racetrack-database, LGPL-3.0) for every F1 circuit the game
-// visits that the dataset covers, resamples each to a uniform ~2.5 m arc-length
-// spacing, and writes compact JSON into public/tracks/ so the packaged app can
-// fetch them same-origin (the CSP blocks external CDNs — same reason /ort/ exists).
+// Downloads the f1-circuits GeoJSON (github.com/bacinger/f1-circuits, MIT), projects
+// each circuit's lat/long centerline into a local metric frame, resamples to a uniform
+// ~2.5 m arc-length spacing, and writes compact JSON into public/tracks/ so the
+// packaged app can fetch them same-origin (the CSP blocks external hosts — same
+// reason /ort/ exists).
 //
 //   node scripts/fetch-tracks.mjs
 //
 // Output per circuit:  public/tracks/<slug>.json
 //   { slug, source, spacing, closed, attribution, points: [[x, y, wRight, wLeft], …] }
-//   x/y are centerline meters in the dataset's local frame; wRight/wLeft are track
-//   widths (m) to each side of the centerline relative to the direction of travel.
-//   Runtime alignment into the game's world frame happens in src/lib/trackGeometry.js.
+//   x/y are centerline meters in a local frame centred on the circuit; wRight/wLeft are
+//   track half-widths (m) either side of the centerline relative to the direction of
+//   travel. Runtime alignment into the game's world frame happens in
+//   src/lib/trackGeometry.js, which rejects fits worse than 12 m RMSE.
 // Plus:  public/tracks/index.json  (coverage map + attribution)
 //        public/tracks/LICENSE.txt (upstream license, shipped with the data)
+//
+// WHY THIS SOURCE: it was previously the TUMFTM racetrack-database, but that dataset
+// predates several redesigns (it ships the pre-2021 21-corner Yas Marina, the pre-2023
+// Barcelona, …) and covers only 16 of the 25 circuits the game visits. Measured against
+// the TUMFTM centerlines this data agrees to ~2.5-5 m RMSE while also covering Monaco,
+// Singapore, Baku, Jeddah, Miami, Las Vegas, Losail, Imola and Madring, all on their
+// current layouts.
+//
+// WIDTHS: the GeoJSON has centerlines only. Circuits previously covered by TUMFTM reuse
+// that dataset's median measured half-widths (baked into WIDTHS below); the rest fall
+// back to NOMINAL_WIDTH. Widths only affect how wide the drawn road looks — the fit and
+// the corner markers use the centerline.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -23,81 +36,70 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "public/tracks");
 
-const RAW = "https://raw.githubusercontent.com/TUMFTM/racetrack-database/master";
+const SRC = "https://raw.githubusercontent.com/bacinger/f1-circuits/master";
 const ATTRIBUTION =
-  "Track geometry: TUMFTM racetrack-database (github.com/TUMFTM/racetrack-database), LGPL-3.0.";
+  "Track geometry: f1-circuits (github.com/bacinger/f1-circuits), MIT © Tomislav Bacinger.";
 
-// App track slug (src/lib/trackData.js) → dataset CSV basename. Circuits the game
-// visits but the dataset lacks (monaco, singapore, azerbaijan, imola, saudiarabia,
-// miami, lasvegas, qatar) fall back to a heuristic road at runtime.
+// f1-circuits feature id → app track slug (src/lib/trackData.js).
 const TRACKS = {
-  australia:   "Melbourne",
-  china:       "Shanghai",
-  bahrain:     "Sakhir",
-  spain:       "Catalunya",
-  canada:      "Montreal",
-  silverstone: "Silverstone",
-  hungary:     "Budapest",
-  belgium:     "Spa",
-  italy:       "Monza",
-  japan:       "Suzuka",
-  abudhabi:    "YasMarina",
-  usa:         "Austin",
-  brazil:      "SaoPaulo",
-  austria:     "Spielberg",
-  mexico:      "MexicoCity",
-  netherlands: "Zandvoort",
+  "au-1953": "australia",   "bh-2002": "bahrain",     "cn-2004": "china",
+  "es-1991": "spain",       "mc-1929": "monaco",      "ca-1978": "canada",
+  "at-1969": "austria",     "gb-1948": "silverstone", "hu-1986": "hungary",
+  "be-1925": "belgium",     "it-1922": "italy",       "sg-2008": "singapore",
+  "jp-1962": "japan",       "us-2012": "usa",         "mx-1962": "mexico",
+  "br-1940": "brazil",      "ae-2009": "abudhabi",    "it-1953": "imola",
+  "nl-1948": "netherlands", "sa-2021": "saudiarabia", "us-2022": "miami",
+  "qa-2004": "qatar",       "es-2026": "madring",     "az-2016": "azerbaijan",
+  "us-2023": "lasvegas",
 };
 
-const SPACING = 2.5; // meters between resampled centerline points
+// Median measured half-widths (m) from the TUMFTM racetrack-database, kept because the
+// GeoJSON carries centerlines only. Circuits absent here use NOMINAL_WIDTH.
+const WIDTHS = {
+  australia: [6.14, 6.10], austria: [5.45, 5.45], bahrain: [6.53, 6.44],
+  belgium: [4.62, 4.68],   brazil: [5.93, 5.86],  canada: [4.50, 4.58],
+  china: [6.43, 6.42],     hungary: [4.97, 4.95], italy: [4.51, 4.61],
+  japan: [4.60, 4.57],     mexico: [5.85, 5.87],  netherlands: [4.81, 4.77],
+  silverstone: [6.88, 6.87], spain: [5.39, 5.60], usa: [6.34, 6.67],
+};
+const NOMINAL_WIDTH = [6.0, 6.0];
+
+const SPACING = 2.5;   // meters between resampled centerline points
+const R_EARTH = 6371000;
 
 async function fetchText(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
   return res.text();
 }
 
-// Parse "x_m,y_m,w_tr_right_m,w_tr_left_m" CSV (comment/header lines start with #).
-function parseCsv(text) {
-  const rows = [];
-  for (const line of text.split(/\r?\n/)) {
-    const s = line.trim();
-    if (!s || s.startsWith("#")) continue;
-    const cols = s.split(",").map(Number);
-    if (cols.length < 4 || cols.some((v) => !isFinite(v))) continue;
-    rows.push(cols.slice(0, 4)); // [x, y, wRight, wLeft]
-  }
-  return rows;
+// Equirectangular projection about the circuit's own centroid: distortion over a few km
+// is far below the 12 m fit tolerance, and trackGeometry only ever aligns rigidly.
+function toMetres(coords) {
+  const lat0 = coords.reduce((a, c) => a + c[1], 0) / coords.length;
+  const lon0 = coords.reduce((a, c) => a + c[0], 0) / coords.length;
+  const kx = (Math.PI / 180) * R_EARTH * Math.cos((lat0 * Math.PI) / 180);
+  const ky = (Math.PI / 180) * R_EARTH;
+  return coords.map(([lon, lat]) => [(lon - lon0) * kx, (lat - lat0) * ky]);
 }
 
-// Resample a closed-loop polyline (with per-point widths) to uniform arc spacing.
-function resample(rows, spacing) {
-  // Drop an explicit duplicate closing point; we close the loop ourselves.
-  const first = rows[0], last = rows[rows.length - 1];
-  if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 0.5) rows = rows.slice(0, -1);
-
-  const n = rows.length;
-  const cum = [0]; // cumulative arc length, including the closing segment
-  for (let i = 1; i <= n; i++) {
-    const a = rows[i - 1], b = rows[i % n];
-    cum[i] = cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]);
+// Uniform arc-length resample around the closed loop.
+function resample(pts, spacing) {
+  const loop = [...pts, pts[0]];
+  const cum = [0];
+  for (let i = 1; i < loop.length; i++) {
+    const dx = loop[i][0] - loop[i - 1][0], dy = loop[i][1] - loop[i - 1][1];
+    cum.push(cum[i - 1] + Math.hypot(dx, dy));
   }
-  const total = cum[n];
-  const count = Math.max(8, Math.round(total / spacing));
+  const total = cum[cum.length - 1];
   const out = [];
-  let seg = 1;
-  for (let k = 0; k < count; k++) {
-    const s = (k / count) * total;
-    while (seg <= n && cum[seg] < s) seg++;
-    const i = Math.min(seg, n);
-    const a = rows[i - 1], b = rows[i % n];
-    const span = cum[i] - cum[i - 1];
-    const t = span > 0 ? (s - cum[i - 1]) / span : 0;
+  let j = 1;
+  for (let d = 0; d < total; d += spacing) {
+    while (j < cum.length - 1 && cum[j] < d) j++;
+    const t = (d - cum[j - 1]) / (cum[j] - cum[j - 1] || 1);
     out.push([
-      +(a[0] + (b[0] - a[0]) * t).toFixed(2),
-      +(a[1] + (b[1] - a[1]) * t).toFixed(2),
-      +(a[2] + (b[2] - a[2]) * t).toFixed(2),
-      +(a[3] + (b[3] - a[3]) * t).toFixed(2),
+      loop[j - 1][0] + (loop[j][0] - loop[j - 1][0]) * t,
+      loop[j - 1][1] + (loop[j][1] - loop[j - 1][1]) * t,
     ]);
   }
   return { points: out, total };
@@ -105,23 +107,47 @@ function resample(rows, spacing) {
 
 mkdirSync(outDir, { recursive: true });
 
-const license = await fetchText(`${RAW}/LICENSE`).catch(() => null);
+const geo = JSON.parse(await fetchText(`${SRC}/f1-circuits.geojson`));
+const byId = new Map(geo.features.map((f) => [f.properties.id, f]));
+
+const license = await fetchText(`${SRC}/LICENSE.md`).catch(() => null);
 if (license) writeFileSync(resolve(outDir, "LICENSE.txt"), license);
 else console.warn("[fetch-tracks] could not fetch upstream LICENSE — add it manually");
 
 const index = { _attribution: ATTRIBUTION, tracks: {} };
-for (const [slug, file] of Object.entries(TRACKS)) {
-  const csv = await fetchText(`${RAW}/tracks/${file}.csv`);
-  const rows = parseCsv(csv);
-  if (rows.length < 100) throw new Error(`${file}.csv parsed to only ${rows.length} rows`);
-  const { points, total } = resample(rows, SPACING);
+
+for (const [id, slug] of Object.entries(TRACKS)) {
+  const feat = byId.get(id);
+  if (!feat) { console.warn(`[fetch-tracks] ${slug}: ${id} not in dataset — skipped`); continue; }
+
+  const metres = toMetres(feat.geometry.coordinates);
+  const { points, total } = resample(metres, SPACING);
+  const [wr, wl] = WIDTHS[slug] ?? NOMINAL_WIDTH;
+  const nominal = !WIDTHS[slug];
+
+  const rows = points.map(([x, y]) => [+x.toFixed(2), +y.toFixed(2), wr, wl]);
   const json = {
-    slug, source: `${file}.csv`, spacing: SPACING, closed: true,
-    attribution: ATTRIBUTION, points,
+    slug,
+    source: `f1-circuits ${id}`,
+    spacing: SPACING,
+    closed: true,
+    attribution: ATTRIBUTION + (nominal ? " Track widths are nominal (not measured)." : ""),
+    points: rows,
   };
   writeFileSync(resolve(outDir, `${slug}.json`), JSON.stringify(json));
-  index.tracks[slug] = { file: `${slug}.json`, lengthM: Math.round(total), points: points.length };
-  console.log(`[fetch-tracks] ${slug.padEnd(12)} ← ${file}.csv  ${Math.round(total)} m, ${points.length} pts`);
+  index.tracks[slug] = {
+    file: `${slug}.json`,
+    lengthM: Math.round(total),
+    declaredM: feat.properties.length ?? null,
+    points: rows.length,
+    widths: nominal ? "nominal" : "measured",
+  };
+  console.log(
+    `[fetch-tracks] ${slug.padEnd(12)} ${String(rows.length).padStart(4)} pts  ` +
+    `${total.toFixed(0).padStart(5)} m (declared ${feat.properties.length ?? "?"})` +
+    (nominal ? "  [nominal widths]" : "")
+  );
 }
-writeFileSync(resolve(outDir, "index.json"), JSON.stringify(index, null, 2));
-console.log(`[fetch-tracks] wrote ${Object.keys(index.tracks).length} circuits + index.json`);
+
+writeFileSync(resolve(outDir, "index.json"), JSON.stringify(index, null, 2) + "\n");
+console.log(`[fetch-tracks] wrote ${Object.keys(index.tracks).length} circuits to public/tracks/`);

@@ -1,14 +1,15 @@
 // ─── BUNDLE THE ONNX RUNTIME WASM LOCALLY ──────────────────────────────────────
-// Kokoro TTS + Whisper STT run on onnxruntime-web (via @huggingface/transformers).
-// By default transformers.js points ORT's WASM runtime at the jsdelivr CDN, which
-// the packaged app's Content-Security-Policy blocks — so the model never starts in
-// the built .exe (it only works in `npm run dev`, where no CSP is enforced).
+// Kokoro TTS runs on onnxruntime-web (via @huggingface/transformers). By default
+// it points ORT's WASM runtime at the jsdelivr CDN, which the packaged app's
+// Content-Security-Policy blocks — so the model never starts in the built .exe
+// (it only works in `npm run dev`, where the dev CSP whitelists jsdelivr).
 //
 // We instead serve the runtime from our own origin. This copies the two ORT files
 // from node_modules into public/ort/ so Vite emits them verbatim to dist/ort/ (no
-// content-hash → stable filenames, which ORT requires). transformersConfig.js then
-// pins env.backends.onnx.wasm.wasmPaths to "/ort/". Running this on predev/prebuild
-// keeps the bundled copy locked to the installed transformers version.
+// content-hash → stable filenames, which ORT requires). The TTS worker
+// (src/lib/kokoroWorker.js) then pins kokoro-js's `env.wasmPaths` to "/ort/" in
+// production. Running this on predev/prebuild keeps the bundled copy locked to
+// the installed transformers version.
 
 import { copyFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
