@@ -4,15 +4,6 @@
 // local model can't coach on garbage telemetry, leak markdown/preamble, follow
 // instructions hidden in a trace file, or cite figures the data doesn't support.
 
-// ── Input gating ──
-// True only when the key channels are present and numeric — callers skip the LLM
-// and surface "waiting for telemetry" rather than coaching on nulls/"?".
-export function telemetryIsUsable(tel) {
-  if (!tel) return false;
-  const num = (v) => typeof v === "number" && !Number.isNaN(v);
-  return num(tel.speed) && num(tel.lapDistance) && num(tel.throttle) && num(tel.brake);
-}
-
 // ── Output shaping ──
 const LEAD_FILLER =
   /^(?:sure|ok(?:ay)?|alright|right|well|so|now|here(?:'s| is)[^:]*:|as your (?:race )?engineer[,:]?|copy(?: that)?|roger)[\s,.:!-]+/i;
@@ -50,23 +41,15 @@ export function sanitizeUntrusted(str, max = 80) {
 }
 
 // ── Numeric grounding ──
-// Gather every figure that actually appears in the live telemetry, the reference
-// sample, and the evidence string into a tolerance-checkable set.
+// Gather every figure the model is allowed to cite into a tolerance-checkable set.
+// `ctx.evidence` is the lap-comparison block joined with the pace-by-bucket block,
+// so the debrief's per-session/compound figures survive grounding instead of being
+// stripped as fabricated. (This used to also harvest the live telemetry snapshot
+// and the reference sample, for the on-track tip call that no longer exists —
+// every figure the remaining debrief may quote is in the evidence text.)
 export function collectAllowedNumbers(ctx = {}) {
   const set = new Set();
   const add = (v) => { if (typeof v === "number" && !Number.isNaN(v)) set.add(Math.round(v)); };
-  const t = ctx.tel || ctx.telemetry || {};
-  [t.speed, t.lapDistance, t.throttle, t.brake, t.steer, t.gear, t.rpm,
-   t.ersBattery, t.ersDeploy, t.ersHarvestLimit,
-   t.overtakeActivationDistance, t.activeAeroActivationDistance, t.lapTime].forEach(add);
-  const r = ctx.refSample || {};
-  [r.speed, r.dist, r.throttle, r.brake, r.steer, r.gear, r.ersSpent].forEach(add);
-  // Car-setup figures (wings, bias, pressures, …) when the call carries a setup,
-  // so setup advice in the debrief survives numeric grounding instead of being
-  // stripped as fabricated.
-  if (ctx.setup && typeof ctx.setup === "object") {
-    for (const v of Object.values(ctx.setup)) add(v);
-  }
   if (ctx.evidence) {
     for (const m of String(ctx.evidence).matchAll(/\d+(?:\.\d+)?/g)) add(parseFloat(m[0]));
   }
@@ -83,11 +66,16 @@ function isGrounded(value, allowed) {
 // doesn't support. Small numbers (gears, "1-3 sentences") and figures inside a
 // lap-time pattern (1:23.4) are left alone to avoid false positives. Returns the
 // cleaned text plus whether every checked figure was supported.
+//
+// The unit group is ordered longest-first and terminated by (?![a-z]): without
+// both, dropping an ungrounded figure ate the front of the following word —
+// "sec" matched inside "seconds" ("14 seconds" → "onds"), and the bare "m"
+// matched any m-word ("30 mistakes" → "istakes").
 export function enforceGrounding(text, allowed) {
   let grounded = true;
   const src = String(text ?? "");
   const out = src.replace(
-    /(\d+(?:\.\d+)?)(\s?(?:km\/h|kph|kmh|mph|metres|meters|m|%|sec|seconds|s|kj))?/gi,
+    /(\d+(?:\.\d+)?)(\s?(?:km\/h|kph|kmh|mph|metres|meters|seconds|secs|sec|kj|m|%|s)(?![a-z]))?/gi,
     (whole, numStr, _unit, offset) => {
       // Skip figures that are part of a clock-style time (1:23.4).
       if (src[offset - 1] === ":" || src[offset + whole.length] === ":") return whole;

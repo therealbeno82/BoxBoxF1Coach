@@ -77,20 +77,30 @@ export function createProvider(cfg = {}) {
   return openRouterProvider(cfg);
 }
 
-// Lightweight reachability check for the status indicator — does the backend
-// actually respond? OpenRouter needs a key, then we confirm its REST API answers.
-// Returns a plain boolean and never throws, so callers can poll it on an interval.
-// A short timeout keeps a dead host from leaving the dot stuck on "checking".
+// Lightweight reachability check for the status indicator — is the backend up
+// AND is the configured key actually good? Returns a plain boolean and never
+// throws, so callers can poll it on an interval. A short timeout keeps a dead
+// host from leaving the dot stuck on "checking".
+//
+// Deliberately /auth/key, NOT /models. /models is a PUBLIC catalogue: it answers
+// 200 even for a garbage key, so probing it lit the status dot green on an
+// invalid key — the coach then reported itself online and every debrief failed.
+// It is also ~535 kB, which this used to download in full every poll (the body
+// was never read, but fetch still transfers it) purely to look at res.ok.
+// /auth/key returns the key's own quota row: ~60 bytes, and 401 when the key is
+// bad — the question the dot is actually asking.
 export async function pingProvider(cfg = {}, { signal, timeoutMs = 3000 } = {}) {
   const timeout = AbortSignal.timeout(timeoutMs);
   const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
   try {
     if (!cfg.openRouterKey) return false;
     const base = (cfg.openRouterUrl || DEFAULT_OPENROUTER_URL).replace(/\/+$/, "");
-    const res = await fetch(`${base}/models`, {
+    const res = await fetch(`${base}/auth/key`, {
       signal: sig,
       headers: { Authorization: `Bearer ${cfg.openRouterKey}` },
     });
+    // Drain the (tiny) body so the connection returns to the pool promptly.
+    await res.arrayBuffer().catch(() => {});
     return res.ok;
   } catch {
     return false;
