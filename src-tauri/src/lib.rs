@@ -94,6 +94,14 @@ fn set_fake_mode(enabled: bool, state: tauri::State<CoreState>) {
     }
 }
 
+/// Current synthetic-telemetry state. The Settings toggle reads this once on
+/// boot so an `F1_FAKE=1` launch is reflected in the UI rather than being
+/// silently overwritten by the saved preference.
+#[tauri::command]
+fn get_fake_mode(state: tauri::State<CoreState>) -> bool {
+    state.core.lock().map(|core| core.is_fake()).unwrap_or(false)
+}
+
 // ── FFB commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -229,6 +237,7 @@ pub fn run() {
             set_udp_port,
             get_local_ips,
             set_fake_mode,
+            get_fake_mode,
             get_ffb_devices,
             open_ffb_device,
             close_ffb_device,

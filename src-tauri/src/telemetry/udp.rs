@@ -21,6 +21,7 @@ const PKT_PARTICIPANTS: u8 = 4;
 const PKT_CAR_SETUPS: u8 = 5;
 const PKT_CAR_TELEM: u8 = 6;
 const PKT_CAR_STATUS: u8 = 7;
+const PKT_CAR_DAMAGE: u8 = 10;
 const PKT_MOTION_EX: u8 = 13;
 const PKT_CAR_TELEM2: u8 = 16;
 
@@ -70,6 +71,13 @@ impl TelemetryCore {
 
     pub fn set_fake(&self, fake: bool) {
         self.control.fake.store(fake, Ordering::Relaxed);
+    }
+
+    /// Is the core synthesising telemetry right now? The UI seeds its Demo Mode
+    /// toggle from this, so launching with `F1_FAKE=1` shows the toggle already
+    /// on instead of the two disagreeing.
+    pub fn is_fake(&self) -> bool {
+        self.control.fake.load(Ordering::Relaxed)
     }
 
     pub fn stop(&mut self) {
@@ -240,6 +248,11 @@ fn handle_datagram(buf: &[u8], latest: &mut Latest, ls: &mut LoopState, shared: 
                 shared.publish(latest);
             }
         }
+        PKT_CAR_DAMAGE => {
+            if packets::parse_car_damage(payload, &hdr, latest).is_some() {
+                shared.publish(latest);
+            }
+        }
         PKT_CAR_TELEM2 => {
             if packets::parse_car_telemetry2(payload, &hdr, latest).is_some() {
                 shared.publish(latest);
@@ -308,9 +321,18 @@ fn fake_tick(l: &mut Latest, shared: &Arc<SharedTelemetry>, t: f32) {
     l.lap_time = t % lap;
     l.lap_number = (lap_index % 200) as u8 + 1;
     l.last_lap_time = if t >= lap { lap } else { 0.0 };
-    l.tyre_visual = 16;
-    l.tyre_actual = 16;
+    // Cycle compound + conditions per lap so the lap log's tyre/wear column and
+    // per-session header have something to show with no game running.
+    l.tyre_visual = 16 + (lap_index % 3) as i8;
+    l.tyre_actual = l.tyre_visual;
     l.tyre_age = (lap_index % 200) as u8;
+    l.weather = (lap_index % 6) as u8;
+    l.track_temp = 34;
+    l.air_temp = 24;
+    // Wear climbs through the lap and resets with the (synthetic) fresh set.
+    for i in 0..4 {
+        l.tyre_wear[i] = ((l.tyre_age as f32 % 20.0) + pct) * 1.4 + i as f32 * 0.6;
+    }
     // Tyre temps: surface spikes under braking + wanders; carcass is smoother —
     // two visibly distinct worms for the Telemetry tab's tyre panel.
     let surf = 92.0 + if braking { 14.0 } else { 0.0 } + (t * 0.7).sin() * 5.0;
