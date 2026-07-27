@@ -90,8 +90,10 @@ const valStyle = (color, size = 12) => ({ fontFamily: FONT.mono, fontSize: size,
 // One entry per stacked trace panel. `channels` drive both path building and
 // SVG paint (draw order per panel: all areas → all ref lines → all main lines,
 // in channel order). `max`/`min` are literals, or `maxKey`/`minKey` name a
-// dynamic value in the `scales` memo. `header` renders the top-right live
-// values; `readouts` build the right-column cards. `ctx` = { units, uLabel }.
+// dynamic value in the `scales` memo. `values` renders the top-right readout —
+// one `fmt` per channel, called TWICE (driven sample, then reference sample) so
+// the grey ref figure sits directly under its driven counterpart; `readouts`
+// build the right-column cards. `ctx` = { units, uLabel }.
 const PANELS = [
   {
     id: "inputs", flex: 1.35, chip: { label: "Thr/Brk", color: "#ffffff" },
@@ -101,9 +103,9 @@ const PANELS = [
       { key: "throttle", min: 0, max: 100, area: true, areaFill: "#ffffff12", stroke: "#ffffff", width: 2, join: true, refStroke: "#ffffff", refOpacity: 0.5 },
       { key: "brake", min: 0, max: 100, area: true, areaFill: "#ff4d5e14", stroke: C.red, width: 2, join: true, refStroke: C.red, refOpacity: 0.5 },
     ],
-    header: (dS) => [
-      <span key="t" style={valStyle("#fff")}>{r0(dS?.throttle)}%</span>,
-      <span key="b" style={valStyle(C.red)}>{r0(dS?.brake)}%</span>,
+    values: [
+      { color: "#fff", fmt: (s) => `${r0(s?.throttle)}%` },
+      { color: C.red, fmt: (s) => `${r0(s?.brake)}%` },
     ],
     readouts: [
       (dS, rS) => ({ label: "Throttle", value: r0(dS?.throttle), unit: "%", color: "#fff", ref: r0(rS?.throttle) + "%" }),
@@ -117,7 +119,9 @@ const PANELS = [
     channels: [
       { key: "speed", min: 0, maxKey: "maxSpeed", area: true, areaFill: "#2dd4bf14", stroke: C.teal, width: 2.2, join: true, refStroke: C.textDim },
     ],
-    header: (dS, ctx) => [<span key="s" style={valStyle(C.teal, 14)}>{toSpeed(dS?.speed, ctx.units)}</span>],
+    values: [
+      { color: C.teal, size: 14, fmt: (s, ctx) => toSpeed(s?.speed, ctx.units) },
+    ],
     readouts: [
       (dS, rS, ctx) => ({ label: "Speed", value: toSpeed(dS?.speed, ctx.units), unit: ctx.uLabel, color: C.teal, ref: toSpeed(rS?.speed, ctx.units) + " " + ctx.uLabel }),
     ],
@@ -130,8 +134,8 @@ const PANELS = [
     channels: [
       { key: "steer", min: -100, max: 100, stroke: C.green, width: 2, join: true, refStroke: C.green, refOpacity: 0.5 },
     ],
-    header: (dS) => [
-      <span key="w" style={valStyle(C.green)}>{steerMag(dS?.steer)} <span style={{ color: C.textDim }}>{steerDir(dS?.steer)}</span></span>,
+    values: [
+      { color: C.green, fmt: (s) => <>{steerMag(s?.steer)} <span style={{ color: C.textDim }}>{steerDir(s?.steer)}</span></> },
     ],
     readouts: [
       (dS, rS) => ({ label: "Wheel Rotation", value: steerMag(dS?.steer), unit: steerDir(dS?.steer), color: C.green, ref: steerMag(rS?.steer) + steerDir(rS?.steer) }),
@@ -144,7 +148,9 @@ const PANELS = [
     channels: [
       { key: "gear", min: 0, max: 8, step: true, stroke: C.purple, width: 2, refStroke: C.purple, refOpacity: 0.5 },
     ],
-    header: (dS) => [<span key="g" style={valStyle(C.purple, 13)}>{dS?.gear ?? "—"}</span>],
+    values: [
+      { color: C.purple, size: 13, fmt: (s) => s?.gear ?? "—" },
+    ],
     readouts: [
       (dS, rS) => ({ label: "Gear", value: dS?.gear ?? "—", unit: "", color: C.purple, ref: rS?.gear ?? "—" }),
     ],
@@ -157,9 +163,9 @@ const PANELS = [
       { key: "ersMode", min: 0, max: 3, step: true, stroke: C.red, width: 2, refStroke: C.red, refOpacity: 0.5 },
       { key: "ersSpent", min: 0, maxKey: "maxErs", area: true, areaFill: "#FFD43B14", stroke: C.ersYellow, width: 2, join: true, refStroke: C.ersYellow, refOpacity: 0.5 },
     ],
-    header: (dS) => [
-      <span key="m" style={valStyle(C.red)}>{dS ? ersName(dS.ersMode) : "—"}</span>,
-      <span key="u" style={valStyle(C.ersYellow)}>{r0(dS?.ersSpent)}</span>,
+    values: [
+      { color: C.red, fmt: (s) => (s ? ersName(s.ersMode) : "—") },
+      { color: C.ersYellow, fmt: (s) => r0(s?.ersSpent) },
     ],
     readouts: [
       (dS, rS) => ({ label: "ERS Mode", value: dS ? ersName(dS.ersMode) : "—", unit: "", color: C.red, ref: rS ? ersName(rS.ersMode) : "—" }),
@@ -180,9 +186,9 @@ const PANELS = [
       { key: "tyreSurf", minKey: "tyreLo", maxKey: "tyreHi", stroke: C.orange, width: 2, join: true, refStroke: C.orange, refOpacity: 0.5 },
       { key: "tyreCarc", minKey: "tyreLo", maxKey: "tyreHi", stroke: C.cyan, width: 2, join: true, refStroke: C.cyan, refOpacity: 0.5 },
     ],
-    header: (dS, ctx) => [
-      <span key="s" style={valStyle(C.orange)}>{r0(toTemp(dS?.tyreSurf, ctx.tempUnits))}°</span>,
-      <span key="c" style={valStyle(C.cyan)}>{r0(toTemp(dS?.tyreCarc, ctx.tempUnits))}°</span>,
+    values: [
+      { color: C.orange, fmt: (s, ctx) => `${r0(toTemp(s?.tyreSurf, ctx.tempUnits))}°` },
+      { color: C.cyan, fmt: (s, ctx) => `${r0(toTemp(s?.tyreCarc, ctx.tempUnits))}°` },
     ],
     readouts: [
       (dS, rS, ctx) => ({ label: "Tyre Temps", value: `${r0(toTemp(dS?.tyreSurf, ctx.tempUnits))}/${r0(toTemp(dS?.tyreCarc, ctx.tempUnits))}`, unit: ctx.tLabel, color: C.orange,
@@ -191,13 +197,24 @@ const PANELS = [
   },
 ];
 
-// One stacked trace panel: label, top-right live values, and the channel SVG.
-function TracePanel({ panel, chPaths, dS, ctx, noData }) {
+// One stacked trace panel: label, top-right values, and the channel SVG.
+// Each value is a column — the driven figure in its channel colour with the
+// reference figure in grey directly beneath it, so the two read as a pair.
+function TracePanel({ panel, chPaths, dS, rS, hasRef, ctx, noData }) {
   return (
     <div style={{ ...panelStyle, flex: panel.flex }}>
       <span style={labelStyle(panel.labelColor)}>{panel.labelContent(ctx)}</span>
       <div style={{ position: "absolute", top: 6, right: 10, display: "flex", gap: 10, zIndex: 2 }}>
-        {panel.header(dS, ctx)}
+        {panel.values.map((v, i) => (
+          <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
+            <span style={{ ...valStyle(v.color, v.size || 12), lineHeight: 1 }}>{v.fmt(dS, ctx)}</span>
+            {hasRef && (
+              <span style={{ ...valStyle(C.textFaint, (v.size || 12) - 2), fontWeight: 700, lineHeight: 1 }}>
+                {v.fmt(rS, ctx)}
+              </span>
+            )}
+          </div>
+        ))}
       </div>
       {noData && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
@@ -268,7 +285,9 @@ export default function TelemetryStudio({
   const [cursorInt, setCursorInt] = useState(0.5);    // 0–1 across the visible window
   const [playingInt, setPlayingInt] = useState(false);
   const [zoomSector, setZoomSector] = useState(null); // null = full lap | 0 | 1 | 2
+  const [hoverF, setHoverF] = useState(null);         // 0–1 across the visible window, null = not hovering
   const barRef = useRef(null);
+  const stackRef = useRef(null);
   const rafRef = useRef(0);
 
   const controlled = typeof playhead === "number" && typeof onSeek === "function";
@@ -279,6 +298,7 @@ export default function TelemetryStudio({
   };
 
   const hasData = compareSamples.length > 1 || referenceSamples.length > 1;
+  const hasRef = referenceSamples.length > 1;
   const uLabel = speedUnitLabel(units);
   const tLabel = tempUnitLabel(tempUnits);
 
@@ -379,9 +399,23 @@ export default function TelemetryStudio({
     window.addEventListener("pointerup", up);
   };
 
-  const cursorDist = d0 + cursor * (d1 - d0);
-  const dS = useMemo(() => nearest(compareSamples, cursorDist), [compareSamples, cursorDist]);
-  const rS = useMemo(() => nearest(referenceSamples, cursorDist), [referenceSamples, cursorDist]);
+  // ── Hover inspection: while paused, moving the mouse across the trace stack
+  // reads out both laps at the mouse instead of at the playback cursor. Ignored
+  // while playing — the numbers must keep following the sweeping cursor there,
+  // and the mouse is parked over the stack anyway (it's the play/pause target). ──
+  const hoverActive = hoverF != null && !playing;
+  const onStackMove = (e) => {
+    const el = stackRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!r.width) return;
+    setHoverF(clamp((e.clientX - r.left) / r.width, 0, 1));
+  };
+
+  // The position everything reads from: the mouse when hovering, else the cursor.
+  const readF = hoverActive ? hoverF : cursor;
+  const readDist = d0 + readF * (d1 - d0);
+  const dS = useMemo(() => nearest(compareSamples, readDist), [compareSamples, readDist]);
+  const rS = useMemo(() => nearest(referenceSamples, readDist), [referenceSamples, readDist]);
 
   // Dynamic channel scales — speed/ERS use the data's own max so the trace
   // fills the panel. Referenced from the registry via minKey/maxKey.
@@ -442,11 +476,16 @@ export default function TelemetryStudio({
   // NB: corner fractions are LAP-fractions while `cursor` is a WINDOW-fraction,
   // so compare against the cursor's lap-fraction — else the corner card names
   // the wrong corner whenever a sector zoom is active.
-  const cursorLapF = lapLength ? cursorDist / lapLength : cursor;
+  const readLapF = lapLength ? readDist / lapLength : cursor;
   const nearCorner = useMemo(() => {
     if (!corners.length) return null;
-    return corners.reduce((b, c) => (Math.abs(c.f - cursorLapF) < Math.abs(b.f - cursorLapF) ? c : b), corners[0]);
-  }, [corners, cursorLapF]);
+    return corners.reduce((b, c) => (Math.abs(c.f - readLapF) < Math.abs(b.f - readLapF) ? c : b), corners[0]);
+  }, [corners, readLapF]);
+  // The hover chip only claims a corner when the read position is actually in
+  // one (~150 m) — the card above always names the nearest, which on a long
+  // straight would label the chip with a corner hundreds of metres away.
+  const atCorner = nearCorner && lapLength
+    ? Math.abs(nearCorner.f - readLapF) * lapLength < 150 : false;
 
   // Lap-fraction → window-fraction, for overlays positioned in lap terms.
   const toWindowF = (f) => (f * lapLength - d0) / winSpan;
@@ -496,8 +535,10 @@ export default function TelemetryStudio({
             </button>
           )}
         </div>
-        {/* Trace stack — click anywhere to play/pause */}
-        <div onClick={() => setPlaying((pl) => !pl)} title="Click to play / pause"
+        {/* Trace stack — click anywhere to play/pause, hover to inspect */}
+        <div ref={stackRef} onClick={() => setPlaying((pl) => !pl)}
+          onMouseMove={onStackMove} onMouseLeave={() => setHoverF(null)}
+          title="Click to play / pause · hover to read both laps"
           style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column", gap: 6, cursor: "pointer" }}>
 
           {/* Sector boundary lines + labels + the white playback cursor.
@@ -524,8 +565,25 @@ export default function TelemetryStudio({
           })}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: cursorPct, width: 1, background: "#ffffff55", zIndex: 4, pointerEvents: "none" }} />
 
+          {/* Hover guide + its position chip — cyan so it never reads as the
+              white playback cursor. The chip flips its anchor near the edges
+              so it stays inside the stack. */}
+          {hoverActive && (
+            <>
+              <div style={{ position: "absolute", top: 0, bottom: 0, left: `${hoverF * 100}%`, width: 0,
+                borderLeft: `1px dashed ${C.cyan}`, zIndex: 5, pointerEvents: "none" }} />
+              <div style={{ position: "absolute", bottom: 4, left: `${hoverF * 100}%`, zIndex: 6, pointerEvents: "none",
+                transform: `translateX(${hoverF < 0.07 ? 0 : hoverF > 0.93 ? -100 : -50}%)`,
+                background: "#0f1420ee", border: `1px solid ${C.cyan}55`, borderRadius: 6, padding: "3px 7px",
+                fontFamily: FONT.mono, fontSize: 9, fontWeight: 700, color: C.cyan, whiteSpace: "nowrap" }}>
+                {atCorner ? `${nearCorner.name} · ` : ""}{Math.round(readDist)} m
+              </div>
+            </>
+          )}
+
           {visiblePanels.map((pn) => (
-            <TracePanel key={pn.id} panel={pn} chPaths={paths[pn.id]} dS={dS} ctx={ctx} noData={!!noData[pn.id]} />
+            <TracePanel key={pn.id} panel={pn} chPaths={paths[pn.id]} dS={dS} rS={rS} hasRef={hasRef}
+              ctx={ctx} noData={!!noData[pn.id]} />
           ))}
         </div>
 
