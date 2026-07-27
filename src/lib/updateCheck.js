@@ -7,7 +7,7 @@
 // no releases yet → 404, API rate-limited → 403, malformed tag) resolves to
 // null so the UI simply shows nothing.
 
-const REPO = "therealbeno82/f1-coach";
+const REPO = "therealbeno82/BoxBoxF1Coach";
 const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
 // The version this build reports. Vite replaces the __APP_VERSION__ token at
