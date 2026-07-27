@@ -1,10 +1,10 @@
 // ─── ANALYTICS SCREEN (Performance Center) ──────────────────────────────────
 // Post-session lap analysis, one combined view: reference/driven lap selectors
-// above the 3D racing lines beside the telemetry trace stack, with the
+// above the 2D driving lines beside the telemetry trace stack, with the
 // lap-consistency sector matrix as a collapsible strip along the bottom (no
-// tab-flicking while analysing a lap). The heavy reusable views (traces / 3D)
-// are passed in as slots so they keep their existing engine; this screen owns
-// the chrome + the matrix.
+// tab-flicking while analysing a lap). The heavy reusable views are passed in
+// as slots (`linesSlot` / `tracesSlot`) so they keep their existing engine;
+// this screen owns the chrome + the matrix.
 
 import { useMemo, useRef, useState } from "react";
 import { C, FONT, fmtDelta } from "../../lib/ui/tokens.js";
@@ -166,7 +166,7 @@ export default function AnalyticsScreen({
         </div>
       </div>
 
-      {/* Left column: 3D racing lines above the lap strip (both share its width);
+      {/* Left column: the driving-lines view above the lap strip (both share its width);
           right column: the telemetry trace stack running the full height. Both
           columns are equal width so the split lands under the "VS" above — the
           two lap selectors are equal width too, centring the VS on the same axis. */}
