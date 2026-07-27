@@ -9,6 +9,11 @@ an LLM race engineer that debriefs you between laps.
 > Telemetry parsing and force feedback run in-process in the Rust core. Small installer,
 > low RAM — designed to run alongside the game.
 
+![The Live cockpit — speed, gear, ERS, sector deltas and the track map with the coaching zones the rule engine calls from](docs/screenshots/live.png)
+
+<sub>Screenshots are taken in demo mode — the app replaying a real recorded Singapore race —
+on the default livery. Team skins restyle the whole app.</sub>
+
 ---
 
 ## What it does
@@ -104,6 +109,8 @@ and the app listens on all interfaces, so:
 3. In the game's telemetry settings on the console, set **IP Address** to that address and
    **Port** to `20777` (format 2026, 60 Hz as above).
 
+![Settings → Telemetry · UDP: the port, the demo-mode toggle, and this device's LAN address to enter on the console](docs/screenshots/console-setup.png)
+
 **The known limitation:** the coach's audio comes out of the PC running the app, not the
 console. So the radio calls play through whatever speakers/headset that PC is using, while
 you're wearing a headset plugged into the console — which in practice means you either
@@ -133,15 +140,21 @@ chip alongside.
 Your session at a glance: personal bests per circuit and session type, lap counts, recent
 form and trends across everything the active driver has ever driven.
 
+![Dashboard — career totals, recent laps and personal bests split by session type](docs/screenshots/dashboard.png)
+
 ### Live
 The cockpit view while you're on track — speed, gear, revs, ERS, tyre and brake temps, fuel,
 DRS, delta and the 18 mini-sectors colouring live as you cross them, plus the track map with
-numbered corners. This is where the rule engine's in-corner calls fire.
+numbered corners. This is where the rule engine's in-corner calls fire. The map colours each
+zone by the call it carries — brake, lift-and-coast, lift, boost — and the sector strip
+shows where the lap is going against the reference. (Screenshot at the top of this page.)
 
 ### Analytics
 Post-session analysis in one view. Pick a **Reference** and a **Driven Lap** from the two
 selectors and the traces overlay — speed, throttle, brake, gear, steering — with hover
 readouts and a per-corner time-loss breakdown.
+
+![Analytics — reference lap vs driven lap, overlaid traces, per-segment delta and the track map](docs/screenshots/analytics.png)
 
 - Any lap you've driven can be the reference; **⬆ Load** imports `.json` trace files
   (multiple at once) and **⬇ Save** exports the lap on screen so you can share it or keep it
@@ -156,10 +169,14 @@ qualifying/race-pace assessment, and a next-lap focus. It follows your newest la
 default; the **Lap analysed** selector pins it to any lap of the session. The deterministic
 analysis is free and instant; the LLM debrief costs an API call and sits behind a button.
 
+![Coach — per-channel findings with potential gain, pace by session type and compound, recurring patterns and the next-lap focus](docs/screenshots/coach.png)
+
 ### FFB
 Wheel setup and live monitoring — device and profile pickers, wheel torque and clip meters,
 an output scope, grip gauges, and the full parameter set (strength, ceiling, full-scale
 force, load sensitivity and the rest) with hover hints explaining each one.
+
+![FFB — wheel device list, torque and clip meters, output scope and the full parameter set](docs/screenshots/ffb.png)
 
 ### ⚙ Settings
 UDP port and device addresses, demo mode, units (speed, tyre temps), the coach's API key and
