@@ -44,7 +44,7 @@ on the default livery. Team skins restyle the whole app.</sub>
 
 ### 1. Install
 
-Grab the latest `F1 Coach_<version>_x64-setup.exe` from the
+Grab the latest `F1.Coach_<version>_x64-setup.exe` from the
 [Releases](https://github.com/therealbeno82/BoxBoxF1Coach/releases) page and run it. It's a
 normal Windows installer — no runtime to install separately (WebView2 ships with current
 Windows). To build it yourself instead, see
