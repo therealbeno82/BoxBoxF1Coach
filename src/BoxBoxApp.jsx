@@ -35,7 +35,7 @@ import { collectAllowedNumbers, enforceGrounding } from "./lib/coach/guardrails.
 import { createProvider } from "./lib/coach/provider.js";
 import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL } from "./lib/coach/config.js";
 import { formatLapTime, sessionTypeName, speakable, clamp, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
-import { isRankable, visibleSessionLaps, lapRunKey } from "./lib/driverStats.js";
+import { isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "./lib/driverStats.js";
 import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
@@ -615,7 +615,7 @@ const runMeta = (m) => ({
   track: m.trackName || "Live",
 });
 
-function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
+function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false) {
   const [storedLaps, setStoredLaps] = useState([]);
   const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
   const lapNumRef = useRef(0);
@@ -629,9 +629,11 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
   const lapNumSessionRef = useRef(null);
   // Latest lap-tagging inputs, read inside the per-tick effect without making them
   // dependencies (it already re-runs every telemetry tick). meta.driver names the
-  // owner a frozen lap is saved under; sessionId/sessionType tag the drive + mode.
-  const metaRef = useRef({ driver, sessionId, sessionType, trackName });
-  metaRef.current = { driver, sessionId, sessionType, trackName };
+  // owner a frozen lap is saved under; sessionId/sessionType tag the drive + mode;
+  // demoMode marks laps the core REPLAYED rather than the driver drove, so they
+  // can be kept off every board (see isDemoLap in lib/driverStats.js).
+  const metaRef = useRef({ driver, sessionId, sessionType, trackName, demoMode });
+  metaRef.current = { driver, sessionId, sessionType, trackName, demoMode };
 
   // Load the active driver's persisted laps when the driver changes, continuing lap
   // numbering from where they left off WITHIN the current session (so a mid-session
@@ -746,7 +748,9 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
           invalid: buf.invalidated,     // true → track-limits/corner-cut deleted lap; shown but excluded from bests
           sectorTimes,
           miniSectors,                  // 18 live mini-sector splits → per-mini PBs (LiveScreen)
-          source: "live",
+          // "demo" → replayed by Demo Mode, not driven. Kept out of every board
+          // and out of the coach's comparison pool (isDemoLap, lib/driverStats.js).
+          source: m.demoMode ? "demo" : "live",
           meta: {
             driver: m.driver || "You",
             track: m.trackName || "Live",
@@ -1448,7 +1452,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // reference and comparison laps below. Laps are saved under the active driver.
   const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
     useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
-      activeDriver, sessionId, sessionTypeLabel);
+      activeDriver, sessionId, sessionTypeLabel, fakeMode);
 
   // "Reset" the Session Laps panel. Archiving the current laps hides them from the
   // live Session-Laps / Analytics views permanently (the flag is persisted in
@@ -1748,10 +1752,15 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Laps the coach is allowed to reason about:
   //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
   //     another track (mixed history produced nonsense cross-track claims);
-  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps).
+  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
+  //   • the same side of the demo line (isDemoLap). Demo Mode replays somebody
+  //     else's real race, so its laps must never become the benchmark a driven lap
+  //     is measured against — and, replaying, the driver should be compared with
+  //     the replay's own laps rather than their real history at this circuit.
   const trackLaps = useMemo(
-    () => storedLaps.filter((l) => isRankable(l) && sameTrack(l.meta?.track, drivenTrackName)),
-    [storedLaps, drivenTrackName]);
+    () => storedLaps.filter((l) =>
+      isRankable(l) && isDemoLap(l) === !!fakeMode && sameTrack(l.meta?.track, drivenTrackName)),
+    [storedLaps, drivenTrackName, fakeMode]);
 
   // The newest lap on this circuit — what the driver is being coached on AS THEY
   // DRIVE, and the default subject of the Coach Log.
@@ -2160,7 +2169,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           trackName={trackName}
           sessionLabel={sessionTypeLabel}
           liveLapNumber={storedLaps.reduce((m,l)=>(l.meta?.sessionId===sessionId?Math.max(m,l.lapNumber||0):m),0)+1}
-          laps={storedLaps} sessionId={sessionId} liveMini={liveMini}
+          laps={storedLaps} sessionId={sessionId} liveMini={liveMini} demoMode={fakeMode}
           activeTrace={activeTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
           focusAudioOn={focusAudioOn} onToggleFocusAudio={()=>setFocusAudioOn(a=>!a)}
@@ -2187,7 +2196,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         const referenceLabel  = activeTrace ? lapSourceLabel(activeTrace) : "ref";
         return (
         <AnalyticsScreen
-          trackName={trackName} sessionLabel={sessionTypeLabel}
+          trackName={trackName} sessionLabel={sessionTypeLabel} demoMode={fakeMode}
           laps={sessionLaps} comparisonLap={comparisonLap}
           referenceSources={[...refTraces, ...sessionLaps]}
           referenceId={activeTraceId} onSelectReference={setActiveTraceId}

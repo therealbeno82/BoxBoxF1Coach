@@ -28,6 +28,16 @@ export const FEATURED_SESSION_TYPES = ["Time Trial", "Qualifying", "Race"];
 // coach filter through this so the exclusion can't drift per panel.
 export const isRankable = (l) => !l?.invalid;
 
+// Was this lap replayed by Demo Mode rather than driven? The demo replays a real
+// recorded race (src-tauri/src/telemetry/demo.rs), so its laps carry genuine lap
+// times and would take personal bests and skew every career board if they counted.
+// The recorder stamps `source:"demo"` on them; they stay in history and in the
+// session panels — so the lap log, the traces and the coach's debrief all still
+// work while demoing — but they never reach the stats below, and the coach never
+// pools them with laps the driver actually drove. THE single definition of that
+// split, mirroring isRankable.
+export const isDemoLap = (l) => l?.source === "demo";
+
 // The laps to SHOW in a drive's Session-Laps panel and the Compare reference /
 // driven-lap dropdowns: this drive's laps, never archived ("Reset Session Laps"
 // hides them for good). THE single definition of that scope so the Live and
@@ -64,10 +74,19 @@ export function lapRunKey({ sessionId, sessionType, track } = {}) {
 
 export function computeDriverStats(laps = [], opts = {}) {
   const recentCount = opts.recent || 10;
+  // Demo replays and real driving are two separate worlds (isDemoLap). By default
+  // this computes the driver's own boards, and a replayed lap never appears on
+  // them — not as a personal best, not as a recent lap, not in the lap or session
+  // tallies. `opts.demo` selects the other side: the live screens pass it while
+  // Demo Mode is running so a replayed lap is graded against the replay's own laps
+  // instead of silently against the driver's real history.
+  const wantDemo = !!opts.demo;
+  const driven = laps.filter((l) => isDemoLap(l) === wantDemo);
   // Bests, PBs and theoretical-optimal sectors ignore game-invalidated laps — see
-  // isRankable. The recent list below still spans every lap (it maps `laps`, not
-  // `valid`) so invalidated laps remain visible in history, just never ranked.
-  const valid = laps.filter((l) => hasTime(l) && isRankable(l));
+  // isRankable. The recent list below still spans every driven lap (it maps
+  // `driven`, not `valid`) so invalidated laps remain visible in history, just
+  // never ranked.
+  const valid = driven.filter((l) => hasTime(l) && isRankable(l));
   const byTimeAsc = [...valid].sort((a, b) => a.lapTime - b.lapTime);
 
   const fastestOverall = byTimeAsc[0] || null;
@@ -131,12 +150,12 @@ export function computeDriverStats(laps = [], opts = {}) {
   // Totals — distinct sessionId = number of drive sessions (laps without one are
   // still counted toward total laps, just not toward sessions).
   const sessions = new Set();
-  for (const l of laps) { const s = l.meta?.sessionId; if (s) sessions.add(s); }
-  const totals = { laps: laps.length, sessions: sessions.size };
+  for (const l of driven) { const s = l.meta?.sessionId; if (s) sessions.add(s); }
+  const totals = { laps: driven.length, sessions: sessions.size };
 
   // Recent laps, newest first, each tagged with its gap to the same-track best so
   // the list reads like a timing screen.
-  const recent = [...laps]
+  const recent = [...driven]
     .sort((a, b) => (b.recordedAt || 0) - (a.recordedAt || 0))
     .slice(0, recentCount)
     .map((l) => {

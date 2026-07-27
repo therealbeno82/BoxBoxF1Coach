@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU16, AtomicU32, A
 use std::sync::{Arc, Condvar, Mutex};
 
 use arc_swap::ArcSwap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Freeze threshold (ms): no new physics frame this long → the game is paused /
 /// in a menu. Mirrors the C++ `FFB_PAUSE_FREEZE_MS`.
@@ -22,7 +22,7 @@ pub const FFB_PAUSE_FREEZE_MS: i64 = 350;
 const UI_BUILD_MIN_MS: i64 = 33;
 
 /// Deployable ERS energy per lap (J) → battery %. Mirrors the bridge's constant.
-const MAX_ERS_JOULES: f32 = 4_000_000.0;
+pub const MAX_ERS_JOULES: f32 = 4_000_000.0;
 
 /// Everything the UDP thread accumulates from the various packet types. The
 /// physics fields (forces/slips) mirror the C++ `TelemetryState`; the rest feed
@@ -177,7 +177,8 @@ impl Default for Latest {
 
 /// Raw player car setup — field names mirror the F1 UDP spec (and the old
 /// bridge's forwarded object) so the existing CarSetupModal keeps working.
-#[derive(Clone, Serialize)]
+/// `Deserialize` so the demo session's recorded setup loads straight into it.
+#[derive(Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct CarSetup {
     pub m_frontWing: u8,

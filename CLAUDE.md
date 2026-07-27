@@ -16,11 +16,11 @@ npm run dev                              # web UI only in a browser — no Rust 
 npm run tauri:build                      # release build + NSIS installer
 ```
 
-- No game running? Set `F1_FAKE=1` (or the Settings toggle) — the Rust core feeds a synthetic lap.
+- No game running? Set `F1_FAKE=1` (or the Settings toggle) — the Rust core replays a real recorded 25-lap race (`src-tauri/demo/session.json`).
 - Rust-only iteration: `cargo check` in `src-tauri/`. First compile is slow: SDL2 is built from source and statically linked (needs CMake + MSVC, both installed).
 - Build outputs: `src-tauri/target/release/boxbox.exe` (binary name is fixed by `[[bin]]` in `Cargo.toml`) and the installer `src-tauri/target/release/bundle/nsis/F1 Coach_<version>_x64-setup.exe` (named after `productName`).
-- **There are no tests and no linter configured.** Verify changes by running the app (fake mode covers most UI/telemetry paths).
-- One-time dev scripts: `scripts/fetch-tracks.mjs` (regenerates committed `public/tracks/` geometry from the f1-circuits GeoJSON — all 25 circuits, current layouts), `scripts/fit-corners.mjs` (re-measures each circuit's corner apexes from that geometry into `apexes` — run it after fetch-tracks), `scripts/fetch-fonts.mjs` (re-vendors the committed `public/fonts/` woff2 + `fonts.css` from Google Fonts — run it only to change the family/weight set), `scripts/make-fixture-lap.mjs` (synthetic trace JSON to exercise track-fitting without driving — output is dev-only, do not commit).
+- **No JS tests and no linter configured** (the Rust core has unit tests: `cargo test --lib` in `src-tauri/`). Verify frontend changes by running the app — demo mode covers most UI/telemetry paths.
+- One-time dev scripts: `scripts/make-demo-session.mjs` (rebuilds `src-tauri/demo/session.json`, the demo-mode replay, from a session export out of the app's own lap log — see Demo mode below), `scripts/fetch-tracks.mjs` (regenerates committed `public/tracks/` geometry from the f1-circuits GeoJSON — all 25 circuits, current layouts), `scripts/fit-corners.mjs` (re-measures each circuit's corner apexes from that geometry into `apexes` — run it after fetch-tracks), `scripts/fetch-fonts.mjs` (re-vendors the committed `public/fonts/` woff2 + `fonts.css` from Google Fonts — run it only to change the family/weight set), `scripts/make-fixture-lap.mjs` (synthetic trace JSON to exercise track-fitting without driving — output is dev-only, do not commit).
 
 ## Architecture
 
@@ -29,12 +29,14 @@ Everything real-time is in-process Rust (an earlier Node sidecar bridge was dele
 
 - `telemetry/` — single UDP listener on port 20777 parsing the game's **2026-format packets only**. Publishes a lock-free snapshot (`arc-swap`) shared by two consumers.
 - `ffb/` — force-feedback engine thread; reads the shared snapshot at full rate and outputs to the wheel via SDL2 haptics.
+- `telemetry/demo.rs` — demo mode. Instead of synthesising telemetry it **replays a real recorded session** (`demo/session.json`, ~2 MB, `include_str!`-compiled so a fresh install needs no side files): 25 laps at Singapore, dry mediums into a wet intermediate stint. The file is distance-binned every 10 m with a precomputed time axis, so a tick is a lerp between two bins and each lap comes out at the time it was really set. Only the channels a lap recording can't carry are modelled — forces/slips (from the measured lateral/longitudinal g), ERS state of charge, rpm, tyre wear.
 - `lib.rs` — Tauri commands (`set_udp_port`, `set_fake_mode`, `get_local_ips`, `get_ffb_*`/`set_ffb_*`) plus an emitter thread that samples shared state at ~30 Hz and emits Tauri events **only when the `Arc` pointer changed**: `telemetry`, `core_status`, `ffb_gauges`, `ffb_status`. UI event cadence never affects FFB latency.
 
 ### Frontend (`src/`)
 - `BoxBoxApp.jsx` (~2,700 lines) is the root and deliberate orchestration hub: all telemetry/lap/coaching state, the lap recorder, and the speech-output pipeline live here; screens under `components/screens/` are mostly presentational and receive props from it.
 - Hooks wrap the Tauri boundary: `useTelemetry`/`useTauriEvents` (events in), `useFfbEngine` (FFB commands/gauges), `useLlmHealth`, `useUpdateCheck`.
 - `lib/env.js` exports `inTauri`; every `invoke()` is guarded with it so plain `npm run dev` in a browser doesn't throw. Keep that pattern for any new Tauri call.
+- Laps recorded while demo mode is on are stamped `source: "demo"` by the recorder and kept off every board by `isDemoLap` (`lib/driverStats.js`) — a replay carries real lap times, so without that it would take personal bests. Demo and driven laps are two separate worlds: `computeDriverStats(laps, { demo })` picks a side (default = the driver's own), the Live screen's record buckets key on it, and the coach's `trackLaps` pool only ever holds one of them.
 
 ### Coaching — two layers, never let the LLM into the real-time path
 - A deterministic rule engine makes in-corner calls (brake, lift-and-coast, ERS) and always runs.

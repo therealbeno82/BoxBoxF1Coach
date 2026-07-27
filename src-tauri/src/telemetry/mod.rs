@@ -2,6 +2,7 @@
 //! packets and publishes a lock-free snapshot for both the webview (Coach tabs)
 //! and the real-time FFB engine. Replaces the old Node UDP→WebSocket bridge.
 
+pub mod demo;
 pub mod header;
 pub mod packets;
 pub mod raw;

@@ -82,10 +82,14 @@ monitor shows wheel torque, clipping and the grip gauges so you can tune with fe
 
 ### 6. Try it without the game
 
-**⚙ Settings → Demo Mode → Demo lap** feeds a synthetic 90-second lap through the whole
-pipeline — cockpit, coaching, voice and FFB — with no game running. Laps driven in demo
-mode are recorded to the driver's history like any other, so turn it off before a real
-session.
+**⚙ Settings → Demo Mode → Replay session** replays a real recorded race — a 25-lap
+Singapore run that goes from mediums to intermediates when the rain arrives — through the
+whole pipeline: cockpit, coaching, voice and FFB, with no game running. Every input, racing
+line and lap time is the one that was actually driven, so the traces, the track map and the
+coach's debrief all show real driving. It restarts from lap 1 each time you switch it on.
+Replayed laps are tagged **DEMO** in the lap log and never count: they can't take a personal
+best, set a sector record, or appear in your stats, and the coach never measures a lap you
+drove against one of them.
 
 ---
 
@@ -261,9 +265,12 @@ node scripts/fetch-kokoro-model.mjs
 npm run tauri:dev
 ```
 
-> No game running? Use the **Demo Mode** toggle in Settings and the core feeds synthetic
-> telemetry so you can work on the UI without the game. `npm run dev` alone previews the web
-> UI in a browser with no native core — so no telemetry and no FFB.
+> No game running? Use the **Demo Mode** toggle in Settings and the core replays a real
+> recorded race (`src-tauri/demo/session.json`, compiled into the exe) so you can work on the
+> UI without the game. Swap in a different session with
+> `node scripts/make-demo-session.mjs "<session-export.json>"`, exported from the app's own
+> lap log. `npm run dev` alone previews the web UI in a browser with no native core — so no
+> telemetry and no FFB.
 
 There are no tests and no linter configured; verify changes by running the app.
 

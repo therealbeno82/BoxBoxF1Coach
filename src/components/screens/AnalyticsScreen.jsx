@@ -55,6 +55,9 @@ export default function AnalyticsScreen({
   comparisonSources = [], comparisonId, onSelectComparison, onDeleteLap, onExportLap,
   labelFor = (s) => s?.id, onOpenSetup,
   tracesSlot, linesSlot,
+  // Demo Mode is replaying: this screen's best-lap readout follows the replay's
+  // laps, which the driver's own boards never see (isDemoLap).
+  demoMode = false,
 }) {
   // Is the consistency strip along the bottom expanded?
   const [stripOpen, setStripOpen] = useState(true);
@@ -69,7 +72,7 @@ export default function AnalyticsScreen({
     setPendingSave(null);
   };
 
-  const stats = useMemo(() => computeDriverStats(laps), [laps]);
+  const stats = useMemo(() => computeDriverStats(laps, { demo: demoMode }), [laps, demoMode]);
 
   const selectedRef = referenceSources.find((s) => s.id === referenceId) || null;
   const refIsLoaded = !!selectedRef && selectedRef.lapNumber == null;

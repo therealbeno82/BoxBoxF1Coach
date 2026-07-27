@@ -190,7 +190,7 @@ export default function SettingsScreen({
   };
 
   // Demo mode drives `wsConnected` true (the core stamps packet times as it
-  // synthesises), so the status readouts must call it out explicitly — otherwise
+  // replays), so the status readouts must call it out explicitly — otherwise
   // they'd claim "TELEMETRY LIVE · Receiving on UDP 20777" while nothing is
   // arriving on that port at all.
   const coreColor = fakeMode ? C.yellow : wsConnected ? C.green : C.red;
@@ -273,14 +273,15 @@ export default function SettingsScreen({
               </div>
             </div>
 
-            {/* Demo mode — synthetic telemetry from the native core, so the whole
-                pipeline can be driven with no game running. Hidden in plain-browser
-                dev, where there is no core to toggle. */}
+            {/* Demo mode — the native core replays a real recorded race (see
+                src-tauri/src/telemetry/demo.rs), so the whole pipeline can be driven
+                with no game running. Hidden in plain-browser dev, where there is no
+                core to toggle. */}
             {inTauri && (
               <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                 <label style={label}>Demo Mode · no game needed</label>
                 <div style={{ display: "flex", gap: 8 }}>
-                  {[["Off", false], ["Demo lap", true]].map(([text, on]) => (
+                  {[["Off", false], ["Replay session", true]].map(([text, on]) => (
                     <button key={text} onClick={() => setFakeMode(on)} style={{
                       padding: "9px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: .3, fontFamily: FONT.ui,
                       background: fakeMode === on ? C.elevated : C.inset,
@@ -289,9 +290,11 @@ export default function SettingsScreen({
                   ))}
                 </div>
                 <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
-                  Feeds a synthetic 90-second lap so you can try the cockpit, coaching and force
-                  feedback without the game open. Laps driven in demo mode are recorded to this
-                  driver's history like any other — turn it off before a real session.
+                  Replays a real recorded race — every input, line and lap time as it was
+                  actually driven — so you can try the cockpit, coaching and force feedback
+                  without the game open. It starts from lap 1 each time you switch it on.
+                  Replayed laps are tagged DEMO and never count towards your personal bests,
+                  records or stats.
                 </div>
               </div>
             )}

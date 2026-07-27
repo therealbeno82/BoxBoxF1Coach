@@ -8,7 +8,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
-import { computeDriverStats, isRankable, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
+import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
 import { tyreCondition, tyreLabel, tyreColor, tyreWearPct } from "../../lib/tyres.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 
@@ -84,6 +84,11 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
       {invalid && (
         <span title="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</span>
       )}
+      {/* Replayed by Demo Mode, not driven — say so on the row, since the time is a
+          real one and would otherwise be indistinguishable from the driver's own. */}
+      {isDemoLap(l) && (
+        <span title="Replayed by Demo Mode — never counts toward personal bests, records or stats" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.yellow, textTransform: "uppercase", border: `1px solid ${C.yellow}`, borderRadius: 5, padding: "1px 5px" }}>Demo</span>
+      )}
       <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
       <span style={{ flex: "none", color: C.textFaintest }}>–</span>
       {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
@@ -137,9 +142,12 @@ export default function LiveScreen({
   mapSlot, legendChips = [], audioOn, onToggleAudio,
   focusAudioOn = true, onToggleFocusAudio, onOpenSetup, onResetSessionLaps,
   onSaveSession, onLoadSession, onSaveMap,
+  // Demo Mode is replaying: the lap in progress is a replay, so grade its splits
+  // against the demo record bucket rather than the driver's real ones.
+  demoMode = false,
 }) {
   const uLabel = speedUnitLabel(units);
-  const stats = useMemo(() => computeDriverStats(laps), [laps]);
+  const stats = useMemo(() => computeDriverStats(laps, { demo: demoMode }), [laps, demoMode]);
 
   // This drive's completed laps (newest first). visibleSessionLaps drops archived
   // laps (cleared via "Reset Session Laps", so they stay gone after a restart) and,
@@ -215,11 +223,13 @@ export default function LiveScreen({
 
   // Bucket key for the PURPLE benchmark: a split only competes with others driven on
   // the same track, the same rubber (wet/dry) and in the same session type — so a wet
-  // or qualifying split never has to beat a dry race lap. The live in-progress lap
-  // (not yet a saved lap) keys off the same fields via the explicit form.
-  const recordKeyFor = (track, cond, sessionType) =>
-    `${track ?? "∅"}|${cond ?? "?"}|${sessionType ?? "?"}`;
-  const recordKey = (l) => recordKeyFor(l.meta?.track, tyreCondition(l.tyre), l.meta?.sessionType);
+  // or qualifying split never has to beat a dry race lap. Demo replays are their own
+  // bucket, so a replayed split can neither claim nor have to beat a real record
+  // (isDemoLap). The live in-progress lap (not yet a saved lap) keys off the same
+  // fields via the explicit form.
+  const recordKeyFor = (track, cond, sessionType, demo) =>
+    `${track ?? "∅"}|${cond ?? "?"}|${sessionType ?? "?"}|${demo ? "demo" : "driven"}`;
+  const recordKey = (l) => recordKeyFor(l.meta?.track, tyreCondition(l.tyre), l.meta?.sessionType, isDemoLap(l));
 
   // Fastest split per sector within each RUN (see lapRunKey) across the laps shown
   // in the list — the GREEN benchmark. Grouping by run keeps each stint's bests
@@ -311,7 +321,7 @@ export default function LiveScreen({
   }, [laps]);
 
   // Conditions of the live lap → which record/session buckets its mini-sectors face.
-  const liveKey = recordKeyFor(trackName, tyreCondition(liveMini.tyre), sessionLabel);
+  const liveKey = recordKeyFor(trackName, tyreCondition(liveMini.tyre), sessionLabel, demoMode);
   const liveRecord = recordMini.get(liveKey);
   const liveSession = sessionMini.get(lapRunKey({ sessionId, sessionType: sessionLabel, track: trackName || "Live" }));
   // Colour a just-completed mini-sector of the live lap (null → not driven yet → grey).

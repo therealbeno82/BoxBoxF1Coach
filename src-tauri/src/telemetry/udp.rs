@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use super::demo::Replay;
 use super::header::{Header, HEADER_LEN};
 use super::packets;
-use super::state::{now_ms, CarSetup, Latest, SharedTelemetry, FFB_PAUSE_FREEZE_MS};
+use super::state::{now_ms, Latest, SharedTelemetry, FFB_PAUSE_FREEZE_MS};
 
 // Packet ids (F1 2025/2026).
 const PKT_MOTION: u8 = 0;
@@ -31,7 +32,11 @@ fn session_is_qualifying(t: u8) -> bool {
     (5..=14).contains(&t)
 }
 
-/// Runtime knobs shared with the app: stop, retarget the port, toggle fake mode.
+/// How often the demo replay publishes a frame (ms) — ~60 Hz, matching the rate
+/// the game's physics packets land at.
+const DEMO_TICK_MS: u64 = 16;
+
+/// Runtime knobs shared with the app: stop, retarget the port, toggle demo mode.
 pub struct CoreControl {
     pub running: AtomicBool,
     pub desired_port: AtomicU16,
@@ -109,21 +114,33 @@ fn run_loop(shared: Arc<SharedTelemetry>, control: Arc<CoreControl>) {
     let mut socket: Option<UdpSocket> = None;
     let mut bound_port: u16 = 0;
     let mut buf = [0u8; 4096];
-    let started = std::time::Instant::now();
+    let mut replay = Replay::default();
+    let mut last_demo_tick = std::time::Instant::now();
     let mut was_fake = false;
 
     while control.running.load(Ordering::Relaxed) {
-        // Fake mode: no socket; synthesise a lap and publish at ~60 Hz.
+        // Demo mode: no socket; replay the recorded session at ~60 Hz.
         if control.fake.load(Ordering::Relaxed) {
             socket = None;
             bound_port = 0;
-            was_fake = true;
-            fake_tick(&mut latest, &shared, started.elapsed().as_secs_f32());
-            std::thread::sleep(Duration::from_millis(16));
+            if !was_fake {
+                // Entering demo → start the recorded race from its first lap.
+                was_fake = true;
+                latest = Latest::default();
+                replay.reset();
+                last_demo_tick = std::time::Instant::now();
+            }
+            // Wall-clock dt so the replay runs in real time; capped so a stalled
+            // thread (sleeping laptop, breakpoint) resumes instead of skipping
+            // half the race.
+            let dt = last_demo_tick.elapsed().as_secs_f32().min(0.25);
+            last_demo_tick = std::time::Instant::now();
+            replay.tick(&mut latest, &shared, dt);
+            std::thread::sleep(Duration::from_millis(DEMO_TICK_MS));
             continue;
         }
         if was_fake {
-            // Leaving fake mode: the latched "got a packet" no longer holds — the
+            // Leaving demo mode: the latched "got a packet" no longer holds — the
             // UI should idle until real telemetry actually arrives.
             was_fake = false;
             shared.got_packet.store(false, Ordering::Relaxed);
@@ -292,138 +309,6 @@ fn update_ai_from_lap(result_status: u8, l: &Latest, ls: &mut LoopState, shared:
     stats.ai_run_up.store(ai_run_up, Ordering::Relaxed);
 }
 
-// ── Fake mode: a synthetic lap so the pipeline (incl. FFB) is testable with no
-// game. Ported from the old bridge's fake generator (f1-bridge.cjs:405-479),
-// plus plausible physics fields so the FFB engine has something to react to. ──
-fn fake_tick(l: &mut Latest, shared: &Arc<SharedTelemetry>, t: f32) {
-    let lap = 90.0f32;
-    let pct = (t % lap) / lap;
-    let lap_index = (t / lap) as u32;
-    let braking = (pct * std::f32::consts::PI * 8.0).sin() < -0.5;
-    let clamp = |v: f32, lo: f32, hi: f32| v.max(lo).min(hi);
-
-    l.track_length = 5278;
-    l.track_id = 0;
-    l.session_uid = 1; // synthetic but non-zero so the UI's session keying works
-    l.session_type = if lap_index % 2 == 0 { 18 } else { 7 };
-    l.lap_distance = pct * l.track_length as f32;
-    l.speed_kmh = if braking { 90.0 } else { 260.0 };
-    l.throttle = if braking { 0.05 } else { 0.95 };
-    l.brake = if braking { 0.7 } else { 0.0 };
-    l.steer = clamp((pct * std::f32::consts::PI * 12.0).sin() * 0.85, -1.0, 1.0);
-    l.gear = clamp(l.speed_kmh / 42.0, 1.0, 8.0) as i8;
-    l.rpm = 9000 + ((t * 3.0).sin().abs() * 3000.0) as u16;
-    l.ers_mode = if braking { 1 } else { 3 };
-    l.ers_store_energy = 2_000_000.0;
-    l.ers_deployed_this_lap = pct * 4_000_000.0;
-    l.ers_harvest_limit = 4_000_000.0;
-    l.regs2026 = 1;
-    l.lap_time = t % lap;
-    l.lap_number = (lap_index % 200) as u8 + 1;
-    l.last_lap_time = if t >= lap { lap } else { 0.0 };
-    // Cycle compound + conditions per lap so the lap log's tyre/wear column and
-    // per-session header have something to show with no game running.
-    l.tyre_visual = 16 + (lap_index % 3) as i8;
-    l.tyre_actual = l.tyre_visual;
-    l.tyre_age = (lap_index % 200) as u8;
-    l.weather = (lap_index % 6) as u8;
-    l.track_temp = 34;
-    l.air_temp = 24;
-    // Wear climbs through the lap and resets with the (synthetic) fresh set.
-    for i in 0..4 {
-        l.tyre_wear[i] = ((l.tyre_age as f32 % 20.0) + pct) * 1.4 + i as f32 * 0.6;
-    }
-    // Tyre temps: surface spikes under braking + wanders; carcass is smoother —
-    // two visibly distinct worms for the Telemetry tab's tyre panel.
-    let surf = 92.0 + if braking { 14.0 } else { 0.0 } + (t * 0.7).sin() * 5.0;
-    let carc = 95.0 + (t * 0.25).sin() * 3.0;
-    for i in 0..4 {
-        l.tyre_surface_temps[i] = (surf + i as f32 * 1.5) as u8;
-        l.tyre_inner_temps[i] = (carc + i as f32) as u8;
-    }
-    l.driver_status = 1;
-    l.pit_status = 0;
-    l.lap_invalid = 0;
-    // A plausible static garage setup so the Setup popup is testable with no game
-    // (ported from the old bridge's fake generator, plus the engine-braking and
-    // ballast bytes it omitted — both are real fields in 2025/2026, see
-    // packets::parse_car_setups).
-    if l.setup.is_none() {
-        l.setup = Some(CarSetup {
-            m_frontWing: 6,
-            m_rearWing: 8,
-            m_onThrottle: 65,
-            m_offThrottle: 55,
-            m_frontCamber: -3.0,
-            m_rearCamber: -1.7,
-            m_frontToe: 0.07,
-            m_rearToe: 0.34,
-            m_frontSuspension: 5,
-            m_rearSuspension: 6,
-            m_frontAntiRollBar: 7,
-            m_rearAntiRollBar: 4,
-            m_frontSuspensionHeight: 3,
-            m_rearSuspensionHeight: 6,
-            m_brakePressure: 95,
-            m_brakeBias: 54,
-            m_engineBraking: 60,
-            m_rearLeftTyrePressure: 21.5,
-            m_rearRightTyrePressure: 21.5,
-            m_frontLeftTyrePressure: 23.5,
-            m_frontRightTyrePressure: 23.5,
-            m_ballast: 6,
-            m_fuelLoad: 10.0,
-        });
-    }
-    l.current_sector = if pct < 1.0 / 3.0 { 0 } else if pct < 2.0 / 3.0 { 1 } else { 2 };
-    l.sector1_time = if pct >= 1.0 / 3.0 { lap / 3.0 } else { 0.0 };
-    l.sector2_time = if pct >= 2.0 / 3.0 { lap / 3.0 } else { 0.0 };
-    let ang = pct * 2.0 * std::f32::consts::PI;
-    l.world_x = Some(600.0 * ang.cos() + 160.0 * (3.0 * ang).cos());
-    l.world_z = Some(420.0 * ang.sin() + 130.0 * (2.0 * ang).sin());
-    l.world_y = Some(18.0 * (ang * 3.0).sin() + 9.0 * (ang * 5.0).cos());
-
-    // Synthetic physics so the FFB engine reacts: lateral force follows steering,
-    // slip/lockup/spin around the braking/accel phases.
-    l.lateral_g = l.steer * 3.5;
-    l.front_lat_force = l.steer * 9000.0;
-    l.front_lon_force = if braking { -14000.0 } else { 4000.0 };
-    l.front_vert_force = 8000.0;
-    l.front_slip_angle = (l.steer.abs() * 0.12).min(0.2);
-    l.rear_slip_angle = (l.steer.abs() * 0.10).min(0.18);
-    l.front_slip_ratio = if braking { -0.15 } else { 0.0 };
-    l.rear_slip_ratio = if !braking && l.throttle > 0.9 { 0.2 } else { 0.0 };
-    l.sideslip = l.steer * 0.08;
-
-    let stats = &shared.stats;
-    let now = now_ms();
-    stats.udp_packets.fetch_add(1, Ordering::Relaxed);
-    stats.last_udp_ms.store(now, Ordering::Relaxed);
-    stats.last_frame_advance_ms.store(now, Ordering::Relaxed);
-    stats.frame_streak_start_ms.store(now - 1000, Ordering::Relaxed);
-    stats.session_type.store(l.session_type, Ordering::Relaxed);
-    stats.track_length_m.store(l.track_length, Ordering::Relaxed);
-    stats.driver_status.store(1, Ordering::Relaxed);
-    stats.set_lap_distance(l.lap_distance);
-    shared.publish(l);
-    stats.notify_frame();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fake_tick_supplies_a_car_setup() {
-        // Fake mode must populate a synthetic garage setup so the Car Setup modal
-        // is testable with no game (parity with the old bridge's fake generator).
-        let shared = SharedTelemetry::new(20777);
-        let mut l = Latest::default();
-        fake_tick(&mut l, &shared, 1.0);
-        let setup = l.setup.as_ref().expect("fake mode populates a setup");
-        assert_eq!(setup.m_frontWing, 6);
-        assert!(setup.m_fuelLoad > 0.0);
-        // …and it reaches the UI snapshot the emitter serialises.
-        assert!(shared.ui.load().setup.is_some());
-    }
-}
+// Demo mode's frame source is `super::demo::Replay` — a replay of a real recorded
+// session. It replaced the sine-wave lap generator that used to live here, so the
+// no-game path exercises the pipeline with data the game actually produced.
