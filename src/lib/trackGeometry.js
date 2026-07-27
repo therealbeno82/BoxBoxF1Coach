@@ -1,7 +1,7 @@
 // ─── TRACK GEOMETRY (Driving Lines tab) ────────────────────────────────────────
-// Turns a recorded racing line into a drivable *track model* for the 3D scene:
+// Turns a recorded racing line into a drivable *track model* for the driving-lines view:
 //
-//   loadTrackModel(slug, lines3D) → Promise<model | null>
+//   loadTrackModel(slug, lines) → Promise<model | null>
 //     Fetches the bundled real-circuit centerline + widths (public/tracks/<slug>.json,
 //     built by scripts/fetch-tracks.mjs) and rigidly aligns it into the game's world
 //     frame so the recorded lines sit on the real road — apexes, curbs and all. The
@@ -9,23 +9,26 @@
 //     buildHeuristicTrack() when the circuit isn't covered, the fetch fails, or the
 //     fit is poor (e.g. the game's layout differs from the dataset's vintage).
 //
-//   buildHeuristicTrack(lines3D) → model
+//   buildHeuristicTrack(lines) → model
 //     No real data: estimate a road around the driven line using racing-line geometry —
 //     offset the road centre toward the corner OUTSIDE by smoothed signed curvature, so
 //     the line touches the inside edge at apexes instead of floating mid-road.
 //
 // model = {
 //   status: "real" | "fallback",
-//   centerline: [{ x, y, z, wl, wr, k }],  // world frame; wl/wr = width (m) left/right
+//   centerline: [{ x, z, wl, wr, k }],     // world frame; wl/wr = width (m) left/right
 //                                          // of travel; k = signed curvature (1/m)
 //   closed: boolean,                       // does the loop wrap?
 //   startIndex: number,                    // row nearest the lap's start/finish point
 //   rmse: number|null,                     // fit quality (real only)
 //   attribution: string|null,              // dataset credit (real only)
-//   elevAt: (x, z) => y,                   // road-surface height lookup
 // }
 //
-// Pure math — no three.js import, so the scene chunk stays the only heavy one.
+// The model is FLAT: the view is a top-down 2D plan, so rows carry no elevation.
+// (A `y` per row and an `elevAt(x, z)` sampler existed for the 3D chase-cam scene,
+// which was deleted — nothing read either once the view went 2D.)
+//
+// Pure math — no rendering dependency, so this stays cheap to import.
 // (The one exception is the corner-anchor cache: a real fit is the only place the
 // start/finish line and traversal direction are recoverable, so loadTrackModel
 // records them for src/lib/cornerAnchors.js.)
@@ -45,7 +48,7 @@ const EDGE_MARGIN = 1.0;    // meters added to each real-track edge: the driven 
 const hyp = (ax, az, bx, bz) => Math.hypot(bx - ax, bz - az);
 
 // Uniform spatial grid over {x, z} points → a nearest-index query, replacing the O(n·m)
-// brute-force scans in the alignment + elevation passes with ~O(n). Returns the exact same
+// brute-force scans in the alignment pass with ~O(n). Returns the exact same
 // nearest point a linear scan would (an expanding-ring search with a distance prune), just
 // far faster. `cell` should be a few × the mean point spacing.
 function buildGrid(pts, cell) {
@@ -86,9 +89,9 @@ function buildGrid(pts, cell) {
 }
 
 // Longest drawn line = the fit/spine anchor (usually the driven lap).
-function anchorLine(lines3D) {
+function anchorLine(lines) {
   let best = null;
-  for (const l of lines3D || []) if (l?.pts?.length >= 20 && (!best || l.pts.length > best.pts.length)) best = l;
+  for (const l of lines || []) if (l?.pts?.length >= 20 && (!best || l.pts.length > best.pts.length)) best = l;
   return best;
 }
 
@@ -283,88 +286,13 @@ function boxBlur(vals, hw, passes, closed) {
   return v;
 }
 
-// Drape recorded elevation onto centerline rows: nearest-row accumulation of every
-// sample's y, cyclic gap fill, then smoothing. Mutates rows[i].y. No y → stays flat.
-function drapeElevation(rows, lines3D, closed) {
-  const samples = [];
-  for (const l of lines3D || []) {
-    for (const p of l?.pts || []) {
-      if (typeof p.y === "number" && isFinite(p.y) && typeof p.x === "number" && typeof p.z === "number") {
-        samples.push(p);
-      }
-    }
-  }
-  if (!samples.length) { for (const r of rows) r.y = 0; return; }
-
-  const n = rows.length;
-  const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
-  const nearestRow = buildGrid(rows, Math.max(8, arcSpacing(rows, closed) * 4));
-  for (const p of samples) {
-    const bi = nearestRow(p.x, p.z);
-    if (bi >= 0) { sum[bi] += p.y; cnt[bi]++; }
-  }
-  // Seed hit rows, then fill gaps by linear interpolation between hit rows.
-  const y = new Array(n).fill(null);
-  for (let i = 0; i < n; i++) if (cnt[i]) y[i] = sum[i] / cnt[i];
-  const hits = [];
-  for (let i = 0; i < n; i++) if (y[i] != null) hits.push(i);
-  if (!hits.length) { for (const r of rows) r.y = 0; return; }
-  for (let h = 0; h < hits.length; h++) {
-    const i0 = hits[h];
-    const i1 = hits[(h + 1) % hits.length];
-    const gap = (i1 - i0 + n) % n || n;
-    for (let d = 1; d < gap; d++) {
-      const i = (i0 + d) % n;
-      if (!closed && i < i0) break; // open loop: don't wrap the fill
-      y[i] = y[i0] + ((y[i1] - y[i0]) * d) / gap;
-    }
-  }
-  for (let i = 0; i < n; i++) if (y[i] == null) y[i] = y[hits[0]];
-  // ~27 m smoothing window at 2.5 m spacing kills curb strikes and bin noise
-  // while keeping real gradients (Eau Rouge climbs ~40 m over 500 m — survives).
-  const smoothed = boxBlur(y, 5, 3, closed);
-  for (let i = 0; i < n; i++) rows[i].y = smoothed[i];
-}
-
-// Attach a coarse spatial-hash elevation sampler to the model.
-function makeElevAt(rows) {
-  const CELL = 25;
-  const grid = new Map();
-  const key = (ix, iz) => ix + ":" + iz;
-  rows.forEach((r, i) => {
-    const k = key(Math.floor(r.x / CELL), Math.floor(r.z / CELL));
-    let arr = grid.get(k);
-    if (!arr) grid.set(k, (arr = []));
-    arr.push(i);
-  });
-  return (x, z) => {
-    const ix = Math.floor(x / CELL), iz = Math.floor(z / CELL);
-    let bi = -1, bd = Infinity;
-    for (let r = 1; r <= 3 && bi < 0; r++) { // expand the search ring until something hits
-      for (let dx = -r; dx <= r; dx++) {
-        for (let dz = -r; dz <= r; dz++) {
-          const arr = grid.get(key(ix + dx, iz + dz));
-          if (!arr) continue;
-          for (const i of arr) {
-            const ddx = rows[i].x - x, ddz = rows[i].z - z;
-            const d = ddx * ddx + ddz * ddz;
-            if (d < bd) { bd = d; bi = i; }
-          }
-        }
-      }
-    }
-    return bi >= 0 ? rows[bi].y : 0;
-  };
-}
-
-function finishModel(rows, { status, closed, rmse = null, attribution = null, reverse = false, apexes = null }, lines3D) {
-  drapeElevation(rows, lines3D, closed);
+function finishModel(rows, { status, closed, rmse = null, attribution = null, reverse = false, apexes = null }, lines) {
   const kStep = Math.max(2, Math.round(6 / Math.max(1, arcSpacing(rows, closed))));
   const kappa = boxBlur(signedCurvature(rows, kStep, closed), Math.round(kStep * 2.5), 2, closed);
   rows.forEach((r, i) => { r.k = kappa[i]; });
 
   // Start/finish = the row nearest the anchor lap's first point (lap distance ≈ 0).
-  const anchor = anchorLine(lines3D);
+  const anchor = anchorLine(lines);
   let startIndex = 0;
   if (anchor) {
     const p0 = anchor.pts[0];
@@ -403,7 +331,6 @@ function finishModel(rows, { status, closed, rmse = null, attribution = null, re
   return {
     status, centerline: rows, closed, startIndex, rmse, attribution,
     reverse, sfFrac, apexes,
-    elevAt: makeElevAt(rows),
   };
 }
 
@@ -421,15 +348,15 @@ function arcSpacing(rows, closed) {
 // Sweep a constant-width road along the drawn line(s), but offset its centre toward
 // the corner OUTSIDE by smoothed, saturated curvature — so at a full corner the line
 // sits ~1 m from the inside edge (apex/curb) instead of dead centre.
-export function buildHeuristicTrack(lines3D) {
-  const drawable = (lines3D || []).filter((l) => l?.pts?.length >= 20);
+export function buildHeuristicTrack(lines) {
+  const drawable = (lines || []).filter((l) => l?.pts?.length >= 20);
   if (!drawable.length) return null;
 
   // Spine: the single line, or the per-fraction average of both (matches the old
   // midline behaviour so neither car is pinned to the road centre).
   let spinePts;
   if (drawable.length === 1) {
-    spinePts = drawable[0].pts.map((p) => ({ x: p.x, z: p.z, y: p.y }));
+    spinePts = drawable[0].pts.map((p) => ({ x: p.x, z: p.z }));
   } else {
     const M = 480;
     const at = (l, f) => {
@@ -442,19 +369,17 @@ export function buildHeuristicTrack(lines3D) {
       return {
         x: P[i - 1].x + (P[i].x - P[i - 1].x) * t,
         z: P[i - 1].z + (P[i].z - P[i - 1].z) * t,
-        y: (P[i - 1].y != null && P[i].y != null) ? P[i - 1].y + (P[i].y - P[i - 1].y) * t : undefined,
       };
     };
     spinePts = [];
     for (let k = 0; k < M; k++) {
       const f = k / M;
-      let x = 0, z = 0, y = 0, ys = 0;
+      let x = 0, z = 0;
       for (const l of drawable) {
         const p = at(l, f);
         x += p.x; z += p.z;
-        if (p.y != null) { y += p.y; ys++; }
       }
-      spinePts.push({ x: x / drawable.length, z: z / drawable.length, y: ys ? y / ys : undefined });
+      spinePts.push({ x: x / drawable.length, z: z / drawable.length });
     }
   }
 
@@ -475,9 +400,9 @@ export function buildHeuristicTrack(lines3D) {
     const nx = tz, nz = -tx; // horizontal normal (matches cross(UP, t) in the scene)
     const sat = Math.max(-1, Math.min(1, kappa[i] / KAPPA_SAT));
     const off = sat * (HEUR_HALF_W - 1.0); // toward the outside of the corner
-    rows[i] = { x: spine[i].x + nx * off, z: spine[i].z + nz * off, y: 0, wl: HEUR_HALF_W, wr: HEUR_HALF_W };
+    rows[i] = { x: spine[i].x + nx * off, z: spine[i].z + nz * off, wl: HEUR_HALF_W, wr: HEUR_HALF_W };
   }
-  return finishModel(rows, { status: "fallback", closed }, lines3D);
+  return finishModel(rows, { status: "fallback", closed }, lines);
 }
 
 // ── Real circuit loader ─────────────────────────────────────────────────────────
@@ -504,10 +429,10 @@ function lineSignature(line) {
   return pts.length.toString(36) + "." + h.toString(36);
 }
 
-export async function loadTrackModel(slug, lines3D) {
-  const anchor = anchorLine(lines3D);
+export async function loadTrackModel(slug, lines) {
+  const anchor = anchorLine(lines);
   if (!anchor) return null;
-  const cacheKey = (slug || "none") + "::" + (lines3D || []).map((l) => l.id + ":" + lineSignature(l)).join(",");
+  const cacheKey = (slug || "none") + "::" + (lines || []).map((l) => l.id + ":" + lineSignature(l)).join(",");
   if (modelCache.has(cacheKey)) return modelCache.get(cacheKey);
 
   let model = null;
@@ -517,14 +442,14 @@ export async function loadTrackModel(slug, lines3D) {
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.points) && data.points.length > 100) {
-          model = fitRealTrack(data, anchor, lines3D);
+          model = fitRealTrack(data, anchor, lines);
         }
       }
     } catch (e) {
       console.warn(`[trackGeometry] ${slug}: load failed (${e.message}) — using heuristic road`);
     }
   }
-  if (!model) model = buildHeuristicTrack(lines3D);
+  if (!model) model = buildHeuristicTrack(lines);
   // A real fit is the only place the start/finish line and the traversal direction
   // are actually known, so teach the anchor cache here — that's what lets corner
   // numbering work on this circuit before a lap has been fitted next session.
@@ -536,7 +461,7 @@ export async function loadTrackModel(slug, lines3D) {
   return model;
 }
 
-function fitRealTrack(data, anchor, lines3D) {
+function fitRealTrack(data, anchor, lines) {
   const t0 = performance.now();
   const fit = solveAlignment(data.points, anchor.pts);
   const ms = Math.round(performance.now() - t0);
@@ -558,10 +483,10 @@ function fitRealTrack(data, anchor, lines3D) {
   const rows = pts.map((p) => {
     const w = fit.apply(p[0], p[1]); // apply() folds the mirror in itself
     const wr = p[2] + EDGE_MARGIN, wl = p[3] + EDGE_MARGIN;
-    return { x: w.x, z: w.z, y: 0, wl: fit.swapSides ? wr : wl, wr: fit.swapSides ? wl : wr };
+    return { x: w.x, z: w.z, wl: fit.swapSides ? wr : wl, wr: fit.swapSides ? wl : wr };
   });
   return finishModel(rows, {
     status: "real", closed: true, rmse: fit.rmse, attribution: data.attribution || null,
     reverse: fit.reverse, apexes: Array.isArray(data.apexes) ? data.apexes : null,
-  }, lines3D);
+  }, lines);
 }

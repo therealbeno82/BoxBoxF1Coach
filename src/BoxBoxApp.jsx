@@ -660,7 +660,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
     const { lapDistance, lapPct, lapNumber, throttle, brake, steer, speed, gear, ersMode, ersDeploy, lapTime,
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
             setup, tyreVisual, tyreActual, tyreAge, tyreWear, weather, trackTemp, airTemp,
-            worldX, worldY, worldZ,
+            worldX, worldZ,
             sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
             tyreSurfaceTemps, tyreInnerTemps } = tel;
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
@@ -856,7 +856,6 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType) {
       if (tCarc > 0) bin.tyreCarc = Math.round(tCarc);
       if (typeof worldX === "number" && typeof worldZ === "number" && isFinite(worldX) && isFinite(worldZ)) {
         bin.x = worldX; bin.z = worldZ;
-        if (typeof worldY === "number" && isFinite(worldY)) bin.y = worldY; // elevation → 3D view
       }
       buf.bins.set(Math.round(lapDistance / 10), bin);
     }
@@ -1638,7 +1637,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     }
     rec.lastX = worldX; rec.lastZ = worldZ;
     const bin = { dist: lapDistance || 0, pct: lapPct || 0, x: worldX, z: worldZ };
-    if (typeof tel.worldY === "number" && isFinite(tel.worldY)) bin.y = tel.worldY;
     const before = rec.bins.size; // read AFTER any clear above, so a wipe counts
     rec.bins.set(Math.round((lapDistance || 0) / 12), bin);
     if (rec.bins.size !== before) setPathVersion(v => v + 1);
