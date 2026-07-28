@@ -53,11 +53,25 @@ export function tyreColor(tyre) {
 }
 
 // Worst-wheel wear % for a lap's tyre tag — the number that actually limits a
-// stint, so it's what the lap log shows. null when the lap carries no wear data
-// (laps recorded before wear was collected, or a game that never sent Car Damage).
+// stint. null when the lap carries no wear data (laps recorded before wear was
+// collected, or a game that never sent Car Damage).
 export function tyreWearPct(tyre) {
   const w = tyre?.wear;
   if (!Array.isArray(w) || w.length !== 4) return null;
   const max = Math.max(...w.map((v) => (typeof v === "number" && isFinite(v) ? v : 0)));
   return isFinite(max) ? max : null;
+}
+
+// Per-wheel wear % for a lap's tyre tag, as { fl, fr, rl, rr } — what the lap log
+// actually prints, since a front-limited stint and a rear-limited one need
+// opposite fixes. The stored array is the game's Car Damage wheel order
+// (RL RR FL FR); this is the only place that ordering is decoded. null when the
+// lap carries no wear data.
+export function tyreWearWheels(tyre) {
+  const w = tyre?.wear;
+  if (!Array.isArray(w) || w.length !== 4) return null;
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+  const [rl, rr, fl, fr] = w.map(num);
+  if (rl == null && rr == null && fl == null && fr == null) return null;
+  return { fl, fr, rl, rr };
 }

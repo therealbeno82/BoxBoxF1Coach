@@ -9,11 +9,19 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
 import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
-import { tyreCondition, tyreLabel, tyreColor, tyreWearPct } from "../../lib/tyres.js";
+import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from "../../lib/tyres.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 const SECTOR_GREY = C.textFaint; // F1 "no time set yet" — neutral grey sector bar
+
+// The four corners of the car, read out as a 2×2 the way they sit on the car —
+// fronts on top, left then right — so a lap row stays one line high and which
+// end is going off is obvious at a glance. `key` indexes tyreWearWheels' output.
+const WHEELS = [["FL", "fl"], ["FR", "fr"], ["RL", "rl"], ["RR", "rr"]];
+// Wear bands shared by every wheel readout — amber once a tyre is past its best,
+// red when it's the thing ending the stint.
+const wearColor = (w) => (w >= 60 ? C.red : w >= 35 ? C.yellow : C.textDim);
 
 function Kpi({ label, value, unit, color }) {
   return (
@@ -76,9 +84,12 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   const secs = Array.isArray(l.sectorTimes) ? l.sectorTimes : [null, null, null];
   const tyre = tyreLabel(l.tyre);
   const wear = tyreWearPct(l.tyre);
+  const wheels = tyreWearWheels(l.tyre);
   const tCol = tyreColor(l.tyre) || C.textFaint;
+  // The row wraps rather than spilling: with the per-wheel tyre readout it is wide,
+  // and the lap panel narrows beside the track map on a small window.
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12,
+    <div style={{ display: "flex", alignItems: "center", columnGap: 10, flexWrap: "wrap", rowGap: 6,
       background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
       <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
       {invalid && (
@@ -104,33 +115,48 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
           );
         })}
       </div>
-      {/* Tyre the lap was set on + its wear at the flag — the strategy half of the
-          row, so a stint's degradation reads straight down the list. Compound
-          colours carry data meaning, so they stay fixed (lib/tyres.js). */}
+      {/* Tyre the lap was set on + its wear at the flag, per wheel — the strategy
+          half of the row, so a stint's degradation reads straight down the list
+          and a front- vs rear-limited car is obvious. Compound colours carry data
+          meaning, so they stay fixed (lib/tyres.js). */}
       {tyre && (
-        <span title={`${tyre}${l.tyre?.age ? ` · ${l.tyre.age} laps old` : ""}${wear != null ? ` · ${wear.toFixed(1)}% worn (worst wheel)` : ""}`}
+        <span title={`${tyre}${l.tyre?.age ? ` · ${l.tyre.age} laps old` : ""}${wear != null ? ` · worst wheel ${wear.toFixed(1)}%` : ""}`}
           style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
           <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: tCol, boxShadow: `0 0 6px ${tCol}66` }} />
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: C.textMid }}>{tyre}</span>
-          {wear != null && (
-            <span style={{ fontFamily: FONT.mono, fontSize: 10, fontWeight: 700,
-              color: wear >= 60 ? C.red : wear >= 35 ? C.yellow : C.textDim }}>{wear.toFixed(0)}%</span>
+          {wheels && (
+            <span style={{ display: "grid", gridTemplateColumns: "auto auto", columnGap: 8, rowGap: 1, marginLeft: 1 }}>
+              {WHEELS.map(([label, key]) => {
+                const w = wheels[key];
+                return (
+                  <span key={key} style={{ display: "inline-flex", alignItems: "baseline", gap: 3 }}>
+                    <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: C.textFaint }}>{label}</span>
+                    <span style={{ marginLeft: "auto", fontFamily: FONT.mono, fontSize: 10, fontWeight: 700, lineHeight: 1.15, color: w == null ? C.textFaint : wearColor(w) }}>
+                      {w == null ? "—" : `${w.toFixed(0)}%`}
+                    </span>
+                  </span>
+                );
+              })}
+            </span>
           )}
         </span>
       )}
-      <span style={{ flex: 1 }} />
-      <span style={{ flex: "none", color: C.textFaintest }}>–</span>
-      <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
-        {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
+      {/* Gap-to-best + the setup button ride together at the right end, so when the
+          row wraps they move as one block instead of stranding the button alone. */}
+      <span style={{ flex: "none", marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 10 }}>
+        <span style={{ color: C.textFaintest }}>–</span>
+        <span style={{ fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
+          {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
+        </span>
+        <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
+          flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
+          borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
+          cursor: l.setup ? "pointer" : "default", opacity: l.setup ? 1 : 0.5 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+          </svg>
+        </button>
       </span>
-      <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
-        justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
-        borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
-        cursor: l.setup ? "pointer" : "default", opacity: l.setup ? 1 : 0.5 }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-        </svg>
-      </button>
     </div>
   );
 }
