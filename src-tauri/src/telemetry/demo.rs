@@ -16,8 +16,8 @@
 //!   • forces + slips — from the recorded lateral/longitudinal g (which the build
 //!     script measured off the world path and the speed trace), so the wheel
 //!     loads up in the real corners at the real moments;
-//!   • ERS state of charge, rpm, tyre wear — plausible models around the real
-//!     deployment, gear/speed and stint age.
+//!   • ERS state of charge, rpm, tyre wear, fuel — plausible models around the
+//!     real deployment, gear/speed, stint age and throttle trace.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
@@ -32,6 +32,15 @@ const SESSION_JSON: &str = include_str!("../../demo/session.json");
 
 /// Peak MGU-K recovery under braking (W) — 2026 regulations.
 const HARVEST_WATTS: f32 = 350_000.0;
+
+/// Fuel model. A recorded lap carries no fuel channel, so burn it off the throttle
+/// trace — the recorded channel that actually drives consumption — at a rate that
+/// lands a lap around `FUEL_PER_LAP`. The tank is filled for the race distance plus
+/// a small margin, so the lap log's delta starts just in hand and then wanders with
+/// how hard the laps are actually driven.
+const FUEL_PER_LAP: f32 = 1.9; // kg
+const FUEL_BURN_KG_S: f32 = 0.030; // kg/s at the modelled throttle factor
+const FUEL_MARGIN: f32 = 0.6; // kg over the race distance in the tank at the start
 
 #[derive(Deserialize)]
 pub struct DemoSession {
@@ -142,6 +151,9 @@ pub struct Replay {
     last_lap_time: f32,
     /// Integrated ERS store (J) — see `tick`.
     ers_store: f32,
+    /// Modelled fuel in the tank (kg). `None` until the first tick, which is where
+    /// the race distance (and so the start load) is first known.
+    fuel: Option<f32>,
 }
 
 impl Default for Replay {
@@ -153,6 +165,7 @@ impl Default for Replay {
             session_uid: 1, // non-zero: the UI keys its drive session on this
             last_lap_time: 0.0,
             ers_store: MAX_ERS_JOULES,
+            fuel: None,
         }
     }
 }
@@ -187,6 +200,7 @@ impl Replay {
             if self.lap >= s.laps.len() {
                 self.lap = 0;
                 self.session_uid += 1; // replay wrapped → a fresh drive session
+                self.fuel = None; // …which starts on a full race load again
             }
         }
         let lap = &s.laps[self.lap];
@@ -280,6 +294,20 @@ impl Replay {
         for i in 0..4 {
             l.tyre_wear[i] = laps_on_set * 1.0 + i as f32 * 0.4;
         }
+
+        // ── Fuel: not recorded. Burn it off the throttle trace at the calibrated
+        // rate, from a tank filled for the race distance plus a margin. The laps-in-
+        // hand delta is then the same arithmetic the game's MFD does — fuel left
+        // divided by a lap's worth, less the laps still to run — so a hard stint
+        // eats into it and a quiet one gives it back.
+        let start_fuel = s.laps.len() as f32 * FUEL_PER_LAP + FUEL_MARGIN;
+        let fuel = (self.fuel.unwrap_or(start_fuel)
+            - FUEL_BURN_KG_S * (0.25 + 0.75 * l.throttle) * dt)
+            .max(0.0);
+        self.fuel = Some(fuel);
+        l.fuel_in_tank = fuel;
+        let laps_left = (s.laps.len() - self.lap) as f32 - lap_frac;
+        l.fuel_remaining_laps = fuel / FUEL_PER_LAP - laps_left;
 
         // ── ERS state of charge: not recorded either, but deployment is — so
         // integrate it, and harvest under braking. Wanders like the real thing

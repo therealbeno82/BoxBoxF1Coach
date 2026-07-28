@@ -51,7 +51,12 @@ pub struct Latest {
     pub tyre_surface_temps: [u8; 4],
     pub tyre_inner_temps: [u8; 4],
 
-    // ── Car Status (ERS + tyres) ──
+    // ── Car Status (fuel + ERS + tyres) ──
+    /// Fuel currently in the tank (kg).
+    pub fuel_in_tank: f32,
+    /// The MFD's fuel figure: laps of fuel in hand *against what is left to run*
+    /// — already a delta, negative when the car is short.
+    pub fuel_remaining_laps: f32,
     pub ers_mode: u8,
     pub ers_store_energy: f32,
     pub ers_deployed_this_lap: f32,
@@ -132,6 +137,8 @@ impl Default for Latest {
             rpm: 0,
             tyre_surface_temps: [0; 4],
             tyre_inner_temps: [0; 4],
+            fuel_in_tank: 0.0,
+            fuel_remaining_laps: 0.0,
             ers_mode: 0,
             ers_store_energy: MAX_ERS_JOULES * 0.5,
             ers_deployed_this_lap: 0.0,
@@ -262,6 +269,10 @@ pub struct Snapshot {
     pub tyreInnerTemps: [u8; 4],
     /// Per-wheel tyre wear (%), wheel order RL RR FL FR.
     pub tyreWear: [f32; 4],
+    /// Fuel in the tank (kg) and the MFD's laps-in-hand delta (negative = short).
+    /// The lap recorder diffs the tank across a lap to get what that lap burned.
+    pub fuelInTank: f32,
+    pub fuelRemainingLaps: f32,
     /// Session conditions: weather code (0 clear … 5 storm) + temps (°C).
     pub weather: u8,
     pub trackTemp: i8,
@@ -329,6 +340,8 @@ impl Snapshot {
             tyreSurfaceTemps: l.tyre_surface_temps,
             tyreInnerTemps: l.tyre_inner_temps,
             tyreWear: l.tyre_wear,
+            fuelInTank: l.fuel_in_tank,
+            fuelRemainingLaps: l.fuel_remaining_laps,
             weather: l.weather,
             trackTemp: l.track_temp,
             airTemp: l.air_temp,

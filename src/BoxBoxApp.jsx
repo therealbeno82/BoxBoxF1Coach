@@ -617,7 +617,7 @@ const runMeta = (m) => ({
 
 function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false) {
   const [storedLaps, setStoredLaps] = useState([]);
-  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
+  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
   const lapNumRef = useRef(0);
   // The run (session + session type + track — see lapRunKey) the lap counter is
   // currently scoped to. Lap numbering restarts at 1 whenever that changes: a fresh
@@ -644,6 +644,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     let cancelled = false;
     const buf = bufRef.current;
     buf.bins.clear(); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+    buf.fuelStart = null; buf.lastFuel = null; buf.lastFuelDelta = null;
     buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     if (!driver) { setStoredLaps([]); lapNumRef.current = 0; lapNumSessionRef.current = null; return; }
     lapStore.getLaps(driver).then(laps => {
@@ -661,7 +662,8 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   useEffect(() => {
     const { lapDistance, lapPct, lapNumber, throttle, brake, steer, speed, gear, ersMode, ersDeploy, lapTime,
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
-            setup, tyreVisual, tyreActual, tyreAge, tyreWear, weather, trackTemp, airTemp,
+            setup, tyreVisual, tyreActual, tyreAge, tyreWear, fuelInTank, fuelRemainingLaps,
+            weather, trackTemp, airTemp,
             worldX, worldZ,
             sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
             tyreSurfaceTemps, tyreInnerTemps } = tel;
@@ -739,6 +741,16 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         const recLapLen = samples.length ? samples[samples.length - 1].dist : 0;
         const sectors = (recLapLen > 0 && sector2Pct > 0 && sector3Pct > sector2Pct && sector3Pct < 1)
           ? [sector2Pct * recLapLen, sector3Pct * recLapLen] : null;
+        // Fuel burned across the lap: the tank at the lap's start less the last reading
+        // before the line. Dropped unless the start reading really is from the start of
+        // this lap AND the tank went DOWN by a lap-sized amount — a mid-lap join, a
+        // flashback, a session reset or a refuel (other categories) all move the level
+        // in ways that would print a nonsense figure. The MFD delta is kept
+        // independently: it's a single reading at the flag, not a diff.
+        const burned = (buf.fuelStart != null && buf.fuelStart.pct < 0.15 && buf.lastFuel != null)
+          ? buf.fuelStart.kg - buf.lastFuel : null;
+        const fuelUsed = (burned != null && burned > 0 && burned < 20) ? Math.round(burned * 100) / 100 : null;
+        const fuelDelta = (typeof buf.lastFuelDelta === "number") ? Math.round(buf.lastFuelDelta * 100) / 100 : null;
         const lap = {
           id: `lap-${crypto.randomUUID()}`, // UUID, not Date.now(): two laps closed in the same ms would collide
 
@@ -764,6 +776,8 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
           },
           setup: buf.lastSetup || null, // the garage setup active while this lap was driven
           tyre: buf.lastTyre || null,   // compound worn on this lap → dry/wet PB split (lib/tyres.js)
+          // kg burned on this lap + laps of fuel in hand at the flag (lib/fuel.js).
+          fuel: (fuelUsed != null || fuelDelta != null) ? { used: fuelUsed, delta: fuelDelta } : null,
           samples,
         };
         setStoredLaps(prev => [...prev, lap]); // persisted history is uncapped per driver
@@ -771,6 +785,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       }
       buf.bins.clear();
       buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+      buf.fuelStart = null; // re-armed at this tick's fuel capture = the new lap's start level
       buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     }
 
@@ -804,6 +819,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
           ((lapNumber > buf.lastLapNum && buf.lastLapNum >= 0) || enteredCleanLap)) {
         buf.bins.clear();
         buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+        buf.fuelStart = null;
         buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
       }
       buf.lastLapNum = lapNumber;
@@ -846,6 +862,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       const wear = (Array.isArray(tyreWear) && tyreWear.length === 4 && tyreWear.some(v => v > 0))
         ? tyreWear.map(v => Math.round(v * 10) / 10) : (buf.lastTyre?.wear ?? null);
       buf.lastTyre = { visual: tyreVisual, actual: tyreActual ?? -1, age: tyreAge ?? 0, ...(wear ? { wear } : {}) };
+    }
+    // Fuel. The tank level is a running total, so what a LAP burned is the level at
+    // its first sample less the level at its last — fuelStart is cleared at every lap
+    // boundary and re-armed here on the first tick of the new lap. Its lap fraction is
+    // kept too: connecting (or switching to demo mode) mid-lap arms it halfway round,
+    // and half a lap's burn reported as a lap's is worse than no figure at all.
+    // The delta rides along as the game's own MFD figure (laps in hand vs what's left
+    // to run), read at the flag like the tyre wear above.
+    if (typeof fuelInTank === "number" && isFinite(fuelInTank) && fuelInTank > 0) {
+      if (buf.fuelStart == null) buf.fuelStart = { kg: fuelInTank, pct: lapPct };
+      buf.lastFuel = fuelInTank;
+    }
+    if (typeof fuelRemainingLaps === "number" && isFinite(fuelRemainingLaps)) {
+      buf.lastFuelDelta = fuelRemainingLaps;
     }
     if (typeof lapDistance === "number" && isFinite(lapDistance)) {
       // x/z (world position) let a lap draw its OWN track-map outline on the Compare

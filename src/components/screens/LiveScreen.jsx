@@ -10,6 +10,7 @@ import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
 import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
 import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from "../../lib/tyres.js";
+import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -22,6 +23,12 @@ const WHEELS = [["FL", "fl"], ["FR", "fr"], ["RL", "rl"], ["RR", "rr"]];
 // Wear bands shared by every wheel readout — amber once a tyre is past its best,
 // red when it's the thing ending the stint.
 const wearColor = (w) => (w >= 60 ? C.red : w >= 35 ? C.yellow : C.textDim);
+// The fuel delta is laps in hand against what's left to run, so 0 is exactly
+// enough: red once the car is short and has to save, amber on a thin margin.
+const fuelColor = (d) => (d < 0 ? C.red : d < 0.5 ? C.yellow : C.textDim);
+// Shared label / value type for the small two-column readouts (wear, fuel).
+const microLabel = { fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: C.textFaint };
+const microValue = { fontFamily: FONT.mono, fontSize: 10, fontWeight: 700, lineHeight: 1.15 };
 
 function Kpi({ label, value, unit, color }) {
   return (
@@ -76,7 +83,7 @@ function RunHeader({ run }) {
 
 // One lap in the log: number, time, the three sector splits (F1 timing-tower
 // colours via the `sectorColor` the screen owns), the tyre it was set on with its
-// wear, and the gap to the run's best.
+// wear, the fuel it burned, and the gap to the run's best.
 function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   const invalid = !!l.invalid;
   const isPB = !invalid && best != null && Math.abs(l.lapTime - best) < 1e-6;
@@ -86,10 +93,19 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   const wear = tyreWearPct(l.tyre);
   const wheels = tyreWearWheels(l.tyre);
   const tCol = tyreColor(l.tyre) || C.textFaint;
-  // The row wraps rather than spilling: with the per-wheel tyre readout it is wide,
-  // and the lap panel narrows beside the track map on a small window.
+  const fuel = lapFuel(l);
+  const fuelTip = fuel && ["Fuel",
+    fuel.used != null ? `${fuel.used.toFixed(2)} kg burned on this lap` : null,
+    fuel.delta != null ? (fuel.delta >= 0
+      ? `${fuel.delta.toFixed(1)} laps of fuel in hand at the flag`
+      : `${Math.abs(fuel.delta).toFixed(1)} laps short at the flag — save or short-fill`) : null,
+  ].filter(Boolean).join(" · ");
+  // The row wraps rather than spilling: with the per-wheel wear and the fuel readout
+  // it is wide, and the lap panel narrows beside the track map on a small window. The
+  // gaps below are tight for the same reason — every few pixels saved is another
+  // window width at which the whole lap still reads on one line.
   return (
-    <div style={{ display: "flex", alignItems: "center", columnGap: 10, flexWrap: "wrap", rowGap: 6,
+    <div style={{ display: "flex", alignItems: "center", columnGap: 8, flexWrap: "wrap", rowGap: 6,
       background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
       <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
       {invalid && (
@@ -101,9 +117,8 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
         <span title="Replayed by Demo Mode — never counts toward personal bests, records or stats" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.yellow, textTransform: "uppercase", border: `1px solid ${C.yellow}`, borderRadius: 5, padding: "1px 5px" }}>Demo</span>
       )}
       <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
-      <span style={{ flex: "none", color: C.textFaintest }}>–</span>
       {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
-      <div style={{ flex: "none", display: "flex", gap: 14, opacity: invalid ? 0.5 : 1 }}>
+      <div style={{ flex: "none", display: "flex", gap: 10, marginLeft: 2, opacity: invalid ? 0.5 : 1 }}>
         {[0, 1, 2].map((i) => {
           const v = secs[i];
           const ok = typeof v === "number" && v > 0;
@@ -130,8 +145,8 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
                 const w = wheels[key];
                 return (
                   <span key={key} style={{ display: "inline-flex", alignItems: "baseline", gap: 3 }}>
-                    <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: C.textFaint }}>{label}</span>
-                    <span style={{ marginLeft: "auto", fontFamily: FONT.mono, fontSize: 10, fontWeight: 700, lineHeight: 1.15, color: w == null ? C.textFaint : wearColor(w) }}>
+                    <span style={microLabel}>{label}</span>
+                    <span style={{ ...microValue, marginLeft: "auto", color: w == null ? C.textFaint : wearColor(w) }}>
                       {w == null ? "—" : `${w.toFixed(0)}%`}
                     </span>
                   </span>
@@ -141,10 +156,23 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
           )}
         </span>
       )}
+      {/* Fuel, read the same way: kg the lap burned, and the laps in hand the game's own
+          MFD showed at the flag (negative = short, so the next laps have to save). Sits
+          beside the wear so the two things a stint is limited by read together. The units
+          live in the tooltip — spelling them out on every row wraps it onto two lines. */}
+      {fuel && (
+        <span title={fuelTip} style={{ flex: "none", display: "grid", gridTemplateColumns: "auto auto", columnGap: 5, rowGap: 1 }}>
+          <span style={microLabel}>USED</span>
+          <span style={{ ...microValue, color: C.textDim }}>{fuel.used == null ? "—" : fuel.used.toFixed(2)}</span>
+          <span style={microLabel}>DELTA</span>
+          <span style={{ ...microValue, color: fuel.delta == null ? C.textFaint : fuelColor(fuel.delta) }}>
+            {fuel.delta == null ? "—" : fuelDeltaLabel(fuel.delta)}
+          </span>
+        </span>
+      )}
       {/* Gap-to-best + the setup button ride together at the right end, so when the
           row wraps they move as one block instead of stranding the button alone. */}
-      <span style={{ flex: "none", marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 10 }}>
-        <span style={{ color: C.textFaintest }}>–</span>
+      <span style={{ flex: "none", marginLeft: "auto", paddingLeft: 6, display: "inline-flex", alignItems: "center", gap: 8 }}>
         <span style={{ fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
           {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
         </span>

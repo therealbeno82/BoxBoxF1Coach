@@ -95,10 +95,16 @@ pub fn parse_car_telemetry(payload: &[u8], h: &Header, l: &mut Latest) -> Option
     Some(())
 }
 
-// ── Car Status (id 7): ERS + tyre compound/age ──
+// ── Car Status (id 7): fuel + ERS + tyre compound/age ──
 pub fn parse_car_status(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
     let stride = if is26(h) { CAR_STATUS_STRIDE_2026 } else { CAR_STATUS_STRIDE_2025 };
     let base = h.player_car_index as usize * stride;
+    // Fuel: tank level (kg) @5, and @13 the game's own MFD figure — fuel remaining
+    // expressed in LAPS *relative to what is left to run*, so it is already a delta
+    // and goes negative when the car is short. Both sit ahead of the 2026 struct
+    // insertion (at +50), so one pair of offsets serves both formats.
+    l.fuel_in_tank = f32_at(payload, base + 5)?;
+    l.fuel_remaining_laps = f32_at(payload, base + 13)?;
     l.tyre_actual = u8_at(payload, base + 25)? as i8;
     l.tyre_visual = u8_at(payload, base + 26)? as i8;
     l.tyre_age = u8_at(payload, base + 27)?;
@@ -365,6 +371,43 @@ mod tests {
         assert_eq!(l.speed_kmh, 305.0);
         assert_eq!(l.gear, 7);
         assert_eq!(l.tyre_surface_temps[0], 99);
+    }
+
+    // Fuel and ERS live on opposite sides of the 2026 struct insertion, so pin both
+    // formats: the fuel offsets must NOT move, the ERS ones must.
+    fn car_status_slice(stride: usize, player: usize) -> Vec<u8> {
+        let mut p = vec![0u8; stride * 24];
+        let base = player * stride;
+        put_f32(&mut p, base + 5, 42.5); // fuelInTank (kg)
+        put_f32(&mut p, base + 13, -0.7); // fuelRemainingLaps (laps in hand)
+        p[base + 25] = 20; // actual compound (C3)
+        p[base + 26] = 17; // visual compound (Medium)
+        p[base + 27] = 4; // tyre age
+        p
+    }
+
+    #[test]
+    fn car_status_fuel_2026() {
+        let mut p = car_status_slice(CAR_STATUS_STRIDE_2026, 1);
+        put_f32(&mut p, CAR_STATUS_STRIDE_2026 + 54, 3000.0); // 2026 ersDeployedThisLap
+        let mut l = Latest::default();
+        assert!(parse_car_status(&p, &hdr(7, 1), &mut l).is_some());
+        assert!((l.fuel_in_tank - 42.5).abs() < 1e-6);
+        assert!((l.fuel_remaining_laps + 0.7).abs() < 1e-6);
+        assert_eq!(l.tyre_visual, 17);
+        assert_eq!(l.tyre_age, 4);
+        assert!((l.ers_deployed_this_lap - 3000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn car_status_fuel_2025_same_offsets() {
+        let p = car_status_slice(CAR_STATUS_STRIDE_2025, 1);
+        let mut h = hdr(7, 1);
+        h.packet_format = 2025;
+        let mut l = Latest::default();
+        assert!(parse_car_status(&p, &h, &mut l).is_some());
+        assert!((l.fuel_in_tank - 42.5).abs() < 1e-6);
+        assert!((l.fuel_remaining_laps + 0.7).abs() < 1e-6);
     }
 
     #[test]
