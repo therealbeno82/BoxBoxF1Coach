@@ -152,6 +152,17 @@ fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
     let _ = handle.cmd_tx.send(FfbCommand::ResetPeak);
 }
 
+// ── File export ───────────────────────────────────────────────────────────────
+
+/// Write UTF-8 text to `path`, which the frontend obtained from the dialog
+/// plugin's Save dialog. Writing here (rather than via the fs plugin) keeps the
+/// destination unrestricted without opening an fs scope — the path is one the
+/// user just picked, so it's exactly where they want the file.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Couldn't save the file: {e}"))
+}
+
 // ── Emitter: bridge in-process state to the webview via Tauri events ─────────
 // Samples the shared state at ~30 Hz but only emits what actually changed:
 // every writer stores a fresh Arc, so Arc::ptr_eq against the last-emitted
@@ -226,6 +237,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(CoreState {
             core: Mutex::new(core),
         })
@@ -245,6 +257,7 @@ pub fn run() {
             get_ffb_defaults,
             set_ffb_enabled,
             reset_ffb_peak,
+            write_text_file,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -28,6 +28,10 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
+# Native "Save As" file dialog so exported laps/sessions go where the driver
+# chooses instead of silently landing in Downloads. The chosen path is written
+# by our own `write_text_file` command (below), so no fs-plugin scope is needed.
+tauri-plugin-dialog = "2"
 # Lock-free hand-off of the latest telemetry snapshot from the UDP thread to the
 # FFB thread (and the UI emitter) — no mutex on the real-time read path.
 arc-swap = "1"
