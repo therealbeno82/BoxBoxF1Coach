@@ -1613,9 +1613,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         : z.type === "lico" ? [520,0.13,"triangle"]
         : z.type === "lift" ? [620,0.11,"triangle"]
         : [440,0.15,"square"],
-    speak: z.type === "brake" ? `Brake — ${z.name}`
-         : z.type === "lico"  ? `Lift and coast — ${z.name}`
-         : z.type === "lift"  ? `Lift — ${z.name}`
+    speak: z.type === "brake" ? "Brake"
+         : z.type === "lico"  ? "Lift, coast"
+         : z.type === "lift"  ? "Lift"
          : `${ERS_MODES[z.ersMode]}`,
     cue: z.type === "brake" ? `🛑 BRAKE: ${z.name}${z.note ? " — " + z.note : ""}`
        : z.type === "lico"  ? `〰️ LIFT & COAST: ${z.name}`
@@ -1628,7 +1628,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // track length so seconds-of-lead can be converted to a lap-fraction.
   const announcedRef    = useRef({ set: new Set(), lastPct: 0 });
   const lastTrackLenRef = useRef(5000);
-  const lastBatteryCallRef = useRef(0);
   // Live track map: world positions accumulated into ~12 m distance bins as you
   // drive, so the map draws the actual circuit. `pathVersion` (declared with the
   // accumulating effect below) is what re-renders it when a new bin lands.
@@ -1642,7 +1641,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   useEffect(() => {
     if (voicePrefs.engine !== "kokoro" || kokoro.status !== "ready") return;
     const phrases = announceCalls.map(c => c.speak);
-    phrases.push("Battery critical — conserve ERS");
     kokoro.prewarm(phrases);
   }, [voicePrefs.engine, voicePrefs.kokoroVoice, voicePrefs.rate, kokoro.status, announceCalls]);
 
@@ -2089,18 +2087,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       speak(call.speak, call.type === "ers" ? "normal" : "urgent");
       addCue(call.cue, call.type);
     }
-
-    // Battery warning: only while actually driving a timed lap (the idle EMPTY_TEL
-    // reads 0% battery), at most once per 30 s. Deliberately OUTSIDE the reference
-    // gate above — it's grounded in the car's own state, not in a comparison, so it
-    // stays useful even when the loaded reference has nothing to say about this lap.
-    if (wsConnected && tel.lapTime > 0 && tel.ersBattery < 15 &&
-        Date.now() - lastBatteryCallRef.current > 30000) {
-      lastBatteryCallRef.current = Date.now();
-      speak("Battery critical — conserve ERS", "urgent");
-      addCue("⚠️ Battery critical", "info");
-    }
-  }, [tel.lapPct, tel.speed, tel.lapDistance, tel.lapTime, tel.ersBattery,
+  }, [tel.lapPct, tel.speed, tel.lapDistance, tel.lapTime,
       tel.gamePaused, tel.driverStatus, tel.pitStatus, wsConnected,
       audioOn, liveCalls, liveCues, leadSeconds, speak, beep, addCue]);
 
