@@ -1,7 +1,7 @@
 {
   "name": "box-box",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "type": "module",
   "description": "EA F1 driving coach — compares your telemetry against Esports reference traces and coaches you with an LLM race engineer.",
   "scripts": {
