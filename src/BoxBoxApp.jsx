@@ -965,8 +965,10 @@ function buildMapGeometry(path, W, H, colorAt) {
   const pad = 18;
   const scale = Math.min((W - 2 * pad) / dataW, (H - 2 * pad) / dataH);
   const offX = (W - dataW * scale) / 2, offY = (H - dataH * scale) / 2;
-  // Flip Z so increasing Z draws upward (more map-like).
-  const proj = (x, z) => [offX + (x - minX) * scale, offY + (maxZ - z) * scale];
+  // Map world (x, z) straight to screen (x grows right, z grows down). Do NOT flip
+  // Z here — the Analytics map (DrivingLinesView) plots z directly as screen-Y, so
+  // flipping it made the Live/Dashboard/exported maps a mirror image of it.
+  const proj = (x, z) => [offX + (x - minX) * scale, offY + (z - minZ) * scale];
 
   const screen = path.map(p => ({ src: p, xy: proj(p.x, p.z) }));
   const segs = [];
