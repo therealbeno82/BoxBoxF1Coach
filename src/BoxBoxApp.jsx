@@ -1831,15 +1831,30 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // produced confident advice about deltas the driver could do nothing about.
   // Each rule fails open on missing tags, so untagged history still gets coached.
   //
-  // TWO verdicts, deliberately: the LIVE one is always about the lap being driven
-  // now, the COACH one about whichever lap is on the Coach Log. They're the same
-  // object until the driver pins an older lap — and they must not be merged, since
-  // the live verdict also silences the real-time calls (below). Reviewing a wet lap
-  // from earlier in the session must never mute the calls for the dry lap in
-  // progress.
+  // TWO verdicts, deliberately: the LIVE one is about the car on track RIGHT NOW,
+  // the COACH one about whichever lap is on the Coach Log. They must not be merged,
+  // since the live verdict also silences the real-time calls (below). Reviewing a
+  // wet lap from earlier in the session must never mute the calls for the dry lap
+  // in progress.
+  //
+  // The live side reads the compound and game mode straight off the telemetry
+  // snapshot rather than off the newest STORED lap. Two reasons:
+  //   • It's fresher — a stop for a different compound is seen on the out-lap
+  //     instead of a lap later, which is when the calls are most wrong.
+  //   • It's honest when nobody is driving. Reloading a saved session leaves the
+  //     newest stored lap sitting at the end of last night's race, so picking a
+  //     QUALIFYING reference to review a qualifying lap announced "corner calls
+  //     muted" against a race lap the driver hadn't asked about. Idle, every field
+  //     below is null, every rule fails open, and only a wrong-circuit reference
+  //     can still flag — which is exactly what should flag with no lap running.
+  const liveProfileLap = useMemo(() => ({
+    tyre: { visual: rawTel.tyreVisual },
+    meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
+  }), [rawTel.tyreVisual, drivenTrackName, sessionTypeLabel]);
+
   const liveRefMatch = useMemo(
-    () => matchReference(latestTrackLap, activeTrace, { drivenTrack: drivenTrackName }),
-    [latestTrackLap, activeTrace, drivenTrackName]);
+    () => matchReference(liveProfileLap, activeTrace, { drivenTrack: drivenTrackName }),
+    [liveProfileLap, activeTrace, drivenTrackName]);
   const liveRefMismatch = liveRefMatch && !liveRefMatch.ok ? liveRefMatch : null;
 
   const refMatch = useMemo(
