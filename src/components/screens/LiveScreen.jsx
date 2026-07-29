@@ -555,7 +555,7 @@ export default function LiveScreen({
           so this row scrolls on its own rather than overflowing the fixed shell. */}
       <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap", overflowY: "auto" }}>
         {/* Track map */}
-        <div style={{ flex: "1.6 1 460px", minWidth: 320, maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "1 1 420px", minWidth: 320, maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
             <span style={eyebrow}>Live Track Map</span>
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -599,7 +599,7 @@ export default function LiveScreen({
         {/* maxHeight: a wrapping flex line sizes itself to its content, so without
             this cap a long lap list stretches the column (and the row) instead of
             scrolling inside the Session Laps panel below. */}
-        <div style={{ flex: "1 1 380px", minWidth: 330, minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ flex: "1 1 420px", minWidth: 330, minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ flex: 1, minHeight: 160, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
