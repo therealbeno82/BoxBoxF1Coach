@@ -12,6 +12,9 @@
 // same sector colours, Compare traces and coaching as it did live.
 
 import { tyreCondition } from "./tyres.js";
+import { inTauri } from "./env.js";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 
 // Lap time as a filename-safe, human-readable string, e.g. "1m27.345s". Windows
 // forbids ':' in filenames so we can't reuse the on-screen "1:27.345" form.
@@ -35,8 +38,10 @@ export function fileSafe(s, fallback) {
 
 // `hideSetup` lets the user share telemetry without disclosing their garage
 // loadout — the exported file then carries no setup block at all.
-export function exportLapToFile(lap, { hideSetup = false } = {}) {
-  if (!lap || !Array.isArray(lap.samples) || lap.samples.length === 0) return;
+// Async: opens a native Save dialog (see saveJson). Resolves true if the file
+// was written, false if there was nothing to save or the user cancelled.
+export async function exportLapToFile(lap, { hideSetup = false } = {}) {
+  if (!lap || !Array.isArray(lap.samples) || lap.samples.length === 0) return false;
 
   const payload = {
     meta: {
@@ -67,12 +72,38 @@ export function exportLapToFile(lap, { hideSetup = false } = {}) {
     lapTimeLabel(payload.meta.lapTime),
   ].join(" - ") + ".json";
 
-  downloadJson(payload, name);
+  return saveJson(payload, name);
 }
 
-// Trigger a browser download of `payload` as pretty-printed JSON named `name`.
-export function downloadJson(payload, name) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+// Save `payload` as pretty-printed JSON. Inside the Tauri app this opens a native
+// "Save As" dialog (default filename `name`) so the driver picks the folder, then
+// writes there via the write_text_file command. In a plain browser (`npm run dev`,
+// no IPC) it falls back to the old anchor-download into the Downloads folder.
+// Resolves true if a file was written, false if the user cancelled the dialog.
+export async function saveJson(payload, name) {
+  const text = JSON.stringify(payload, null, 2);
+  if (inTauri) {
+    try {
+      const path = await save({
+        defaultPath: name,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return false; // dialog cancelled
+      await invoke("write_text_file", { path, contents: text });
+      return true;
+    } catch (e) {
+      console.error("Save failed:", e);
+      return false;
+    }
+  }
+  downloadJson(text, name);
+  return true;
+}
+
+// Trigger a browser anchor-download of `text` as a file named `name`. The web-only
+// fallback for saveJson; the packaged app uses the native Save dialog instead.
+function downloadJson(text, name) {
+  const blob = new Blob([text], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -91,9 +122,10 @@ export function downloadJson(payload, name) {
 const SESSION_KIND = "f1coach-session";
 const SESSION_VERSION = 1;
 
-// Save every lap in `laps` to a single .json file. Returns false (a no-op) when
-// there's nothing to save. Filename: Driver - Track - Session - N laps - date.
-export function exportSessionToFile(laps, { driver, track, sessionType } = {}) {
+// Save every lap in `laps` to a single .json file via the native Save dialog.
+// Async. Resolves false when there's nothing to save OR the user cancelled the
+// dialog, true once written. Filename: Driver - Track - Session - N laps - date.
+export async function exportSessionToFile(laps, { driver, track, sessionType } = {}) {
   if (!Array.isArray(laps) || laps.length === 0) return false;
 
   const payload = {
@@ -119,8 +151,7 @@ export function exportSessionToFile(laps, { driver, track, sessionType } = {}) {
     dateTag,
   ].join(" - ") + ".json";
 
-  downloadJson(payload, name);
-  return true;
+  return saveJson(payload, name);
 }
 
 // Parse a session .json file's text into its laps array. Throws with a readable

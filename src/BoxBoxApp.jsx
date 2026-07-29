@@ -2006,8 +2006,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // shows exactly the loaded race, and a fresh lap id each so they never clobber
   // an existing lap. In-memory only — reviewing a saved session doesn't touch the
   // driver's persisted history; the file stays the durable copy.
-  const saveSession = () => {
-    const ok = exportSessionToFile(sessionLaps, {
+  const saveSession = async () => {
+    const ok = await exportSessionToFile(sessionLaps, {
       driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
     });
     if (ok) addCue(`💾 Saved ${sessionLaps.length} laps to file`, "info");

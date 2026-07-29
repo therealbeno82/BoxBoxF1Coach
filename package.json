@@ -18,6 +18,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-opener": "^2",
     "kokoro-js": "^1.2.1",
     "react": "^18.3.1",

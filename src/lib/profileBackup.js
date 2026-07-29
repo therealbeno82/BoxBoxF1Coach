@@ -18,14 +18,15 @@
 // the caller clears the old laps/maps first for a clean replace.
 
 import * as lapStore from "./lapStore.js";
-import { downloadJson, fileSafe } from "./lapExport.js";
+import { saveJson, fileSafe } from "./lapExport.js";
 
 const PROFILE_KIND = "boxbox-profile";
 const PROFILE_VERSION = 1;
 
 // Gather everything the driver `d` (a roster object { name, number, team, color,
-// prefs }) owns into one payload and download it. Returns { laps, trackMaps }
-// counts so the UI can report what was saved.
+// prefs }) owns into one payload and save it through the native Save dialog.
+// Returns { laps, trackMaps } counts so the UI can report what was saved, or
+// null if the user cancelled the dialog (nothing written).
 export async function exportProfile(d) {
   const name = (d?.name || "").trim();
   if (!name) throw new Error("No active driver to export.");
@@ -56,8 +57,8 @@ export async function exportProfile(d) {
 
   const dateTag = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, filename-safe
   const fileName = `${fileSafe(name, "Driver")} - profile - ${dateTag}.json`;
-  downloadJson(payload, fileName);
-  return payload.counts;
+  const saved = await saveJson(payload, fileName);
+  return saved ? payload.counts : null;
 }
 
 // Parse a profile file's text into its payload. Throws a readable message on

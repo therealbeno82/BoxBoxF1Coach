@@ -118,6 +118,7 @@ export default function SettingsScreen({
     setBackupBusy(true); setBackupMsg(null); setPendingImport(null);
     try {
       const c = await onExportProfile();
+      if (!c) return; // dialog cancelled — nothing written, no message
       const maps = c?.trackMaps ? `, ${c.trackMaps} track map${c.trackMaps === 1 ? "" : "s"}` : "";
       setBackupMsg({ kind: "ok", text: `Exported ${activeDriver} — ${lapWord(c?.laps || 0)}${maps}.` });
     } catch (e) { setBackupMsg({ kind: "err", text: e.message || "Export failed." }); }
