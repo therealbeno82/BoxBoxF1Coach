@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { C, FONT } from "./lib/ui/tokens.js";
 import { clamp } from "./lib/format.js";
 import { TRACKS } from "./lib/trackData.js";
+import { fileSafe, lapTimeLabel, saveJson } from "./lib/lapExport.js";
 
 // ─── CHANNEL DEFINITIONS (matching MoTeC colour conventions) ─────────────────
 const DEFAULT_CHANNELS = [
@@ -576,19 +577,24 @@ export default function TraceCalibrator({ onExit }) {
     };
   }, [extracted, channels, pixelToDistance, applyYCal, driverName, trackName, session, tyres, lapTimeStr, sectorBreaks, sectorTimeStrs, xCal]);
 
-  const downloadJson = () => {
+  // saveJson opens the native Save dialog in the app (anchor-download in plain
+  // `npm run dev`) so the driver picks the folder, like every other export.
+  // Resolves false when the dialog was cancelled — stay quiet then.
+  const downloadJson = async () => {
     const json = buildExportJson();
     if (!json) return;
-    const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${(driverName||"ref").replace(/\s+/g,"_")}_${(trackName||"track").replace(/\s+/g,"_")}_trace.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    showToast("JSON downloaded");
+    // Same naming shape as the app's own lap exports (lib/lapExport.js): the fields
+    // that decide whether a reference is comparable — session, tyre, lap time — read
+    // straight off the filename, so a folder of traces is sortable without opening any.
+    const name = [
+      fileSafe(json.meta.driver, "Reference Driver"),
+      fileSafe(json.meta.track, "Unknown Track"),
+      fileSafe(json.meta.session, "Session"),
+      fileSafe(json.meta.tyres, "Unknown"),
+      lapTimeLabel(json.meta.lapTime),
+      "trace",
+    ].join(" - ") + ".json";
+    if (await saveJson(json, name)) showToast("Trace JSON saved");
   };
 
   const showToast = (msg) => {

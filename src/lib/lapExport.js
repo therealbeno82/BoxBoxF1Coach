@@ -18,7 +18,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 
 // Lap time as a filename-safe, human-readable string, e.g. "1m27.345s". Windows
 // forbids ':' in filenames so we can't reuse the on-screen "1:27.345" form.
-function lapTimeLabel(sec) {
+export function lapTimeLabel(sec) {
   if (!sec || sec <= 0) return "no-time";
   const m = Math.floor(sec / 60);
   const s = (sec % 60).toFixed(3).padStart(6, "0");
