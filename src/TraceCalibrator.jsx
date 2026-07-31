@@ -343,12 +343,22 @@ export default function TraceCalibrator({ onExit }) {
   const lastPaint = useRef(null);  // last {x,y} painted, for interpolating fast drags
 
   // ── Image load ────────────────────────────────────────────────────────────
+  // The screenshot is the frame of reference for everything calibrated on top of it:
+  // band positions, eyedropped colours, X/Y anchors, sector breaks and the extracted
+  // curves are all pixel coordinates in THAT image. Carrying them over drew the old
+  // lap's traces across the new picture, so a new upload wipes the lot back to
+  // defaults and restarts at step 2. Typed lap metadata (driver, track, session,
+  // tyres, times) isn't image-derived, so it survives — the driver may well have
+  // filled it in on the upload panel just before picking the file.
   const handleFile = (e) => {
     const file = e.target.files[0];
+    // Clear the picker so re-selecting the same file still fires onChange
+    e.target.value = "";
     if (!file) return;
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      const prevUrl = imgSrc;
       setImgSize({ w: img.width, h: img.height });
       setImgSrc(url);
       imgRef.current = img;
@@ -361,7 +371,24 @@ export default function TraceCalibrator({ onExit }) {
       ctx.drawImage(img, 0, 0);
       canvasRef.current = canvas;
 
+      // Drop every calibration tied to the outgoing image
+      setChannels(DEFAULT_CHANNELS);
+      setXCal({ p1: null, p2: null, v1: "", v2: "" });
+      setYCals({});
+      setSectorBreaks({ p1: null, p2: null });
+      setExtracted(null);
+      setCalMode(null);
+      setEditChId(null);
+      setHoverPos(null);
+      painting.current = false;
+      lastPaint.current = null;
+
       setStep("bands");
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      showToast("Couldn't read that image — try a PNG or JPG");
     };
     img.src = url;
   };
