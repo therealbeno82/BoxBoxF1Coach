@@ -167,36 +167,45 @@ function sanitizeChannelValue(v, ch) {
 
 // ─── BAND EDITOR ──────────────────────────────────────────────────────────────
 
-function BandEditor({ channels, setChannels, imgHeight }) {
-  const dragging = useRef(null); // { id, edge: 'top'|'bot'|'move', startY, startBandY, startBandH }
+function BandEditor({ channels, setChannels, imgHeight, clientDyToFrac }) {
+  const dragging = useRef(null); // { id, edge: 'top'|'bot'|'move', startY, bandY0, bandH0 }
 
   const onMouseDown = (e, id, edge) => {
     e.preventDefault();
-    dragging.current = { id, edge, startY: e.clientY, ch: channels.find(c => c.id === id) };
+    const ch = channels.find(c => c.id === id);
+    if (!ch) return;
+    dragging.current = { id, edge, startY: e.clientY, bandY0: ch.bandY, bandH0: ch.bandH };
   };
 
   const onMouseMove = useCallback((e) => {
     if (!dragging.current) return;
-    const { id, edge, startY, ch } = dragging.current;
-    const dy = (e.clientY - startY) / imgHeight;
+    const { id, edge, startY, bandY0, bandH0 } = dragging.current;
+    // Mouse deltas are screen pixels; bands are fractions of the image. The image is
+    // usually drawn scaled down to fit, so divide by the on-screen scale or the band
+    // creeps along slower than the cursor.
+    //
+    // Measure the whole delta from where the drag began and apply it to the geometry
+    // it began with. Re-anchoring per event to the last *rendered* band instead meant
+    // any move arriving before React had re-rendered restarted from a stale position
+    // and lost its delta — which real mouse input does constantly.
+    const dy = clientDyToFrac(e.clientY - startY);
     setChannels(prev => prev.map(c => {
       if (c.id !== id) return c;
       if (edge === "top") {
-        const newTop = clamp(ch.bandY + dy, 0, ch.bandY + ch.bandH - 0.02);
-        return { ...c, bandY: newTop, bandH: ch.bandH - (newTop - ch.bandY) };
+        const newTop = clamp(bandY0 + dy, 0, bandY0 + bandH0 - 0.02);
+        return { ...c, bandY: newTop, bandH: bandH0 - (newTop - bandY0) };
       }
       if (edge === "bot") {
-        const newH = clamp(ch.bandH + dy, 0.02, 1 - ch.bandY);
+        const newH = clamp(bandH0 + dy, 0.02, 1 - bandY0);
         return { ...c, bandH: newH };
       }
       if (edge === "move") {
-        const newY = clamp(ch.bandY + dy, 0, 1 - ch.bandH);
+        const newY = clamp(bandY0 + dy, 0, 1 - bandH0);
         return { ...c, bandY: newY };
       }
       return c;
     }));
-    dragging.current = { ...dragging.current, startY: e.clientY, ch: channels.find(c => c.id === id) };
-  }, [channels, imgHeight, setChannels]);
+  }, [clientDyToFrac, setChannels]);
 
   const onMouseUp = useCallback(() => { dragging.current = null; }, []);
 
@@ -394,17 +403,26 @@ export default function TraceCalibrator({ onExit }) {
   };
 
   // ── SVG coordinate from mouse event ──────────────────────────────────────
+  // Ask the SVG itself for the screen→user transform rather than deriving it from
+  // the bounding box. The element's box isn't always the same shape as the viewBox
+  // (a scaled-down image, a scrolled container, a zoomed webview), and any mismatch
+  // there put the crosshair off the cursor everywhere except the exact centre.
   const svgCoord = (e) => {
     const svg = svgRef.current;
-    if (!svg) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    const scaleX = imgSize.w / rect.width;
-    const scaleY = imgSize.h / rect.height;
+    const ctm = svg?.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     return {
-      x: clamp((e.clientX - rect.left) * scaleX, 0, imgSize.w - 1),
-      y: clamp((e.clientY - rect.top)  * scaleY, 0, imgSize.h - 1),
+      x: clamp(p.x, 0, imgSize.w - 1),
+      y: clamp(p.y, 0, imgSize.h - 1),
     };
   };
+
+  /** Screen-pixel Y delta → fraction of the image's height, at the current on-screen scale. */
+  const clientDyToFrac = useCallback((dy) => {
+    const scale = svgRef.current?.getScreenCTM()?.d || 1; // screen px per image px
+    return dy / (scale * imgSize.h);
+  }, [imgSize.h]);
 
   // ── Click on SVG ──────────────────────────────────────────────────────────
   const handleSvgClick = (e) => {
@@ -1012,6 +1030,11 @@ export default function TraceCalibrator({ onExit }) {
                 style={{
                   display: "block",
                   maxWidth: "100%",
+                  // Without this the height attribute keeps the box at the image's full
+                  // natural height while max-width shrinks it, so the picture is drawn
+                  // letterboxed inside a too-tall box — dead space top and bottom that
+                  // every screen→image conversion then has to guess at.
+                  height: "auto",
                   cursor: cursorStyle,
                   userSelect: "none",
                 }}
@@ -1024,7 +1047,8 @@ export default function TraceCalibrator({ onExit }) {
 
                 {/* Band overlays */}
                 {(step === "bands" || step === "xcal" || step === "ycal") && (
-                  <BandEditor channels={channels} setChannels={setChannels} imgHeight={imgSize.h} />
+                  <BandEditor channels={channels} setChannels={setChannels}
+                    imgHeight={imgSize.h} clientDyToFrac={clientDyToFrac} />
                 )}
 
                 {/* Calibration markers */}
