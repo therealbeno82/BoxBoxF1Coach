@@ -1,8 +1,9 @@
 // ─── SETTINGS SCREEN ────────────────────────────────────────────────────────
 // System configuration: AI provider/model, the telemetry UDP port, the
 // trace configurator + calibrator, general preferences (speed units), the coach
-// voice (engine + voice + rate), the Appearance · Team Skin picker, and the driver
-// roster sign-up. Replaces the legacy SetupPanel.
+// voice (engine + voice + rate), the Appearance · Team Skin picker, the driver
+// roster sign-up, and the About footer carrying the running build's version.
+// Replaces the legacy SetupPanel.
 
 import { useEffect, useRef, useState } from "react";
 import { C, FONT, LIVERY_COLORS, eyebrow } from "../../lib/ui/tokens.js";
@@ -12,6 +13,7 @@ import { listOpenRouterModels } from "../../lib/coach/provider.js";
 import { DEFAULT_OPENROUTER_MODEL } from "../../lib/coach/config.js";
 import { fileToAvatarDataUrl } from "../../lib/avatarImage.js";
 import { parseProfileFile } from "../../lib/profileBackup.js";
+import { APP_VERSION } from "../../lib/updateCheck.js";
 // The telemetry core is built into the native app (see src-tauri) and is always
 // running; there's nothing to launch. In plain browser dev there is no native
 // core at all, so the hint copy adapts to context (inTauri).
@@ -51,20 +53,23 @@ export default function SettingsScreen({
   };
   const portValid = (() => { const n = parseInt(portDraft, 10); return n >= 1 && n <= 65535; })();
 
+  // Click-to-copy for the readouts a user gets asked to relay (LAN address, build
+  // version). `copied` holds the value that just flashed its confirmation.
+  const [copied, setCopied] = useState("");
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); setCopied(text); setTimeout(() => setCopied(""), 1500); }
+    catch { /* clipboard blocked — the value is still shown to read off manually */ }
+  };
+
   // This device's LAN addresses — what a console player enters in the game's
   // telemetry target-IP field when running the app on a second device. Fetched
   // from the native core (browser JS can't read the real interface IP); empty in
-  // plain-browser dev. `copiedIp` flashes a confirmation on the copied address.
+  // plain-browser dev.
   const [localIps, setLocalIps] = useState([]);
-  const [copiedIp, setCopiedIp] = useState("");
   useEffect(() => {
     if (!inTauri) return;
     invoke("get_local_ips").then(setLocalIps).catch(() => setLocalIps([]));
   }, []);
-  const copyIp = async (ip) => {
-    try { await navigator.clipboard.writeText(ip); setCopiedIp(ip); setTimeout(() => setCopiedIp(""), 1500); }
-    catch { /* clipboard blocked — the address is still shown to type manually */ }
-  };
 
   // Sign-up / edit form. `editingName` holds the original name of the driver being
   // edited (null when the form is signing a brand-new driver); `avatarTouched`
@@ -307,13 +312,13 @@ export default function SettingsScreen({
                 {localIps.length ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {localIps.map(({ name, ip }) => (
-                      <button key={ip} onClick={() => copyIp(ip)} title={`Copy ${ip}`} style={{
+                      <button key={ip} onClick={() => copy(ip)} title={`Copy ${ip}`} style={{
                         display: "flex", alignItems: "center", gap: 10, textAlign: "left", width: "100%",
-                        background: C.inset, border: `1px solid ${copiedIp === ip ? C.green : C.borderInput}`,
+                        background: C.inset, border: `1px solid ${copied === ip ? C.green : C.borderInput}`,
                         borderRadius: 8, padding: "9px 12px", cursor: "pointer", fontFamily: FONT.mono }}>
                         <span style={{ fontSize: 14, fontWeight: 700, color: C.cyan, letterSpacing: 1 }}>{ip}</span>
                         <span style={{ fontSize: 10, color: C.textDim, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: FONT.ui }}>{name}</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: copiedIp === ip ? C.green : C.textDim, flex: "none", fontFamily: FONT.ui }}>{copiedIp === ip ? "✓ COPIED" : "COPY"}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: copied === ip ? C.green : C.textDim, flex: "none", fontFamily: FONT.ui }}>{copied === ip ? "✓ COPIED" : "COPY"}</span>
                       </button>
                     ))}
                   </div>
@@ -634,6 +639,24 @@ export default function SettingsScreen({
               </div>
             </div>
           </div>
+        </div>
+
+        {/* About — the running build's version. The only place the app states which
+            version is actually installed (the update banner names the *latest*
+            release, and only when one is newer), so it's what "which version are you
+            on?" gets answered from. Click to copy, like the addresses above. */}
+        <div style={{ flex: "1 1 100%", display: "flex", alignItems: "center", gap: 10,
+          borderTop: `1px solid ${C.line}`, paddingTop: 12, marginTop: 2 }}>
+          <span style={{ ...eyebrow, fontSize: 9, letterSpacing: 1.5, color: C.textFaint }}>F1 Coach</span>
+          <button onClick={() => copy(APP_VERSION)} title={`Copy version ${APP_VERSION}`} style={{
+            display: "flex", alignItems: "center", gap: 7, background: "transparent",
+            border: `1px solid ${copied === APP_VERSION ? C.green : "transparent"}`,
+            borderRadius: 7, padding: "3px 8px", cursor: "pointer" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, fontFamily: FONT.mono,
+              color: copied === APP_VERSION ? C.green : C.textDim }}>v{APP_VERSION}</span>
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: .5, fontFamily: FONT.ui,
+              color: copied === APP_VERSION ? C.green : C.textFaintest }}>{copied === APP_VERSION ? "✓ COPIED" : "COPY"}</span>
+          </button>
         </div>
       </div>
     </div>
