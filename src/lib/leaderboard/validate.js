@@ -18,8 +18,7 @@
 // (as the decision). Returns findings rather than throwing, so the caller can
 // distinguish "reject" from "accept but flag".
 
-import { THRESHOLDS as T } from "./limits.js";
-import { plausibleLapTime } from "./limits.js";
+import { THRESHOLDS as T, plausibleLapTime } from "./limits.js";
 
 const SPEED_FLOOR_MS = 1; // stopped-car guard on the 1/v integrand
 

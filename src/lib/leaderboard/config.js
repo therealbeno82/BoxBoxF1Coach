@@ -16,12 +16,16 @@
 // nothing else in the app notices. That is also exactly what happens when the
 // user turns the feature off, so the offline path gets exercised either way.
 
-// Replace with the project URL from Supabase → Project Settings → Data API.
-// Shape: https://<project-ref>.supabase.co
-export const PROJECT_URL = "";
+// Supabase → Project Settings → Data API. Whatever host this points at must
+// also be in the connect-src of BOTH csp and devCsp in src-tauri/tauri.conf.json,
+// or the packaged exe fails silently while npm run dev works fine.
+export const PROJECT_URL = "https://xdgmjqprcqocymbszlpx.supabase.co";
 
 // Supabase → Project Settings → API Keys → anon / public.
-export const ANON_KEY = "";
+export const ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+  ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhkZ21qcXByY3FvY3ltYnN6bHB4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2NjcyMTYsImV4cCI6MjEwMTI0MzIxNn0" +
+  ".DegvANZUiA8CaU74UnulD14FWqrc9VNft2i-7Sb4esE";
 
 // One host covers REST, Auth, Storage and Functions — they're all paths on the
 // same origin, which is why the CSP needs exactly one new entry.

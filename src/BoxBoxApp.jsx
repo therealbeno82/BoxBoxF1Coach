@@ -37,6 +37,7 @@ import { createProvider } from "./lib/coach/provider.js";
 import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL } from "./lib/coach/config.js";
 import { formatLapTime, sessionTypeName, speakable, clamp, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
 import { isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "./lib/driverStats.js";
+import { sanitizeTraceSamples } from "./lib/traceSamples.js";
 import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
@@ -251,23 +252,6 @@ function deriveZonesFromTrace(trace) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-// Telemetry has physical limits a hand-traced or older export can violate: a gear
-// is always a whole number, throttle/brake are 0–100 %, steer is ±100 %. Clamp and
-// round every channel as a trace loads so a stray 5.5 gear or -1 throttle from the
-// Calibrator never reaches the coaching logic or the readouts. (-1 gear = reverse,
-// 0 = neutral are kept legal to match the live telemetry's gear range.)
-function sanitizeTraceSamples(samples) {
-  if (!Array.isArray(samples)) return samples;
-  return samples.map(s => {
-    if (!s || typeof s !== "object") return s;
-    const out = { ...s };
-    if (typeof out.throttle === "number") out.throttle = clamp(out.throttle, 0, 100);
-    if (typeof out.brake    === "number") out.brake    = clamp(out.brake, 0, 100);
-    if (typeof out.steer    === "number") out.steer    = clamp(out.steer, -100, 100);
-    if (typeof out.gear     === "number") out.gear     = clamp(Math.round(out.gear), -1, 8);
-    return out;
-  });
-}
 
 function getThrottleColor(p) {
   if (p < 1)  return "#666";

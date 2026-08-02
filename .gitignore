@@ -17,6 +17,11 @@ public/kokoro/
 # ship in the packaged app from public/
 public/dev-fixture-lap.json
 
+# Generated copies of the shared leaderboard logic, written by
+# scripts/sync-leaderboard-shared.mjs so the Edge Function validates with the
+# same source the app runs. Committing them would invite editing the copy.
+supabase/functions/_shared/
+
 # Editor / OS
 .DS_Store
 .vscode/*

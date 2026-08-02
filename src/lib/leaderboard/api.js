@@ -14,8 +14,10 @@
 // A driver at a race weekend with the router off must see the app behave
 // normally, minus a board.
 
-import { REST_URL, ANON_KEY, STORAGE_URL, TRACE_BUCKET, TIMEOUT_MS, configured } from "./config.js";
+import { REST_URL, ANON_KEY, STORAGE_URL, FUNCTIONS_URL, TRACE_BUCKET, TIMEOUT_MS, configured } from "./config.js";
 import { entryFromRow, rankEntries } from "./entries.js";
+import { buildSubmission, gzipJson } from "./payload.js";
+import { getAccessToken, diagnoseAuthFailure } from "./identity.js";
 
 // Is the feature usable right now? Configured, enabled by the user, and the
 // browser believes it has a network. The onLine check is the cheap one that
@@ -101,6 +103,58 @@ export async function rankFor(boardId, lapTimeMs, { enabled, signal } = {}) {
   ]);
   if (faster == null || total == null) return null;
   return { pos: faster + 1, total };
+}
+
+// ─── Publishing ───────────────────────────────────────────────────────────────
+// Publish a lap to its board. Unlike every read above, this one reports failure
+// rather than swallowing it — the driver pressed a button and is owed an answer.
+//
+// → { ok: true, improved, boardId, lapTimeMs, pos, total, verdict, reason? }
+// → { ok: false, reason }        reason is written to be shown verbatim
+//
+// The server re-runs every check this client already ran, and re-derives the
+// board from the payload rather than trusting what we say it is. That isn't
+// redundancy: the client's answer is a courtesy so a button can be greyed out
+// with an explanation, and the server's is the one that decides.
+export async function submitLap(lap, { displayName, team, enabled, signal } = {}) {
+  if (!configured) return { ok: false, reason: "The leaderboards aren't set up in this build." };
+  if (!available({ enabled })) {
+    return { ok: false, reason: "You're offline — connect to publish a lap." };
+  }
+
+  const payload = buildSubmission(lap);
+  if (!payload) return { ok: false, reason: "This lap can't be published." };
+  if (displayName) payload.meta.driver = displayName;
+  if (team) payload.meta.team = team;
+
+  // Minting the account is deferred to exactly here: the first time the driver
+  // actually chooses to publish something, never on app start.
+  const token = await getAccessToken();
+  if (!token) return { ok: false, reason: await diagnoseAuthFailure() };
+
+  try {
+    const body = await gzipJson(payload);
+    const res = await fetch(`${FUNCTIONS_URL}/submit-lap`, {
+      method: "POST",
+      headers: {
+        apikey: ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/octet-stream",
+      },
+      body,
+      // Publishing is a deliberate action and carries ~11KB, so it gets a longer
+      // leash than the background reads above.
+      signal: signal ?? AbortSignal.timeout(20000),
+    });
+    const json = await res.json().catch(() => null);
+    if (!json) return { ok: false, reason: "The leaderboard server didn't respond properly." };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, reason: json.reason || "The lap was refused." };
+    }
+    return json;
+  } catch {
+    return { ok: false, reason: "Couldn't reach the leaderboard server. Try again." };
+  }
 }
 
 // Pull an entry's trace blob and inflate it.
