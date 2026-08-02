@@ -10,6 +10,7 @@ import { useMemo, useRef, useState } from "react";
 import { C, FONT, fmtDelta } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
+import { eligibility } from "../../lib/leaderboard/eligibility.js";
 
 const selectStyle = (color) => ({
   width: "100%", appearance: "none", WebkitAppearance: "none", background: C.surface,
@@ -44,6 +45,25 @@ const SetupBtn = ({ onClick }) => (
   </button>
 );
 
+// Publish to the online leaderboard. Disabled — with the reason in its tooltip —
+// when the lap isn't publishable, rather than hidden: a driver who has just set a
+// good race lap should find out WHY it can't go on a board, not be left guessing
+// where the button went.
+const PublishBtn = ({ lap, onPublish }) => {
+  const elig = eligibility(lap);
+  return (
+    <button
+      onClick={() => elig.ok && onPublish(lap)}
+      disabled={!elig.ok}
+      title={elig.ok ? "Publish this lap to the leaderboard" : elig.reason}
+      style={{
+        ...actionBtn(elig.ok ? "#2c2150" : C.line, elig.ok ? "#b98cff" : C.textFaintest),
+        cursor: elig.ok ? "pointer" : "default",
+        opacity: elig.ok ? 1 : 0.55,
+      }}>🏆 Publish</button>
+  );
+};
+
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 
 const fmtSec = (s) => (typeof s === "number" && s > 0 ? s.toFixed(3) : "—");
@@ -52,7 +72,7 @@ export default function AnalyticsScreen({
   trackName, sessionLabel, laps = [],
   comparisonLap,
   referenceSources = [], referenceId, onSelectReference, onLoadTrace, onRemoveTrace,
-  comparisonSources = [], comparisonId, onSelectComparison, onDeleteLap, onExportLap,
+  comparisonSources = [], comparisonId, onSelectComparison, onDeleteLap, onExportLap, onPublishLap,
   labelFor = (s) => s?.id, onOpenSetup,
   tracesSlot, linesSlot,
   // Demo Mode is replaying: this screen's best-lap readout follows the replay's
@@ -162,6 +182,7 @@ export default function AnalyticsScreen({
               <>
                 {comparisonLap.setup && <SetupBtn onClick={() => onOpenSetup(comparisonLap)} />}
                 <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" style={actionBtn("#0c3a1c", "#00e676")}>⬇ Save</button>
+                {onPublishLap && <PublishBtn lap={comparisonLap} onPublish={onPublishLap} />}
                 <button onClick={() => onDeleteLap(comparisonLap.id)} title="Delete lap" style={actionBtn("#3a2400", "#ff9100")}>✕</button>
               </>
             )}

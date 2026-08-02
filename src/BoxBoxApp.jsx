@@ -6,6 +6,7 @@ import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
 import SettingsScreen from "./components/screens/SettingsScreen.jsx";
 import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
 import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
+import PublishLapModal from "./components/modals/PublishLapModal.jsx";
 import FfbScreen from "./components/screens/FfbScreen.jsx";
 import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
 import CarSetupModal from "./components/modals/CarSetupModal.jsx";
@@ -38,6 +39,9 @@ import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL } from "./lib/coach/config.
 import { formatLapTime, sessionTypeName, speakable, clamp, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
 import { isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "./lib/driverStats.js";
 import { sanitizeTraceSamples } from "./lib/traceSamples.js";
+import { fetchTrace, submitLap } from "./lib/leaderboard/api.js";
+import { traceToReference } from "./lib/leaderboard/payload.js";
+import { eligibility } from "./lib/leaderboard/eligibility.js";
 import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
@@ -2100,16 +2104,83 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //
   // Either way the driver lands on Analytics, because a reference they can't see
   // applied is indistinguishable from a button that did nothing.
-  const useLeaderboardEntry = useCallback((entry) => {
+  const useLeaderboardEntry = useCallback(async (entry) => {
     if (!entry) return;
+    const label = `${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`;
+
+    // Local: the lap is already in storedLaps, so it already resolves as a
+    // reference. Pointing activeTraceId at it is the whole job.
     if (entry.lap?.id) {
       setActiveTraceId(entry.lap.id);
       setTab("compare");
-      addCue(`🏆 Reference set — ${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`, "info");
+      addCue(`🏆 Reference set — ${label}`, "info");
       return;
     }
-    addCue("🏆 That entry isn't downloadable yet — the online board isn't wired up.", "warn");
-  }, [addCue]);
+
+    // Remote: already downloaded once? Re-use it rather than fetching again —
+    // this is what makes a saved reference work with no network at all.
+    const cachedId = `${activeDriver}::${entry.boardId}::${entry.driverId}`;
+    if (refTraces.some(t => t.id === cachedId)) {
+      setActiveTraceId(cachedId);
+      setTab("compare");
+      addCue(`🏆 Reference set — ${label}`, "info");
+      return;
+    }
+
+    if (!entry.tracePath) { addCue("🏆 That entry has no trace to download.", "warn"); return; }
+    addCue(`⬇ Downloading ${label}…`, "info");
+    const json = await fetchTrace(entry.tracePath);
+    if (!json) { addCue("⚠ Couldn't download that lap — check your connection.", "warn"); return; }
+
+    // traceToReference sanitises the samples. Not optional: this is third-party
+    // data heading for the coaching engine and the zone derivation that drives
+    // the voice calls.
+    const trace = traceToReference(json, { entry, boardId: entry.boardId });
+    if (!trace) { addCue("⚠ That lap's trace was malformed and wasn't loaded.", "warn"); return; }
+
+    // Persisted so it survives a restart — a reference pulled today has to still
+    // be there for an offline race weekend.
+    const key = await lapStore.putRefTrace(activeDriver, {
+      boardId: entry.boardId, entryId: entry.driverId,
+      displayName: entry.displayName, lapTime: entry.lapTimeMs / 1000, trace,
+    });
+    const id = key || crypto.randomUUID();
+    setRefTraces(prev => [{ ...trace, id }, ...prev.filter(t => t.id !== id)]);
+    setActiveTraceId(id);
+    setTab("compare");
+    const zones = deriveZonesFromTrace(trace).length;
+    addCue(`🏆 Reference set — ${label} · ${zones} strategy zones`, "info");
+  }, [addCue, activeDriver, refTraces]);
+
+  // ── Publish a lap to its board ───────────────────────────────────────────
+  // The lap awaiting confirmation; non-null while the publish dialog is open.
+  const [pendingPublish, setPendingPublish] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState(null);
+
+  const requestPublish = useCallback((lap) => {
+    setPublishResult(null);
+    setPendingPublish(lap);
+  }, []);
+
+  const confirmPublish = useCallback(async () => {
+    const lap = pendingPublish;
+    if (!lap) return;
+    setPublishing(true);
+    const res = await submitLap(lap, {
+      displayName: activeDriverObj?.name || activeDriver,
+      team: activeDriverObj?.team || null,
+    });
+    setPublishing(false);
+    setPublishResult(res);
+    if (res.ok && res.improved) {
+      addCue(`🏆 Published — P${res.pos} of ${res.total}`, "info");
+    } else if (res.ok) {
+      addCue("🏆 Already published a faster lap on that board", "info");
+    } else {
+      addCue(`⚠ ${res.reason}`, "warn");
+    }
+  }, [pendingPublish, activeDriver, activeDriverObj, addCue]);
 
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its
@@ -2308,7 +2379,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
-          onDeleteLap={deleteLap} onExportLap={exportLapToFile}
+          onDeleteLap={deleteLap} onExportLap={exportLapToFile} onPublishLap={requestPublish}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
             zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
@@ -2367,6 +2438,15 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         />
         );
       })()}
+
+      {pendingPublish && (
+        <PublishLapModal
+          lap={pendingPublish} driver={activeDriverObj}
+          busy={publishing} result={publishResult}
+          onConfirm={confirmPublish}
+          onClose={() => { setPendingPublish(null); setPublishResult(null); }}
+        />
+      )}
 
       {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
       {tab==="board" && (

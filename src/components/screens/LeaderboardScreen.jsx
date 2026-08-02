@@ -24,6 +24,7 @@ import {
   trackNameForSlug, boardLabel, BOARD_SEP,
 } from "../../lib/leaderboard/boardKey.js";
 import { localBoardEntries, entryAsRefLike, secOf } from "../../lib/leaderboard/entries.js";
+import { useLeaderboard } from "../../hooks/useLeaderboard.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 
@@ -77,6 +78,7 @@ export default function LeaderboardScreen({
   recentLap = null,
   // Which board to open on — normally the circuit currently loaded in the game.
   initialSlug = null,
+  enabled = true,
   onUseReference,
 }) {
   const [slug, setSlug] = useState(initialSlug && TRACK_SLUGS.includes(initialSlug) ? initialSlug : TRACK_SLUGS[0]);
@@ -85,12 +87,23 @@ export default function LeaderboardScreen({
 
   const boardId = `${slug}${BOARD_SEP}${session}`;
 
-  // Local preview: this driver's own laps on this board, all of them ranked
-  // against each other rather than collapsed to their best, which is the more
-  // useful view of your own running.
-  const entries = useMemo(
+  // This screen owns its board selection, so it owns the fetch for it — pushing
+  // the selection up to BoxBoxApp just to hand the rows back down would buy
+  // nothing, since nothing else in the app reads them.
+  const board = useLeaderboard(boardId, { enabled });
+
+  // This driver's own laps on this board, all of them ranked against each other
+  // rather than collapsed to their best — the more useful view of your own
+  // running, and the fallback when the online board can't be reached.
+  const localEntries = useMemo(
     () => localBoardEntries(laps, boardId, { driver, onePerDriver: false }),
     [laps, boardId, driver]);
+
+  // Offline or failed → show the driver their own laps rather than an empty
+  // screen. The banner says which they're looking at, so a local preview is
+  // never mistaken for the real board being empty.
+  const isLive = board.status === "ready" || board.status === "loading";
+  const entries = isLive ? board.entries : localEntries;
 
   // Compound chips offered are only the ones actually present on this board.
   const compoundsPresent = useMemo(() => {
@@ -175,16 +188,25 @@ export default function LeaderboardScreen({
             <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: 0.4, color: C.textHi }}>
               {boardLabel(boardId)}
             </div>
-            <div style={{ fontSize: 10, letterSpacing: 1.4, color: C.textDim, textTransform: "uppercase", marginTop: 3 }}>
-              Your laps · local preview
+            <div style={{ fontSize: 10, letterSpacing: 1.4, color: statusTone(board.status), textTransform: "uppercase", marginTop: 3 }}>
+              {statusLabel(board.status)}
             </div>
           </div>
-          <div style={{ marginLeft: "auto", textAlign: "right" }}>
-            <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
-              {shown.length ? formatLapTime(secOf(shown[0].lapTimeMs), 3) : "—"}
-            </div>
-            <div style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase", marginTop: 4 }}>
-              {shown.length} {shown.length === 1 ? "lap" : "laps"}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
+            {isLive && (
+              <button onClick={board.reload} title="Refresh this board" style={{
+                width: 32, height: 32, borderRadius: 8, cursor: "pointer",
+                border: `1px solid ${C.line}`, background: C.surface, color: C.textMuted,
+                fontSize: 13, lineHeight: 1,
+              }}>⟳</button>
+            )}
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
+                {shown.length ? formatLapTime(secOf(shown[0].lapTimeMs), 3) : "—"}
+              </div>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase", marginTop: 4 }}>
+                {shown.length} {shown.length === 1 ? "lap" : "laps"}
+              </div>
             </div>
           </div>
         </div>
@@ -206,7 +228,7 @@ export default function LeaderboardScreen({
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 18px 16px",
           display: "flex", flexDirection: "column", gap: 7 }}>
           {shown.length === 0 ? (
-            <EmptyBoard boardId={boardId} filtered={compoundFilter !== "all"} />
+            <EmptyBoard boardId={boardId} filtered={compoundFilter !== "all"} status={board.status} />
           ) : shown.map((e) => {
             const verdict = comparability?.get(e.entryId) ?? null;
             const blocked = verdict && !verdict.ok;
@@ -297,19 +319,45 @@ function UseButton({ entry, blocked, verdict, onUse }) {
   );
 }
 
-function EmptyBoard({ boardId, filtered }) {
+// The header's second line. Four outcomes that read very differently to a driver
+// and must never be collapsed into one "no data" — an empty board is a correct
+// answer, a failed request is not, and at a race weekend with no network the
+// difference is the whole point.
+function statusLabel(status) {
+  switch (status) {
+    case "loading": return "Loading…";
+    case "ready":   return "Published laps";
+    case "offline": return "Offline · showing your own laps";
+    case "error":   return "Couldn't reach the leaderboard · showing your own laps";
+    default:        return "";
+  }
+}
+
+function statusTone(status) {
+  if (status === "error") return C.orange;
+  if (status === "offline") return C.textMuted;
+  return C.textDim;
+}
+
+function EmptyBoard({ boardId, filtered, status }) {
+  const circuit = boardLabel(boardId)?.split(" · ")[0];
+  const [title, body] =
+    filtered
+      ? ["Nothing on that compound", "Clear the tyre filter to see the rest of the board."]
+    : status === "offline"
+      ? ["No network", `You haven't driven a Qualifying or Time Trial lap at ${circuit} either — published laps will appear here once you're back online.`]
+    : status === "error"
+      ? ["Couldn't load this board", "The leaderboard server didn't answer. Your own laps would show here in the meantime, but there aren't any for this board yet."]
+      : ["Nobody has published a lap here yet", `Drive a Qualifying or Time Trial lap at ${circuit} and publish it to open this board.`];
+
   return (
     <div style={{
       margin: "auto", textAlign: "center", color: C.textFaint,
       fontSize: 12, lineHeight: 1.7, padding: "40px 20px", maxWidth: 420,
     }}>
-      <div style={{ fontSize: 26, marginBottom: 12 }}>🏁</div>
-      <div style={{ fontSize: 14, fontWeight: 800, color: C.textMid, marginBottom: 6 }}>
-        {filtered ? "Nothing on that compound" : "No laps on this board yet"}
-      </div>
-      {filtered
-        ? "Clear the tyre filter to see the rest of the board."
-        : <>Drive a Qualifying or Time Trial lap at {boardLabel(boardId)?.split(" · ")[0]} and it'll show up here.</>}
+      <div style={{ fontSize: 26, marginBottom: 12 }}>{status === "error" ? "⚠" : status === "offline" ? "📡" : "🏁"}</div>
+      <div style={{ fontSize: 14, fontWeight: 800, color: C.textMid, marginBottom: 6 }}>{title}</div>
+      {body}
     </div>
   );
 }
