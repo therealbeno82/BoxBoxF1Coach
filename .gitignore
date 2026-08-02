@@ -22,6 +22,9 @@ public/dev-fixture-lap.json
 # same source the app runs. Committing them would invite editing the copy.
 supabase/functions/_shared/
 
+# Supabase CLI scratch (which project this machine is linked to)
+supabase/.temp/
+
 # Editor / OS
 .DS_Store
 .vscode/*

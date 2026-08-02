@@ -16,7 +16,15 @@
 //
 // Deploy:
 //   node scripts/sync-leaderboard-shared.mjs
-//   supabase functions deploy submit-lap
+//   npx supabase functions deploy submit-lap --project-ref <ref> --no-verify-jwt
+//
+// --no-verify-jwt turns off the GATEWAY's token check, not this function's. Every
+// request is still authenticated below via auth.getUser(), which 401s without a
+// valid user, so the gateway check would be redundant — and leaving it on gets
+// the CORS preflight rejected before the handler runs, since an OPTIONS request
+// carries no Authorization header. The cost is that an unauthenticated request
+// burns one invocation before being refused, which the free tier's hard caps
+// bound anyway.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { boardIdForLap } from "../_shared/lib/leaderboard/boardKey.js";
