@@ -615,9 +615,9 @@ const runMeta = (m) => ({
   track: m.trackName || "Live",
 });
 
-function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false) {
+function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
-  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
+  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0, lapLenEst: 0 });
   const lapNumRef = useRef(0);
   // The run (session + session type + track — see lapRunKey) the lap counter is
   // currently scoped to. Lap numbering restarts at 1 whenever that changes: a fresh
@@ -632,8 +632,12 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   // owner a frozen lap is saved under; sessionId/sessionType tag the drive + mode;
   // demoMode marks laps the core REPLAYED rather than the driver drove, so they
   // can be kept off every board (see isDemoLap in lib/driverStats.js).
-  const metaRef = useRef({ driver, sessionId, sessionType, trackName, demoMode });
-  metaRef.current = { driver, sessionId, sessionType, trackName, demoMode };
+  // trackId/trackSlug pin the circuit by IDENTITY rather than by display name.
+  // The name alone has always been enough to resolve a circuit (getTrackByName
+  // round-trips it), but a stable id means a hand-edited or renamed track tag
+  // can't masquerade as a calendar circuit on the online boards.
+  const metaRef = useRef({ driver, sessionId, sessionType, trackName, demoMode, trackId, trackSlug });
+  metaRef.current = { driver, sessionId, sessionType, trackName, demoMode, trackId, trackSlug };
 
   // Load the active driver's persisted laps when the driver changes, continuing lap
   // numbering from where they left off WITHIN the current session (so a mid-session
@@ -741,6 +745,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         const recLapLen = samples.length ? samples[samples.length - 1].dist : 0;
         const sectors = (recLapLen > 0 && sector2Pct > 0 && sector3Pct > sector2Pct && sector3Pct < 1)
           ? [sector2Pct * recLapLen, sector3Pct * recLapLen] : null;
+        // True circuit length: the distance÷fraction estimate above when we got one,
+        // else the last sample rounded up to the next bin. Stored on the lap so the
+        // online validator can correct the head/tail of a reconstructed lap time
+        // instead of guessing at it.
+        const trackLengthM = buf.lapLenEst > 0
+          ? Math.round(buf.lapLenEst)
+          : (recLapLen > 0 ? Math.ceil(recLapLen / 10) * 10 : 0);
         // Fuel burned across the lap: the tank at the lap's start less the last reading
         // before the line. Dropped unless the start reading really is from the start of
         // this lap AND the tank went DOWN by a lap-sized amount — a mid-lap join, a
@@ -768,6 +779,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
             track: m.trackName || "Live",
             sessionType: m.sessionType || null, // coarse game mode: Time Trial / Qualifying / …
             sessionId: m.sessionId || null,     // the drive this lap belongs to
+            // Circuit identity + true length. Older laps carry neither and resolve
+            // from the display name instead (see trackSlugForLap) — these just make
+            // the answer exact rather than inferred, and give the online leaderboard
+            // validator a real lap length to reconstruct against.
+            ...(typeof m.trackId === "number" && m.trackId >= 0 ? { trackId: m.trackId } : {}),
+            ...(m.trackSlug ? { trackSlug: m.trackSlug } : {}),
+            ...(trackLengthM > 0 ? { trackLengthM } : {}),
             // Conditions the lap was run in → the Live lap log's per-session header.
             ...(typeof weather === "number" ? { weather } : {}),
             ...(typeof trackTemp === "number" && trackTemp > 0 ? { trackTemp } : {}),
@@ -876,6 +894,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     }
     if (typeof fuelRemainingLaps === "number" && isFinite(fuelRemainingLaps)) {
       buf.lastFuelDelta = fuelRemainingLaps;
+    }
+    // Running estimate of the circuit's length, from distance ÷ lap fraction. Only
+    // sampled in the back half of a lap: near the line a small pct divides into a
+    // wild answer. Accurate to ~±1 m, and it's the ONLY source of a true track
+    // length for a lap — the last sample's distance is up to 10 m short of the
+    // line, which is enough to matter when the online validator reconstructs a lap
+    // time from the trace. Same trick the track-map fitter already uses.
+    // Deliberately accumulated ACROSS laps, not per lap — more samples, better
+    // estimate — but scoped to one circuit, so it's dropped the moment the track
+    // changes or a stale one would be stamped onto the next circuit's laps.
+    if (buf.lapLenTrack !== trackName) { buf.lapLenTrack = trackName; buf.lapLenEst = 0; }
+    if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
+      const est = lapDistance / lapPct;
+      if (isFinite(est) && est > buf.lapLenEst) buf.lapLenEst = est;
     }
     if (typeof lapDistance === "number" && isFinite(lapDistance)) {
       // x/z (world position) let a lap draw its OWN track-map outline on the Compare
@@ -1484,7 +1516,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // reference and comparison laps below. Laps are saved under the active driver.
   const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
     useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
-      activeDriver, sessionId, sessionTypeLabel, fakeMode);
+      activeDriver, sessionId, sessionTypeLabel, fakeMode,
+      // Only pass the circuit id/slug when telemetry actually identified it — a
+      // name borrowed from a loaded reference trace is a display fallback, not
+      // proof of which circuit the car is on.
+      trackInfo ? (rawTel.trackId ?? -1) : -1, trackInfo?.slug || null);
 
   // "Reset" the Session Laps panel. Archiving the current laps hides them from the
   // live Session-Laps / Analytics views permanently (the flag is persisted in

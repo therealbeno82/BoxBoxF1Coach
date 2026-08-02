@@ -20,16 +20,9 @@
 import { formatLapTime } from "./format.js";
 import { tyreLabel, tyreCondition, tyreColor } from "./tyres.js";
 import { isRankable } from "./driverStats.js";
-
 // Coarse session groups (meta.sessionType comes from format.js's sessionTypeName).
-// Sprint Shootout is a qualifying session by every measure that matters here.
-const SESSION_GROUP = {
-  "Race": "Race",
-  "Qualifying": "Qualifying",
-  "Sprint Shootout": "Qualifying",
-  "Time Trial": "Time Trial",
-  "Practice": "Practice",
-};
+// Shared with the online leaderboard's board key so the two can't drift.
+import { SESSION_GROUP } from "./sessionGroups.js";
 
 // Display order — quali first (the pace yardstick), then race stints hardest-last.
 const GROUP_ORDER = ["Qualifying", "Time Trial", "Practice", "Race", "Unclassified"];
