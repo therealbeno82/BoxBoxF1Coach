@@ -22,6 +22,7 @@
 
 import { boardIdForLap, compoundToken, conditionToken } from "./boardKey.js";
 import { tyreLabel } from "../tyres.js";
+import { isDemoLap, isRankable } from "../driverStats.js";
 
 export const msOf = (seconds) =>
   (typeof seconds === "number" && isFinite(seconds) && seconds > 0) ? Math.round(seconds * 1000) : null;
@@ -137,6 +138,42 @@ export function localBoardIndex(laps = [], { driver } = {}) {
   }
   for (const [k, v] of byBoard) byBoard.set(k, rankEntries(v));
   return byBoard;
+}
+
+// The board this driver most recently ran on, plus their best lap for it.
+// Drives the Dashboard card — "here's where your Silverstone quali lap sits".
+//
+// `preferSlug` lets the caller pin it to the circuit currently loaded in the
+// game, so the card follows what the driver is about to drive rather than
+// whatever they drove last week. Falls back to most-recent when that circuit has
+// no laps yet.
+//
+// → { boardId, best, recordedAt } | null
+export function lastRunBoard(laps = [], { driver, preferSlug = null } = {}) {
+  let latest = null, preferred = null;
+  for (const lap of laps) {
+    if (lap?.archived) continue;
+    const { ok, board } = eligibilityLite(lap);
+    if (!ok) continue;
+    const at = lap.recordedAt || 0;
+    if (!latest || at > latest.at) latest = { at, boardId: board.boardId, slug: board.slug };
+    if (preferSlug && board.slug === preferSlug && (!preferred || at > preferred.at)) {
+      preferred = { at, boardId: board.boardId, slug: board.slug };
+    }
+  }
+  const pick = preferred || latest;
+  if (!pick) return null;
+  const entries = localBoardEntries(laps, pick.boardId, { driver });
+  return entries.length ? { boardId: pick.boardId, best: entries[0], recordedAt: pick.at } : null;
+}
+
+// Board resolution without the full eligibility battery — the card only needs to
+// know which board a lap belongs to, not whether it's publishable, and a lap too
+// short to publish still tells us where the driver has been running.
+function eligibilityLite(lap) {
+  if (isDemoLap(lap) || !isRankable(lap) || !(lap?.lapTime > 0)) return { ok: false };
+  const board = boardIdForLap(lap);
+  return board.boardId ? { ok: true, board } : { ok: false };
 }
 
 // Display label for an entry's compound, e.g. "Soft" / "Inter" / null.

@@ -17,7 +17,7 @@
 import { REST_URL, ANON_KEY, STORAGE_URL, FUNCTIONS_URL, TRACE_BUCKET, TIMEOUT_MS, configured } from "./config.js";
 import { entryFromRow, rankEntries } from "./entries.js";
 import { buildSubmission, gzipJson } from "./payload.js";
-import { getAccessToken, diagnoseAuthFailure } from "./identity.js";
+import { getAccessToken, diagnoseAuthFailure, currentUserId } from "./identity.js";
 
 // Is the feature usable right now? Configured, enabled by the user, and the
 // browser believes it has a network. The onLine check is the cheap one that
@@ -105,6 +105,35 @@ export async function rankFor(boardId, lapTimeMs, { enabled, signal } = {}) {
   return { pos: faster + 1, total };
 }
 
+// This driver's own published entry on a board, if they have one.
+// → entry | null. Null also means "not published", which the caller has to tell
+// apart from "failed to ask" using `available()` if it matters.
+export async function myEntryOn(boardId, { enabled, signal } = {}) {
+  const uid = currentUserId();
+  if (!boardId || !uid || !available({ enabled })) return null;
+  const rows = await request(
+    `${REST_URL}/entries?select=board_id,driver_id,display_name,team,lap_time_ms,s1_ms,s2_ms,s3_ms,` +
+    `compound,condition,tyre_visual,tyre_age,verdict,trace_path,created_at` +
+    `&board_id=eq.${encodeURIComponent(boardId)}&driver_id=eq.${uid}&limit=1`, { signal });
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return entryFromRow(rows[0], { myDriverId: uid });
+}
+
+// Every board this driver has an entry on, newest first. Powers the "your
+// published laps" list in Settings — the only place a driver can take one back
+// down, which is why it exists at all.
+// → entry[] | null   (null = couldn't ask; [] = nothing published)
+export async function myEntries({ enabled, signal } = {}) {
+  const uid = currentUserId();
+  if (!uid || !available({ enabled })) return null;
+  const rows = await request(
+    `${REST_URL}/entries?select=board_id,driver_id,display_name,team,lap_time_ms,` +
+    `s1_ms,s2_ms,s3_ms,compound,condition,tyre_visual,tyre_age,verdict,trace_path,created_at` +
+    `&driver_id=eq.${uid}&order=updated_at.desc`, { signal });
+  if (!Array.isArray(rows)) return null;
+  return rows.map((r) => entryFromRow(r, { myDriverId: uid })).filter(Boolean);
+}
+
 // ─── Publishing ───────────────────────────────────────────────────────────────
 // Publish a lap to its board. Unlike every read above, this one reports failure
 // rather than swallowing it — the driver pressed a button and is owed an answer.
@@ -154,6 +183,34 @@ export async function submitLap(lap, { displayName, team, enabled, signal } = {}
     return json;
   } catch {
     return { ok: false, reason: "Couldn't reach the leaderboard server. Try again." };
+  }
+}
+
+// Take your own entry off a board. Routed through the Edge Function rather than
+// the owner-delete RLS policy so the stored trace goes with the row — a policy
+// can delete the database row but not the object in storage, which would leave
+// the blob orphaned and still publicly readable.
+// → { ok: true } | { ok: false, reason }
+export async function deleteEntry(boardId, { signal } = {}) {
+  if (!boardId || !configured) return { ok: false, reason: "Not available." };
+  const token = await getAccessToken();
+  if (!token) return { ok: false, reason: await diagnoseAuthFailure() };
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/delete-entry`, {
+      method: "POST",
+      headers: {
+        apikey: ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ boardId }),
+      signal: signal ?? AbortSignal.timeout(TIMEOUT_MS),
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.ok) return { ok: false, reason: json?.reason || "Couldn't remove that lap." };
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "Couldn't reach the leaderboard server." };
   }
 }
 

@@ -7,6 +7,7 @@ import SettingsScreen from "./components/screens/SettingsScreen.jsx";
 import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
 import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
 import PublishLapModal from "./components/modals/PublishLapModal.jsx";
+import PublishPrompt from "./components/PublishPrompt.jsx";
 import FfbScreen from "./components/screens/FfbScreen.jsx";
 import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
 import CarSetupModal from "./components/modals/CarSetupModal.jsx";
@@ -42,6 +43,8 @@ import { sanitizeTraceSamples } from "./lib/traceSamples.js";
 import { fetchTrace, submitLap } from "./lib/leaderboard/api.js";
 import { traceToReference } from "./lib/leaderboard/payload.js";
 import { eligibility } from "./lib/leaderboard/eligibility.js";
+import { boardIdForLap } from "./lib/leaderboard/boardKey.js";
+import { LS_ENABLED } from "./lib/leaderboard/config.js";
 import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
@@ -1311,6 +1314,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
   useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
 
+  // Master switch for the online leaderboards. Off means the app makes no
+  // leaderboard request at all — not a failed one, none — which is the only
+  // honest way to offer "leave me out of this".
+  const [leaderboardEnabled, setLeaderboardEnabled] = useState(
+    () => localStorage.getItem(LS_ENABLED) !== "0");
+  useEffect(() => { localStorage.setItem(LS_ENABLED, leaderboardEnabled ? "1" : "0"); }, [leaderboardEnabled]);
+
   // Tyre temp units — the telemetry core always reports °C; the driver can read °C or °F
   // in the Telemetry Studio's Tyre Temps panel. Persisted.
   const [tempUnits, setTempUnits] = useState(() => localStorage.getItem("f1coach.tempUnits") || "°C");
@@ -2233,6 +2243,33 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       tel.gamePaused, tel.driverStatus, tel.pitStatus, wsConnected,
       audioOn, liveCalls, liveCues, leadSeconds, speak, beep, addCue]);
 
+  // ── "That's your best — publish it?" ─────────────────────────────────────
+  // Offers to publish when a freshly-recorded lap is both publishable AND the
+  // driver's own fastest for its board. Both tests are PURELY LOCAL, so the
+  // prompt costs no network call and works offline — the upload only happens if
+  // the driver clicks, and only then is an account minted.
+  //
+  // Deliberately narrow. It fires on a personal best for a board, not on every
+  // good lap, because an offer to do something outward-facing that appears too
+  // often stops being an offer and becomes noise you learn to dismiss.
+  const [publishPrompt, setPublishPrompt] = useState(null);
+  const promptedRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!leaderboardEnabled || !storedLaps.length) return;
+    const lap = storedLaps[storedLaps.length - 1];
+    if (!lap || promptedRef.current.has(lap.id)) return;
+    promptedRef.current.add(lap.id);
+
+    if (!eligibility(lap).ok) return;
+    const { boardId } = boardIdForLap(lap);
+    // Fastest of this driver's own laps on the same board?
+    const isBest = !storedLaps.some((l) =>
+      l.id !== lap.id && !l.archived && l.lapTime > 0 && l.lapTime < lap.lapTime
+      && !isDemoLap(l) && isRankable(l) && boardIdForLap(l).boardId === boardId);
+    if (isBest) setPublishPrompt(lap);
+  }, [storedLaps, leaderboardEnabled]);
+
   // ── AI between-lap coach: one improvement tip when a lap completes ───────
   // Fires once per freshly-completed lap (at the start/finish line), grounded in
   // the just-finished lap vs the reference. The real-time engine owns in-corner
@@ -2332,6 +2369,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onSelectLap={(id)=>{ setComparisonLapId(id); setTab("compare"); }}
           onOpenSetup={openSetupForLap}
           onDeleteLap={deleteLap}
+          liveTrackSlug={trackInfo?.slug || null}
+          leaderboardEnabled={leaderboardEnabled}
+          onOpenBoard={()=>setTab("board")}
         />
       )}
 
@@ -2410,6 +2450,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
           onExportProfile={exportProfile} onImportProfile={importProfile}
           onOpenTrace={()=>setTraceOpen(true)} onOpenCalibrator={onOpenCalibrator}
+          leaderboardEnabled={leaderboardEnabled} setLeaderboardEnabled={setLeaderboardEnabled}
+          driverProfile={activeDriverObj}
         />
       )}
 
@@ -2439,6 +2481,14 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         );
       })()}
 
+      {publishPrompt && !pendingPublish && (
+        <PublishPrompt
+          lap={publishPrompt}
+          onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}
+          onDismiss={() => setPublishPrompt(null)}
+        />
+      )}
+
       {pendingPublish && (
         <PublishLapModal
           lap={pendingPublish} driver={activeDriverObj}
@@ -2456,6 +2506,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           // comparability preview must not be based on one either.
           recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
           initialSlug={trackInfo?.slug || null}
+          enabled={leaderboardEnabled}
           onUseReference={useLeaderboardEntry}
         />
       )}
