@@ -5,6 +5,9 @@ import LiveScreen from "./components/screens/LiveScreen.jsx";
 import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
 import SettingsScreen from "./components/screens/SettingsScreen.jsx";
 import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
+import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
+import PublishLapModal from "./components/modals/PublishLapModal.jsx";
+import PublishPrompt from "./components/PublishPrompt.jsx";
 import FfbScreen from "./components/screens/FfbScreen.jsx";
 import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
 import CarSetupModal from "./components/modals/CarSetupModal.jsx";
@@ -36,6 +39,12 @@ import { createProvider } from "./lib/coach/provider.js";
 import { PARAMS, ERS_MODES, DEFAULT_OPENROUTER_MODEL } from "./lib/coach/config.js";
 import { formatLapTime, sessionTypeName, speakable, clamp, MINI_SECTORS, MINI_PER_SECTOR } from "./lib/format.js";
 import { isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "./lib/driverStats.js";
+import { sanitizeTraceSamples } from "./lib/traceSamples.js";
+import { fetchTrace, submitLap } from "./lib/leaderboard/api.js";
+import { traceToReference } from "./lib/leaderboard/payload.js";
+import { eligibility } from "./lib/leaderboard/eligibility.js";
+import { boardIdForLap } from "./lib/leaderboard/boardKey.js";
+import { LS_ENABLED } from "./lib/leaderboard/config.js";
 import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
@@ -250,23 +259,6 @@ function deriveZonesFromTrace(trace) {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-// Telemetry has physical limits a hand-traced or older export can violate: a gear
-// is always a whole number, throttle/brake are 0–100 %, steer is ±100 %. Clamp and
-// round every channel as a trace loads so a stray 5.5 gear or -1 throttle from the
-// Calibrator never reaches the coaching logic or the readouts. (-1 gear = reverse,
-// 0 = neutral are kept legal to match the live telemetry's gear range.)
-function sanitizeTraceSamples(samples) {
-  if (!Array.isArray(samples)) return samples;
-  return samples.map(s => {
-    if (!s || typeof s !== "object") return s;
-    const out = { ...s };
-    if (typeof out.throttle === "number") out.throttle = clamp(out.throttle, 0, 100);
-    if (typeof out.brake    === "number") out.brake    = clamp(out.brake, 0, 100);
-    if (typeof out.steer    === "number") out.steer    = clamp(out.steer, -100, 100);
-    if (typeof out.gear     === "number") out.gear     = clamp(Math.round(out.gear), -1, 8);
-    return out;
-  });
-}
 
 function getThrottleColor(p) {
   if (p < 1)  return "#666";
@@ -615,9 +607,9 @@ const runMeta = (m) => ({
   track: m.trackName || "Live",
 });
 
-function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false) {
+function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
-  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0 });
+  const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0, lapLenEst: 0 });
   const lapNumRef = useRef(0);
   // The run (session + session type + track — see lapRunKey) the lap counter is
   // currently scoped to. Lap numbering restarts at 1 whenever that changes: a fresh
@@ -632,8 +624,12 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   // owner a frozen lap is saved under; sessionId/sessionType tag the drive + mode;
   // demoMode marks laps the core REPLAYED rather than the driver drove, so they
   // can be kept off every board (see isDemoLap in lib/driverStats.js).
-  const metaRef = useRef({ driver, sessionId, sessionType, trackName, demoMode });
-  metaRef.current = { driver, sessionId, sessionType, trackName, demoMode };
+  // trackId/trackSlug pin the circuit by IDENTITY rather than by display name.
+  // The name alone has always been enough to resolve a circuit (getTrackByName
+  // round-trips it), but a stable id means a hand-edited or renamed track tag
+  // can't masquerade as a calendar circuit on the online boards.
+  const metaRef = useRef({ driver, sessionId, sessionType, trackName, demoMode, trackId, trackSlug });
+  metaRef.current = { driver, sessionId, sessionType, trackName, demoMode, trackId, trackSlug };
 
   // Load the active driver's persisted laps when the driver changes, continuing lap
   // numbering from where they left off WITHIN the current session (so a mid-session
@@ -741,6 +737,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         const recLapLen = samples.length ? samples[samples.length - 1].dist : 0;
         const sectors = (recLapLen > 0 && sector2Pct > 0 && sector3Pct > sector2Pct && sector3Pct < 1)
           ? [sector2Pct * recLapLen, sector3Pct * recLapLen] : null;
+        // True circuit length: the distance÷fraction estimate above when we got one,
+        // else the last sample rounded up to the next bin. Stored on the lap so the
+        // online validator can correct the head/tail of a reconstructed lap time
+        // instead of guessing at it.
+        const trackLengthM = buf.lapLenEst > 0
+          ? Math.round(buf.lapLenEst)
+          : (recLapLen > 0 ? Math.ceil(recLapLen / 10) * 10 : 0);
         // Fuel burned across the lap: the tank at the lap's start less the last reading
         // before the line. Dropped unless the start reading really is from the start of
         // this lap AND the tank went DOWN by a lap-sized amount — a mid-lap join, a
@@ -768,6 +771,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
             track: m.trackName || "Live",
             sessionType: m.sessionType || null, // coarse game mode: Time Trial / Qualifying / …
             sessionId: m.sessionId || null,     // the drive this lap belongs to
+            // Circuit identity + true length. Older laps carry neither and resolve
+            // from the display name instead (see trackSlugForLap) — these just make
+            // the answer exact rather than inferred, and give the online leaderboard
+            // validator a real lap length to reconstruct against.
+            ...(typeof m.trackId === "number" && m.trackId >= 0 ? { trackId: m.trackId } : {}),
+            ...(m.trackSlug ? { trackSlug: m.trackSlug } : {}),
+            ...(trackLengthM > 0 ? { trackLengthM } : {}),
             // Conditions the lap was run in → the Live lap log's per-session header.
             ...(typeof weather === "number" ? { weather } : {}),
             ...(typeof trackTemp === "number" && trackTemp > 0 ? { trackTemp } : {}),
@@ -876,6 +886,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     }
     if (typeof fuelRemainingLaps === "number" && isFinite(fuelRemainingLaps)) {
       buf.lastFuelDelta = fuelRemainingLaps;
+    }
+    // Running estimate of the circuit's length, from distance ÷ lap fraction. Only
+    // sampled in the back half of a lap: near the line a small pct divides into a
+    // wild answer. Accurate to ~±1 m, and it's the ONLY source of a true track
+    // length for a lap — the last sample's distance is up to 10 m short of the
+    // line, which is enough to matter when the online validator reconstructs a lap
+    // time from the trace. Same trick the track-map fitter already uses.
+    // Deliberately accumulated ACROSS laps, not per lap — more samples, better
+    // estimate — but scoped to one circuit, so it's dropped the moment the track
+    // changes or a stale one would be stamped onto the next circuit's laps.
+    if (buf.lapLenTrack !== trackName) { buf.lapLenTrack = trackName; buf.lapLenEst = 0; }
+    if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
+      const est = lapDistance / lapPct;
+      if (isFinite(est) && est > buf.lapLenEst) buf.lapLenEst = est;
     }
     if (typeof lapDistance === "number" && isFinite(lapDistance)) {
       // x/z (world position) let a lap draw its OWN track-map outline on the Compare
@@ -1142,6 +1166,12 @@ function TrackMap({ telemetry, zones, recordedPath, filters, corners=[], W=280, 
 function lapSourceLabel(s) {
   if (s.lapNumber) return `Lap ${s.lapNumber} · ${s.lapTime ? fmtTime(s.lapTime) : "—"}${s.invalid ? " · ⚠ INVALIDATED" : ""}`;
   const m = s.meta || {};
+  // A reference pulled off the leaderboard reads as somebody else's lap, because
+  // that's what it is — the driver needs to tell it apart from a trace they
+  // loaded from a file at a glance.
+  if (s.source === "leaderboard") {
+    return `🏆 ${m.driver || "?"} · ${m.track || "?"}${m.lapTime ? ` · ${fmtTime(m.lapTime)}` : ""}`;
+  }
   const parts = [m.driver || "?", m.track || "?"];
   if (m.session) parts.push(m.session);
   if (m.tyres)   parts.push(m.tyres);
@@ -1283,6 +1313,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // mph across the Live KPIs, Telemetry readouts and Corner table. Persisted.
   const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
   useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
+
+  // Master switch for the online leaderboards. Off means the app makes no
+  // leaderboard request at all — not a failed one, none — which is the only
+  // honest way to offer "leave me out of this".
+  const [leaderboardEnabled, setLeaderboardEnabled] = useState(
+    () => localStorage.getItem(LS_ENABLED) !== "0");
+  useEffect(() => { localStorage.setItem(LS_ENABLED, leaderboardEnabled ? "1" : "0"); }, [leaderboardEnabled]);
 
   // Tyre temp units — the telemetry core always reports °C; the driver can read °C or °F
   // in the Telemetry Studio's Tyre Temps panel. Persisted.
@@ -1468,6 +1505,26 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // doesn't depend on storedLaps (which comes out of the recorder downstream).
   const loadedRefTrace = useMemo(() => refTraces.find(t=>t.id===activeTraceId)||null, [refTraces,activeTraceId]);
 
+  // Rehydrate the references this driver downloaded from the leaderboard. They're
+  // persisted (unlike file-loaded traces, where the user still has the file)
+  // because the app has to work with no network: a reference pulled on Tuesday
+  // has to still be there for Saturday's offline race weekend, and it's what
+  // every corner call and the whole debrief are measured against.
+  //
+  // File-loaded traces in the list are kept — only the persisted set is replaced,
+  // so switching driver swaps whose references are loaded without discarding a
+  // trace the user just opened from disk.
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeDriver) { setRefTraces(prev => prev.filter(t => t.source !== "leaderboard")); return; }
+    lapStore.getRefTraces(activeDriver).then(rows => {
+      if (cancelled) return;
+      const restored = rows.map(r => ({ ...r.trace, id: r.key, source: "leaderboard" }));
+      setRefTraces(prev => [...restored, ...prev.filter(t => t.source !== "leaderboard")]);
+    });
+    return () => { cancelled = true; };
+  }, [activeDriver]);
+
   // Telemetry comes solely from the Rust telemetry core. Until a connection delivers a
   // snapshot, fall back to a zeroed reading so the UI renders an idle state.
   const rawTel = liveTel || EMPTY_TEL;
@@ -1484,7 +1541,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // reference and comparison laps below. Laps are saved under the active driver.
   const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
     useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
-      activeDriver, sessionId, sessionTypeLabel, fakeMode);
+      activeDriver, sessionId, sessionTypeLabel, fakeMode,
+      // Only pass the circuit id/slug when telemetry actually identified it — a
+      // name borrowed from a loaded reference trace is a display fallback, not
+      // proof of which circuit the car is on.
+      trackInfo ? (rawTel.trackId ?? -1) : -1, trackInfo?.slug || null);
 
   // "Reset" the Session Laps panel. Archiving the current laps hides them from the
   // live Session-Laps / Analytics views permanently (the flag is persisted in
@@ -1995,8 +2056,12 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   };
 
   const removeTrace = id => {
+    const trace = refTraces.find(t => t.id === id);
     setRefTraces(prev => prev.filter(t=>t.id!==id));
     if (activeTraceId===id) setActiveTraceId(null);
+    // A downloaded reference is persisted, so removing it from the list has to
+    // remove it from storage too — otherwise it reappears on the next launch.
+    if (trace?.source === "leaderboard") lapStore.deleteRefTrace(id);
   };
 
   // ── Save / load a whole session of laps ──────────────────────────────────
@@ -2039,6 +2104,93 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const time = `${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}`;
     setCues(prev => [...prev.slice(-59), { text, time, type }]);
   }, []);
+
+  // ── Adopt a leaderboard entry as the active reference ────────────────────
+  // Two kinds of entry reach this. A LOCAL one (the board's own-laps preview)
+  // already carries its lap, which is in storedLaps and therefore already
+  // resolvable as a reference — pointing activeTraceId at it is the whole job.
+  // A REMOTE one carries only a trace path and has to be fetched first; that
+  // branch arrives with the download path.
+  //
+  // Either way the driver lands on Analytics, because a reference they can't see
+  // applied is indistinguishable from a button that did nothing.
+  const useLeaderboardEntry = useCallback(async (entry) => {
+    if (!entry) return;
+    const label = `${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`;
+
+    // Local: the lap is already in storedLaps, so it already resolves as a
+    // reference. Pointing activeTraceId at it is the whole job.
+    if (entry.lap?.id) {
+      setActiveTraceId(entry.lap.id);
+      setTab("compare");
+      addCue(`🏆 Reference set — ${label}`, "info");
+      return;
+    }
+
+    // Remote: already downloaded once? Re-use it rather than fetching again —
+    // this is what makes a saved reference work with no network at all.
+    const cachedId = `${activeDriver}::${entry.boardId}::${entry.driverId}`;
+    if (refTraces.some(t => t.id === cachedId)) {
+      setActiveTraceId(cachedId);
+      setTab("compare");
+      addCue(`🏆 Reference set — ${label}`, "info");
+      return;
+    }
+
+    if (!entry.tracePath) { addCue("🏆 That entry has no trace to download.", "warn"); return; }
+    addCue(`⬇ Downloading ${label}…`, "info");
+    const json = await fetchTrace(entry.tracePath);
+    if (!json) { addCue("⚠ Couldn't download that lap — check your connection.", "warn"); return; }
+
+    // traceToReference sanitises the samples. Not optional: this is third-party
+    // data heading for the coaching engine and the zone derivation that drives
+    // the voice calls.
+    const trace = traceToReference(json, { entry, boardId: entry.boardId });
+    if (!trace) { addCue("⚠ That lap's trace was malformed and wasn't loaded.", "warn"); return; }
+
+    // Persisted so it survives a restart — a reference pulled today has to still
+    // be there for an offline race weekend.
+    const key = await lapStore.putRefTrace(activeDriver, {
+      boardId: entry.boardId, entryId: entry.driverId,
+      displayName: entry.displayName, lapTime: entry.lapTimeMs / 1000, trace,
+    });
+    const id = key || crypto.randomUUID();
+    setRefTraces(prev => [{ ...trace, id }, ...prev.filter(t => t.id !== id)]);
+    setActiveTraceId(id);
+    setTab("compare");
+    const zones = deriveZonesFromTrace(trace).length;
+    addCue(`🏆 Reference set — ${label} · ${zones} strategy zones`, "info");
+  }, [addCue, activeDriver, refTraces]);
+
+  // ── Publish a lap to its board ───────────────────────────────────────────
+  // The lap awaiting confirmation; non-null while the publish dialog is open.
+  const [pendingPublish, setPendingPublish] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState(null);
+
+  const requestPublish = useCallback((lap) => {
+    setPublishResult(null);
+    setPendingPublish(lap);
+  }, []);
+
+  const confirmPublish = useCallback(async () => {
+    const lap = pendingPublish;
+    if (!lap) return;
+    setPublishing(true);
+    const res = await submitLap(lap, {
+      displayName: activeDriverObj?.name || activeDriver,
+      team: activeDriverObj?.team || null,
+    });
+    setPublishing(false);
+    setPublishResult(res);
+    if (res.ok && res.improved) {
+      addCue(`🏆 Published — P${res.pos} of ${res.total}`, "info");
+    } else if (res.ok) {
+      addCue("🏆 Already published a faster lap on that board", "info");
+    } else {
+      addCue(`⚠ ${res.reason}`, "warn");
+    }
+  }, [pendingPublish, activeDriver, activeDriverObj, addCue]);
 
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its
@@ -2090,6 +2242,33 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   }, [tel.lapPct, tel.speed, tel.lapDistance, tel.lapTime,
       tel.gamePaused, tel.driverStatus, tel.pitStatus, wsConnected,
       audioOn, liveCalls, liveCues, leadSeconds, speak, beep, addCue]);
+
+  // ── "That's your best — publish it?" ─────────────────────────────────────
+  // Offers to publish when a freshly-recorded lap is both publishable AND the
+  // driver's own fastest for its board. Both tests are PURELY LOCAL, so the
+  // prompt costs no network call and works offline — the upload only happens if
+  // the driver clicks, and only then is an account minted.
+  //
+  // Deliberately narrow. It fires on a personal best for a board, not on every
+  // good lap, because an offer to do something outward-facing that appears too
+  // often stops being an offer and becomes noise you learn to dismiss.
+  const [publishPrompt, setPublishPrompt] = useState(null);
+  const promptedRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!leaderboardEnabled || !storedLaps.length) return;
+    const lap = storedLaps[storedLaps.length - 1];
+    if (!lap || promptedRef.current.has(lap.id)) return;
+    promptedRef.current.add(lap.id);
+
+    if (!eligibility(lap).ok) return;
+    const { boardId } = boardIdForLap(lap);
+    // Fastest of this driver's own laps on the same board?
+    const isBest = !storedLaps.some((l) =>
+      l.id !== lap.id && !l.archived && l.lapTime > 0 && l.lapTime < lap.lapTime
+      && !isDemoLap(l) && isRankable(l) && boardIdForLap(l).boardId === boardId);
+    if (isBest) setPublishPrompt(lap);
+  }, [storedLaps, leaderboardEnabled]);
 
   // ── AI between-lap coach: one improvement tip when a lap completes ───────
   // Fires once per freshly-completed lap (at the start/finish line), grounded in
@@ -2190,6 +2369,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onSelectLap={(id)=>{ setComparisonLapId(id); setTab("compare"); }}
           onOpenSetup={openSetupForLap}
           onDeleteLap={deleteLap}
+          liveTrackSlug={trackInfo?.slug || null}
+          leaderboardEnabled={leaderboardEnabled}
+          onOpenBoard={()=>setTab("board")}
         />
       )}
 
@@ -2237,7 +2419,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
-          onDeleteLap={deleteLap} onExportLap={exportLapToFile}
+          onDeleteLap={deleteLap} onExportLap={exportLapToFile} onPublishLap={requestPublish}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
             zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
@@ -2268,6 +2450,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
           onExportProfile={exportProfile} onImportProfile={importProfile}
           onOpenTrace={()=>setTraceOpen(true)} onOpenCalibrator={onOpenCalibrator}
+          leaderboardEnabled={leaderboardEnabled} setLeaderboardEnabled={setLeaderboardEnabled}
+          driverProfile={activeDriverObj}
         />
       )}
 
@@ -2296,6 +2480,36 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         />
         );
       })()}
+
+      {publishPrompt && !pendingPublish && (
+        <PublishPrompt
+          lap={publishPrompt}
+          onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}
+          onDismiss={() => setPublishPrompt(null)}
+        />
+      )}
+
+      {pendingPublish && (
+        <PublishLapModal
+          lap={pendingPublish} driver={activeDriverObj}
+          busy={publishing} result={publishResult}
+          onConfirm={confirmPublish}
+          onClose={() => { setPendingPublish(null); setPublishResult(null); }}
+        />
+      )}
+
+      {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
+      {tab==="board" && (
+        <LeaderboardScreen
+          laps={storedLaps} driver={activeDriverObj}
+          // Demo laps are a replay and can never be published, so the
+          // comparability preview must not be based on one either.
+          recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
+          initialSlug={trackInfo?.slug || null}
+          enabled={leaderboardEnabled}
+          onUseReference={useLeaderboardEntry}
+        />
+      )}
 
       {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
       {tab==="ffb" && <FfbScreen ffb={ffb} />}

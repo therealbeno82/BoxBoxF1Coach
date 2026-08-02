@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
 import { computeDriverStats } from "../../lib/driverStats.js";
+import LeaderboardCard from "../LeaderboardCard.jsx";
 import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { getTrackByName } from "../../lib/trackData.js";
 import { inTauri } from "../../lib/env.js";
@@ -129,7 +130,8 @@ const TrashBtn = ({ onClick }) => (
 );
 
 export default function DashboardScreen({ driver, avatar, update, laps = [], driverCount = 1, units,
-  activeSkin = "default", onEnterCockpit, onSwitchDriver, onSelectLap, onOpenSetup, onDeleteLap }) {
+  activeSkin = "default", onEnterCockpit, onSwitchDriver, onSelectLap, onOpenSetup, onDeleteLap,
+  liveTrackSlug = null, leaderboardEnabled = true, onOpenBoard }) {
   const stats = useMemo(() => computeDriverStats(laps), [laps]);
 
   // Permanently drop a lap off the boards. Guarded by a confirm because deletion
@@ -236,6 +238,17 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             </div>
             <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, fontFamily: FONT.mono, flex: "none" }}>{driverCount} SIGNED</span>
           </button>
+
+          {/* Where the driver stands on the board for the circuit they last ran.
+              Renders nothing at all when offline or when the board is empty — an
+              offline launch has to look like this feature isn't there, not like
+              it's broken. That self-guard is also why it can sit outside the
+              hasLaps branch: no laps means no board to point at, so no card. */}
+          <LeaderboardCard
+            laps={laps} driver={driver} preferSlug={liveTrackSlug}
+            enabled={leaderboardEnabled} cardStyle={cardStyle}
+            onOpenBoard={onOpenBoard}
+          />
 
           {/* Donate */}
           <a href={KOFI_URL} target="_blank" rel="noreferrer" onClick={openExternal(KOFI_URL)} style={{ marginTop: "auto",

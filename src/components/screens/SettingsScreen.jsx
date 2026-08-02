@@ -16,6 +16,7 @@ import { parseProfileFile } from "../../lib/profileBackup.js";
 // running; there's nothing to launch. In plain browser dev there is no native
 // core at all, so the hint copy adapts to context (inTauri).
 import { inTauri } from "../../lib/env.js";
+import LeaderboardSettings from "../LeaderboardSettings.jsx";
 import { invoke } from "@tauri-apps/api/core";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 13 };
@@ -34,6 +35,7 @@ export default function SettingsScreen({
   drivers = [], activeDriver, onSignDriver, avatars = {}, onDeleteDriver, onEditDriver,
   onExportProfile, onImportProfile,
   onOpenTrace, onOpenCalibrator,
+  leaderboardEnabled, setLeaderboardEnabled, driverProfile,
 }) {
   const engine = voicePrefs.engine || "browser";
   const [orModels, setOrModels] = useState([]);
@@ -299,6 +301,14 @@ export default function SettingsScreen({
                 </div>
               </div>
             )}
+            {/* Online leaderboards: the master switch, what your board identity
+                actually is, and the only place a published lap can be taken back
+                down. */}
+            <LeaderboardSettings
+              enabled={leaderboardEnabled} setEnabled={setLeaderboardEnabled}
+              driver={driverProfile}
+            />
+
             {/* Console / second-device setup — the game sends telemetry to THIS
                 device's LAN IP, so surface the address(es) to enter in-game. */}
             {inTauri && (
