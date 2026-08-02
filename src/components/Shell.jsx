@@ -14,6 +14,7 @@ const NAV = [
   ["live",      "Live"],
   ["compare",   "Analytics"],
   ["coach",     "Coach"],
+  ["board",     "Leaderboard"],
   ["ffb",       "FFB"],
 ];
 

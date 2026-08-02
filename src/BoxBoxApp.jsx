@@ -5,6 +5,7 @@ import LiveScreen from "./components/screens/LiveScreen.jsx";
 import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
 import SettingsScreen from "./components/screens/SettingsScreen.jsx";
 import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
+import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
 import FfbScreen from "./components/screens/FfbScreen.jsx";
 import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
 import CarSetupModal from "./components/modals/CarSetupModal.jsx";
@@ -2076,6 +2077,26 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     setCues(prev => [...prev.slice(-59), { text, time, type }]);
   }, []);
 
+  // ── Adopt a leaderboard entry as the active reference ────────────────────
+  // Two kinds of entry reach this. A LOCAL one (the board's own-laps preview)
+  // already carries its lap, which is in storedLaps and therefore already
+  // resolvable as a reference — pointing activeTraceId at it is the whole job.
+  // A REMOTE one carries only a trace path and has to be fetched first; that
+  // branch arrives with the download path.
+  //
+  // Either way the driver lands on Analytics, because a reference they can't see
+  // applied is indistinguishable from a button that did nothing.
+  const useLeaderboardEntry = useCallback((entry) => {
+    if (!entry) return;
+    if (entry.lap?.id) {
+      setActiveTraceId(entry.lap.id);
+      setTab("compare");
+      addCue(`🏆 Reference set — ${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`, "info");
+      return;
+    }
+    addCue("🏆 That entry isn't downloadable yet — the online board isn't wired up.", "warn");
+  }, [addCue]);
+
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its
   // action point. Seconds → lap-fraction uses current speed and the lap length.
@@ -2332,6 +2353,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         />
         );
       })()}
+
+      {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
+      {tab==="board" && (
+        <LeaderboardScreen
+          laps={storedLaps} driver={activeDriverObj}
+          // Demo laps are a replay and can never be published, so the
+          // comparability preview must not be based on one either.
+          recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
+          initialSlug={trackInfo?.slug || null}
+          onUseReference={useLeaderboardEntry}
+        />
+      )}
 
       {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
       {tab==="ffb" && <FfbScreen ffb={ffb} />}
