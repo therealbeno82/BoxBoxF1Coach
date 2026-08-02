@@ -222,17 +222,6 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               letterSpacing: 2, cursor: "pointer", boxShadow: `0 8px 24px ${C.accent44}` }}>ENTER COCKPIT →</button>
           </div>
 
-          {/* Where the driver stands on the board for the circuit they last ran.
-              Renders nothing at all when offline or when the board is empty — an
-              offline launch has to look like this feature isn't there, not like
-              it's broken. That self-guard is also why it can sit outside the
-              hasLaps branch: no laps means no board to point at, so no card. */}
-          <LeaderboardCard
-            laps={laps} driver={driver} preferSlug={liveTrackSlug}
-            enabled={leaderboardEnabled} cardStyle={cardStyle}
-            onOpenBoard={onOpenBoard}
-          />
-
           {/* Switch driver */}
           <button onClick={onSwitchDriver} style={{ width: "100%", display: "flex", alignItems: "center", gap: 13,
             background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "13px 15px", cursor: "pointer",
@@ -249,6 +238,17 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             </div>
             <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, fontFamily: FONT.mono, flex: "none" }}>{driverCount} SIGNED</span>
           </button>
+
+          {/* Where the driver stands on the board for the circuit they last ran.
+              Renders nothing at all when offline or when the board is empty — an
+              offline launch has to look like this feature isn't there, not like
+              it's broken. That self-guard is also why it can sit outside the
+              hasLaps branch: no laps means no board to point at, so no card. */}
+          <LeaderboardCard
+            laps={laps} driver={driver} preferSlug={liveTrackSlug}
+            enabled={leaderboardEnabled} cardStyle={cardStyle}
+            onOpenBoard={onOpenBoard}
+          />
 
           {/* Donate */}
           <a href={KOFI_URL} target="_blank" rel="noreferrer" onClick={openExternal(KOFI_URL)} style={{ marginTop: "auto",
