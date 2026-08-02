@@ -325,17 +325,18 @@ function UseButton({ entry, blocked, verdict, onUse }) {
 // difference is the whole point.
 function statusLabel(status) {
   switch (status) {
-    case "loading": return "Loading…";
-    case "ready":   return "Published laps";
-    case "offline": return "Offline · showing your own laps";
-    case "error":   return "Couldn't reach the leaderboard · showing your own laps";
-    default:        return "";
+    case "loading":  return "Loading…";
+    case "ready":    return "Published laps";
+    case "disabled": return "Leaderboards off · showing your own laps";
+    case "offline":  return "Offline · showing your own laps";
+    case "error":    return "Couldn't reach the leaderboard · showing your own laps";
+    default:         return "";
   }
 }
 
 function statusTone(status) {
   if (status === "error") return C.orange;
-  if (status === "offline") return C.textMuted;
+  if (status === "offline" || status === "disabled") return C.textMuted;
   return C.textDim;
 }
 
@@ -344,6 +345,8 @@ function EmptyBoard({ boardId, filtered, status }) {
   const [title, body] =
     filtered
       ? ["Nothing on that compound", "Clear the tyre filter to see the rest of the board."]
+    : status === "disabled"
+      ? ["Leaderboards are turned off", `Turn them on in Settings to see laps other drivers have published at ${circuit}.`]
     : status === "offline"
       ? ["No network", `You haven't driven a Qualifying or Time Trial lap at ${circuit} either — published laps will appear here once you're back online.`]
     : status === "error"
@@ -355,7 +358,9 @@ function EmptyBoard({ boardId, filtered, status }) {
       margin: "auto", textAlign: "center", color: C.textFaint,
       fontSize: 12, lineHeight: 1.7, padding: "40px 20px", maxWidth: 420,
     }}>
-      <div style={{ fontSize: 26, marginBottom: 12 }}>{status === "error" ? "⚠" : status === "offline" ? "📡" : "🏁"}</div>
+      <div style={{ fontSize: 26, marginBottom: 12 }}>
+        {status === "error" ? "⚠" : status === "offline" ? "📡" : status === "disabled" ? "🔕" : "🏁"}
+      </div>
       <div style={{ fontSize: 14, fontWeight: 800, color: C.textMid, marginBottom: 6 }}>{title}</div>
       {body}
     </div>

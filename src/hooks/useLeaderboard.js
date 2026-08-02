@@ -5,7 +5,10 @@
 //   status "loading"  — a request is in flight
 //   status "ready"    — rows arrived (possibly zero: an empty board is a real,
 //                       correct answer and must not read as a failure)
-//   status "offline"  — the feature is off, unconfigured, or there's no network
+//   status "disabled" — the driver turned the feature off, or this build has no
+//                       server configured. Telling them "no network" here would
+//                       be a plain lie about their own machine.
+//   status "offline"  — there is genuinely no network
 //   status "error"    — we asked and didn't get an answer
 //
 // Collapsing those into one "no data" state is the usual way a leaderboard ends
@@ -18,6 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBoard, available } from "../lib/leaderboard/api.js";
 import { currentUserId } from "../lib/leaderboard/identity.js";
+import { configured } from "../lib/leaderboard/config.js";
 
 export function useLeaderboard(boardId, { enabled = true, limit = 50 } = {}) {
   const [state, setState] = useState({ status: "loading", entries: [], total: 0 });
@@ -26,7 +30,10 @@ export function useLeaderboard(boardId, { enabled = true, limit = 50 } = {}) {
   const load = useCallback(async () => {
     const seq = ++reqRef.current;
     if (!available({ enabled })) {
-      setState({ status: "offline", entries: [], total: 0 });
+      // Which of the two it is matters to the driver: one they chose, the other
+      // happened to them.
+      const status = (!enabled || !configured) ? "disabled" : "offline";
+      setState({ status, entries: [], total: 0 });
       return;
     }
     setState((s) => ({ ...s, status: "loading" }));
