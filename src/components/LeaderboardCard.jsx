@@ -53,13 +53,21 @@ export default function LeaderboardCard({ laps = [], driver, preferSlug = null, 
   return (
     <div style={{ ...cardStyle, display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-        <span style={{ fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 }}>
+        <span style={{ flex: "none", fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 }}>
           Leaderboard
         </span>
-        <button onClick={onOpenBoard} style={{
+        {/* Board names carry the country now ("UNITED ARAB EMIRATES – ABU DHABI"),
+            which can outrun a dashboard card. Truncate the name, never the arrow. */}
+        <button onClick={onOpenBoard} title={boardLabel(boardId) ?? undefined} style={{
           background: "transparent", border: "none", cursor: "pointer", padding: 0,
           fontSize: 9, letterSpacing: 1, color: C.textDim, fontFamily: FONT.mono,
-        }}>{boardLabel(boardId)?.toUpperCase()} →</button>
+          display: "flex", alignItems: "baseline", gap: 4, minWidth: 0,
+        }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {boardLabel(boardId)?.toUpperCase()}
+          </span>
+          <span style={{ flex: "none" }}>→</span>
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>

@@ -21,7 +21,7 @@ import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { matchReference } from "../../lib/coach/refMatch.js";
 import {
   TRACK_SLUGS, SESSION_TOKENS, SESSION_LABELS, COMPOUND_LABELS,
-  trackNameForSlug, boardLabel, BOARD_SEP,
+  trackNameForSlug, trackDisplayName, boardLabel, parseBoardId, BOARD_SEP,
 } from "../../lib/leaderboard/boardKey.js";
 import { localBoardEntries, entryAsRefLike, secOf } from "../../lib/leaderboard/entries.js";
 import { useLeaderboard } from "../../hooks/useLeaderboard.js";
@@ -141,7 +141,9 @@ export default function LeaderboardScreen({
           <label style={eyebrow}>Circuit</label>
           <div style={{ position: "relative" }}>
             <select value={slug} onChange={(e) => setSlug(e.target.value)} style={selectStyle("#ffffff")}>
-              {TRACK_SLUGS.map((s) => <option key={s} value={s}>{trackNameForSlug(s)}</option>)}
+              {/* In calendar order, not alphabetical — the driver is looking for
+                  "the next one" far more often than for a name. */}
+              {TRACK_SLUGS.map((s) => <option key={s} value={s}>{trackDisplayName(s)}</option>)}
             </select>
             <span style={caret}>▾</span>
           </div>
@@ -341,7 +343,9 @@ function statusTone(status) {
 }
 
 function EmptyBoard({ boardId, filtered, status }) {
-  const circuit = boardLabel(boardId)?.split(" · ")[0];
+  // Prose, not a label — "a lap at Silverstone" reads better than "a lap at
+  // Great Britain – Silverstone", so this is the one place that wants the short name.
+  const circuit = trackNameForSlug(parseBoardId(boardId)?.slug) ?? "this circuit";
   const [title, body] =
     filtered
       ? ["Nothing on that compound", "Clear the tyre filter to see the rest of the board."]

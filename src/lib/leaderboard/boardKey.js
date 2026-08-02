@@ -22,7 +22,7 @@
 // verbatim with the server-side validator, which re-derives the board id from an
 // uploaded payload rather than trusting the client's.
 
-import { TRACKS, getTrack, getTrackByName } from "../trackData.js";
+import { TRACKS, CALENDAR_SLUGS, getTrack, getTrackByName, trackFullName } from "../trackData.js";
 import { SESSION_GROUP } from "../sessionGroups.js";
 import { tyreLabel, tyreCondition } from "../tyres.js";
 
@@ -53,8 +53,10 @@ const COMPOUND_TOKEN_BY_LABEL = {
   "Super Hard": "superhard", "Inter": "inter", "Wet": "wet",
 };
 
-// Every track slug, in calendar order (the numeric key order of TRACKS).
-export const TRACK_SLUGS = Object.values(TRACKS).map((t) => t.slug);
+// Every track slug, in the season's running order (see CALENDAR_SLUGS — the
+// numeric key order of TRACKS is the game's internal track id, not the calendar).
+// Order matters only for display; every lookup below treats this as a set.
+export const TRACK_SLUGS = CALENDAR_SLUGS;
 
 // ─── Resolution ───────────────────────────────────────────────────────────────
 
@@ -135,16 +137,28 @@ export function parseBoardId(boardId) {
   return { slug, session };
 }
 
-// "Silverstone · Qualifying", or null for an id we can't parse.
+// "Great Britain – Silverstone · Qualifying", or null for an id we can't parse.
+// Note the two separators are different characters on purpose: the en dash joins
+// country to circuit, the middot joins circuit to session.
 export function boardLabel(boardId) {
   const parsed = parseBoardId(boardId);
   if (!parsed) return null;
-  return `${trackNameForSlug(parsed.slug)} · ${SESSION_LABELS[parsed.session]}`;
+  return `${trackDisplayName(parsed.slug)} · ${SESSION_LABELS[parsed.session]}`;
 }
 
-// Display name for a slug ("silverstone" → "Silverstone").
+const trackForSlug = (slug) => Object.values(TRACKS).find((t) => t.slug === slug) ?? null;
+
+// Canonical short name for a slug ("silverstone" → "Silverstone"). This is the
+// MATCHING name — it's what refMatch/sameTrack compare a lap's meta.track
+// against, so it must stay the string the recorder stamps. For anything a driver
+// reads, use trackDisplayName.
 export function trackNameForSlug(slug) {
-  return Object.values(TRACKS).find((t) => t.slug === slug)?.name ?? slug;
+  return trackForSlug(slug)?.name ?? slug;
+}
+
+// What the driver reads: "silverstone" → "Great Britain – Silverstone".
+export function trackDisplayName(slug) {
+  return trackFullName(trackForSlug(slug)) ?? slug;
 }
 
 // Every board id, in calendar order then session order. The Leaderboard screen
