@@ -142,12 +142,15 @@ export function checkCoverage(samples, trackLengthM = null) {
 export function checkErs(samples) {
   if (!Array.isArray(samples) || samples.length < 2) return { ok: true, flagged: false, drops: 0 };
 
-  let drops = 0, totalDrop = 0, worst = 0;
+  let drops = 0, totalDrop = 0, worst = 0, peak = 0;
   for (let i = 1; i < samples.length; i++) {
-    // Skip the start/finish reset window — see ersResetZoneM in limits.js.
+    // Everything here skips the start/finish reset window (ersResetZoneM in
+    // limits.js) — including the peak. The first bin of a lap can still hold the
+    // PREVIOUS lap's total, so reading it would measure the wrong lap entirely.
     if ((Number(samples[i].dist) || 0) < T.ersResetZoneM) continue;
     const prev = Number(samples[i - 1].ersSpent) || 0;
     const cur = Number(samples[i].ersSpent) || 0;
+    if (cur > peak) peak = cur;
     const drop = prev - cur;
     if (drop > T.ersDropKj) {
       drops++;
@@ -157,10 +160,16 @@ export function checkErs(samples) {
   }
 
   if (drops >= T.ersDropCountReject || worst > T.ersDropSingleRejectKj) {
-    return { ok: false, flagged: false, drops, reason: "The ERS counter rewinds during this lap — that's the signature of a flashback." };
+    return { ok: false, flagged: false, drops, peak, reason: "The ERS counter rewinds during this lap — that's the signature of a flashback." };
+  }
+  if (peak > T.ersMaxLapKj) {
+    return {
+      ok: false, flagged: false, drops, peak,
+      reason: `This lap deploys ${(peak / 1000).toFixed(1)}MJ of ERS, more than a car can store and recover in a lap.`,
+    };
   }
   const flagged = drops >= T.ersDropCountFlag || totalDrop > T.ersDropTotalFlagKj;
-  return { ok: true, flagged, drops, reason: null };
+  return { ok: true, flagged, drops, peak, reason: null };
 }
 
 // ─── (d) Sector sum ───────────────────────────────────────────────────────────
@@ -247,6 +256,7 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
 
   const ers = checkErs(samples);
   checks.ersDrops = ers.drops;
+  checks.ersPeakKj = ers.peak ?? null;
   if (!ers.ok) return { ok: false, verdict: null, reason: ers.reason, checks };
 
   const flagged = integral.flagged || sectors.flagged || ers.flagged;

@@ -147,12 +147,20 @@ export const THRESHOLDS = {
   ersDropCountReject: 3,  // 3+ drops → rejected
   ersDropTotalFlagKj: 50, // ...or a smaller count totalling more than this
   ersDropSingleRejectKj: 100,
-  // There is deliberately NO per-lap deployment ceiling here. An earlier version
-  // capped it at the familiar 4 MJ/lap and rejected genuine laps outright: the
-  // 2026 cars in the demo session deploy 3.7–10 MJ a lap (median 7.8), which the
-  // 350 kW MGU-K makes entirely normal. Without solid ground truth for the 2026
-  // limit, a ceiling is a threshold that only ever produces false rejections.
-  // Monotonicity is the real signal and it doesn't need one.
+
+  // Per-lap deployment ceiling. An earlier version used the familiar 4 MJ figure
+  // and rejected genuine laps, because 4 MJ is the ENERGY STORE's capacity, not a
+  // deployment limit — the car harvests throughout the lap, so what it can spend
+  // is the battery plus everything recovered on the way round. Under the 2026
+  // rules that's roughly 4 MJ stored + up to ~8.5 MJ recovered.
+  //
+  // Set well above that rather than at it. The demo session peaks at 9.99 MJ and
+  // those are RACE laps; boards only take qualifying and time-trial laps, where
+  // deployment is maximal, so real submissions should sit higher again. The cost
+  // of a ceiling set too low is rejecting somebody's genuine best lap with no
+  // recourse; the cost of one set too high is that an obviously fabricated trace
+  // has to be caught by one of the other four checks instead. Easy trade.
+  ersMaxLapKj: 13000,
 
   // (d) Sector sum. The recorder derives S3 as (total - s1 - s2), so for any
   // genuine recorder lap the three sectors sum to the lap time to float
