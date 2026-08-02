@@ -1175,6 +1175,12 @@ function TrackMap({ telemetry, zones, recordedPath, filters, corners=[], W=280, 
 function lapSourceLabel(s) {
   if (s.lapNumber) return `Lap ${s.lapNumber} · ${s.lapTime ? fmtTime(s.lapTime) : "—"}${s.invalid ? " · ⚠ INVALIDATED" : ""}`;
   const m = s.meta || {};
+  // A reference pulled off the leaderboard reads as somebody else's lap, because
+  // that's what it is — the driver needs to tell it apart from a trace they
+  // loaded from a file at a glance.
+  if (s.source === "leaderboard") {
+    return `🏆 ${m.driver || "?"} · ${m.track || "?"}${m.lapTime ? ` · ${fmtTime(m.lapTime)}` : ""}`;
+  }
   const parts = [m.driver || "?", m.track || "?"];
   if (m.session) parts.push(m.session);
   if (m.tyres)   parts.push(m.tyres);
@@ -1500,6 +1506,26 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // live telemetry has identified the circuit. Resolved from refTraces only, so it
   // doesn't depend on storedLaps (which comes out of the recorder downstream).
   const loadedRefTrace = useMemo(() => refTraces.find(t=>t.id===activeTraceId)||null, [refTraces,activeTraceId]);
+
+  // Rehydrate the references this driver downloaded from the leaderboard. They're
+  // persisted (unlike file-loaded traces, where the user still has the file)
+  // because the app has to work with no network: a reference pulled on Tuesday
+  // has to still be there for Saturday's offline race weekend, and it's what
+  // every corner call and the whole debrief are measured against.
+  //
+  // File-loaded traces in the list are kept — only the persisted set is replaced,
+  // so switching driver swaps whose references are loaded without discarding a
+  // trace the user just opened from disk.
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeDriver) { setRefTraces(prev => prev.filter(t => t.source !== "leaderboard")); return; }
+    lapStore.getRefTraces(activeDriver).then(rows => {
+      if (cancelled) return;
+      const restored = rows.map(r => ({ ...r.trace, id: r.key, source: "leaderboard" }));
+      setRefTraces(prev => [...restored, ...prev.filter(t => t.source !== "leaderboard")]);
+    });
+    return () => { cancelled = true; };
+  }, [activeDriver]);
 
   // Telemetry comes solely from the Rust telemetry core. Until a connection delivers a
   // snapshot, fall back to a zeroed reading so the UI renders an idle state.
@@ -2032,8 +2058,12 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   };
 
   const removeTrace = id => {
+    const trace = refTraces.find(t => t.id === id);
     setRefTraces(prev => prev.filter(t=>t.id!==id));
     if (activeTraceId===id) setActiveTraceId(null);
+    // A downloaded reference is persisted, so removing it from the list has to
+    // remove it from storage too — otherwise it reappears on the next launch.
+    if (trace?.source === "leaderboard") lapStore.deleteRefTrace(id);
   };
 
   // ── Save / load a whole session of laps ──────────────────────────────────
