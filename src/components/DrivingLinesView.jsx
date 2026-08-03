@@ -26,24 +26,13 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { C, FONT } from "../lib/ui/tokens.js";
 import { clamp, formatLapTime } from "../lib/format.js";
 import { cornerLabel, resolveSlug, CORNER_NAMES } from "../lib/cornerData.js";
+import { pedalT, pedalColor, lerpT, posAtFrac, headingAtDeg } from "../lib/racingLine.js";
+import TrackCamView from "./TrackCamView.jsx";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted on the map)
 const BRAKE_ON   = 12;          // brake % that counts as "on the brakes" (matches BoxBoxApp)
 const MIN_ZOOM = 0.5, MAX_ZOOM = 8; // map framing range; high end lets a single corner fill the view
-
-// ─── Pedal-input colouring for the driven line ───────────────────────────────
-// A single scalar t (0 = bright green, 1 = bright red) driven by the pedals:
-// throttle owns the green half, brake the red half, meeting at yellow when the
-// car is coasting off both pedals into a corner. Branchless so it stays smooth as
-// the driver trails off the brake and rolls back onto the throttle at corner exit.
-function pedalT(throttle, brake) {
-  const thr = typeof throttle === "number" ? clamp(throttle, 0, 100) : 100;
-  const brk = typeof brake    === "number" ? clamp(brake, 0, 100)    : 0;
-  return clamp(0.5 * (1 - thr / 100) + 0.5 * (brk / 100), 0, 1);
-}
-// t → CSS colour along a green→yellow→red hue ramp (130° green … 0° red).
-const pedalColor = (t) => `hsl(${Math.round(130 * (1 - t))}, 85%, 52%)`;
 
 // Split a line's points into a handful of quantised-colour paths so the driven
 // line renders as a smooth throttle/brake gradient with only ~BUCKETS DOM nodes
@@ -151,6 +140,9 @@ function buildLines(laps) {
       .sort((a, b) => (a.dist || 0) - (b.dist || 0))
       .map(s => ({
         x: s.x, z: s.z,
+        // Elevation rides along when the lap has it. Only trackGeometry reads it,
+        // to drape the road; laps without it leave the model flat.
+        ...(typeof s.y === "number" && isFinite(s.y) ? { y: s.y } : null),
         dist: s.dist || 0, speed: s.speed || 0,
         throttle: typeof s.throttle === "number" ? s.throttle : null,
         brake:    typeof s.brake    === "number" ? s.brake    : null,
@@ -188,12 +180,8 @@ function attachPaceCurves(lines) {
 }
 
 // ─── Curve addressing helpers ─────────────────────────────────────────────────
-// All four INTERPOLATE, never extrapolate: the segment fraction is clamped to
-// [0,1]. A live in-progress lap doesn't start at distance 0 (the recorder's
-// buffer begins wherever the car was), so a playhead of 0 sits BEFORE the first
-// sample — an unclamped fraction went negative there and ran the curve backwards
-// off its own start, which surfaced as a negative elapsed time on the transport.
-const lerpT = (f, lo, hi) => (hi > lo ? clamp((f - lo) / (hi - lo), 0, 1) : 0);
+// The time↔distance pair. Position, heading and the clamping rationale they all
+// share live in lib/racingLine.js, which the T-cam reads too.
 
 // Map a lap-time fraction (0..1) to the matching track-distance fraction using a
 // line's own time/distance curves.
@@ -234,29 +222,6 @@ function refDistForCompDist(refLine, compDistFrac) {
   return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
 }
 
-// Interpolated world position of a line at a track-distance fraction.
-function posAtFrac(line, fd) {
-  const { distAt, pts } = line;
-  const f = clamp(fd, 0, 1);
-  let i = 1; while (i < distAt.length && distAt[i] < f) i++;
-  i = Math.min(i, pts.length - 1);
-  const lo = distAt[i - 1] ?? 0, hi = distAt[i] ?? 1;
-  const t = lerpT(f, lo, hi);
-  return {
-    x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t,
-    z: pts[i - 1].z + (pts[i].z - pts[i - 1].z) * t,
-  };
-}
-
-// Heading (deg) of a line at a track-distance fraction, from a short chord around
-// the point — used to point the car marker along its direction of travel.
-function headingAt(line, fd) {
-  const e = 0.0025;
-  const a = posAtFrac(line, clamp(fd - e, 0, 1));
-  const b = posAtFrac(line, clamp(fd + e, 0, 1));
-  return Math.atan2(b.z - a.z, b.x - a.x) * 180 / Math.PI;
-}
-
 // World-space SVG path for a line's points, downsampled to keep the DOM light.
 function linePathD(pts, maxPts = 800) {
   if (!pts || pts.length < 2) return "";
@@ -277,6 +242,7 @@ export default function DrivingLinesView({
   playhead = 0, playing = false, onSeek, onSetPlaying,
 }) {
   const [viewMode, setViewMode] = useState("segments"); // "segments" | "sectors"
+  const [camMode, setCamMode]   = useState("map");      // "map" | "tcam" | "compare"
   const [zoom, setZoom]         = useState(1);
   const [syncMode, setSyncMode] = useState("pos");      // "pos" | "pace"
   const [speed, setSpeed]       = useState(1);
@@ -492,8 +458,48 @@ export default function DrivingLinesView({
   const refFrac = syncMode === "pace" ? refDistForCompDist(refLine, playhead) : playhead;
   const compCar = compLine ? posAtFrac(compLine, playhead) : null;
   const refCar  = refLine  ? posAtFrac(refLine, refFrac)   : null;
-  const compAngle = compLine ? headingAt(compLine, playhead) : 0;
-  const refAngle  = refLine  ? headingAt(refLine, refFrac)   : 0;
+  const compAngle = compLine ? headingAtDeg(compLine, playhead) : 0;
+  const refAngle  = refLine  ? headingAtDeg(refLine, refFrac)   : 0;
+
+  // The car the onboard camera rides: the driven lap, or the reference when only
+  // it has positions (a calibrator reference has no x/z and gets no line at all).
+  const camLine = compLine || refLine;
+  const camFrac = compLine ? playhead : refFrac;
+  // Compare needs two drawable lines; fall back the moment one goes away (picking
+  // a position-less reference mid-session would otherwise leave an empty pane).
+  const canCompare = !!(compLine && refLine);
+  useEffect(() => {
+    if (camMode === "compare" && !canCompare) setCamMode("tcam");
+  }, [camMode, canCompare]);
+  // Entering Compare forces POS-SYNC. At the same track distance both panes show
+  // the SAME corner from each seat, so the difference in where the tarmac sits IS
+  // the line difference — that's the whole point of putting them side by side.
+  // Pace-sync would have the two cameras in different parts of the circuit, which
+  // reads gap-building rather than line. It stays available; it's just not the
+  // sensible thing to land on.
+  useEffect(() => { if (camMode === "compare") setSyncMode("pos"); }, [camMode]);
+
+  // One camera per pane. Each rides its own car, but BOTH draw both ribbons — the
+  // point is to see your line and theirs from each vantage, not to split them up.
+  const camPanes = useMemo(() => {
+    const ghost = (car, angle, color) =>
+      car ? { x: car.x, z: car.z, yaw: angle * Math.PI / 180, color } : null;
+    if (camMode === "compare" && compLine && refLine) {
+      return [
+        { line: compLine, frac: playhead, label: comparisonLabel, accent: COMP_COLOR,
+          other: ghost(refCar, refAngle, REF_COLOR) },
+        { line: refLine, frac: refFrac, label: referenceLabel, accent: REF_COLOR,
+          other: ghost(compCar, compAngle, COMP_COLOR) },
+      ];
+    }
+    return [{
+      line: camLine, frac: camFrac,
+      label: compLine ? comparisonLabel : referenceLabel,
+      accent: compLine ? COMP_COLOR : REF_COLOR,
+      other: compLine ? ghost(refCar, refAngle, REF_COLOR) : ghost(compCar, compAngle, COMP_COLOR),
+    }];
+  }, [camMode, compLine, refLine, camLine, camFrac, playhead, refFrac,
+      comparisonLabel, referenceLabel, refCar, compCar, refAngle, compAngle]);
 
   // ── Viewport: fit the current segment's bounding box (both lines), padded;
   // the zoom slider tightens/widens the framing around the same centre. ──
@@ -723,7 +729,15 @@ export default function DrivingLinesView({
       {/* The map viewport */}
       <div style={{position:"relative",flex:"1 1 auto",minHeight:280,borderRadius:10,overflow:"hidden",
         border:"1px solid var(--line)",background:"radial-gradient(120% 120% at 50% 0%, #131a26 0%, #0a0d14 70%)"}}>
-        {vbox && (
+        {/* Onboard camera. Swaps only the VIEWPORT — every overlay below is an
+            absolutely-positioned sibling and carries straight over. */}
+        {camMode !== "map" && camLine && (
+          <TrackCamView model={trackModel || null}
+            driven={compLine} reference={refLine}
+            cornerMarks={cornerMarks} brakeMarks={refBrakeMarks}
+            panes={camPanes} />
+        )}
+        {camMode === "map" && vbox && (
           <svg viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
             style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block"}}>
             {road && (
@@ -773,7 +787,31 @@ export default function DrivingLinesView({
         <div style={{position:"absolute",left:12,top:11,zIndex:3,pointerEvents:"none",
           fontFamily:FONT.mono,fontSize:9,letterSpacing:1.5,color:"#5b6478",textTransform:"uppercase"}}>
           {trackName || "Track"}
-          {trackModel && trackModel.status === "fallback" ? " · approximate track" : ""}
+          {/* A synthetic road is mildly misleading in plan view and ACTIVELY
+              misleading from the seat, so say so louder in the camera modes. */}
+          {trackModel && trackModel.status === "fallback"
+            ? (camMode === "map" ? " · approximate track" : " · ⚠ approximate track shape")
+            : ""}
+          {/* Say when the road had to be moved to sit under the car. The shipped
+              centerlines are OSM traces and the fit is rigid, so on some circuits
+              the geometry is locally out by more than a track width — invisible on
+              the map, but from the seat it's the difference between driving on the
+              road and driving beside it. Don't hide the correction; report it. */}
+          {camMode !== "map" && trackModel?.seated > 2
+            ? ` · road seated ±${trackModel.seated.toFixed(0)} m` : ""}
+        </div>
+        {/* Camera mode (top-centre) */}
+        <div style={{position:"absolute",left:"50%",transform:"translateX(-50%)",top:8,zIndex:3,
+          display:"flex",gap:3,background:"rgba(8,11,18,0.7)",border:`1px solid ${C.borderStrong}`,
+          borderRadius:8,padding:3,backdropFilter:"blur(3px)"}}>
+          {[["map","Map"],["tcam","T-Cam"],["compare","Compare"]].map(([m,l])=>(
+            <button key={m} onClick={()=>setCamMode(m)}
+              disabled={m === "compare" && !canCompare}
+              title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
+              style={{...glassPill(camMode===m),padding:"3px 10px",
+                opacity: m === "compare" && !canCompare ? 0.35 : 1,
+                cursor: m === "compare" && !canCompare ? "not-allowed" : "pointer"}}>{l}</button>
+          ))}
         </div>
         {/* Live delta + line legend (top-right) */}
         <div style={{...overlayBox,right:10,top:10,pointerEvents:"none",display:"flex",alignItems:"center",gap:12,padding:"5px 10px"}}>
@@ -846,7 +884,9 @@ export default function DrivingLinesView({
           </div>
         )}
 
-        {/* Zoom (bottom-centre) */}
+        {/* Zoom (bottom-centre) — map only. A T-cam with a variable FOV is just
+            disorienting, and the control has no natural meaning from the seat. */}
+        {camMode === "map" && (
         <div style={{...overlayBox,left:"50%",transform:"translateX(-50%)",bottom:10,borderRadius:999,
           display:"flex",alignItems:"center",gap:8,padding:"5px 12px"}}>
           <button style={{...navBtn,border:"none",width:18}} title="Zoom out"
@@ -856,8 +896,11 @@ export default function DrivingLinesView({
           <button style={{...navBtn,border:"none",width:18}} title="Zoom in"
             onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
         </div>
+        )}
 
-        {/* Mini-map (bottom-right): whole circuit + current segment */}
+        {/* Mini-map (bottom-right): whole circuit + current segment. Kept in the
+            camera modes, where it earns its space — an onboard view strips away
+            every bit of global context about where on the lap you are. */}
         {mini && (
           <div style={{...overlayBox,right:10,bottom:10,width:mini.MW,height:mini.MH,overflow:"hidden"}}>
             <svg width="100%" height="100%" viewBox={`0 0 ${mini.MW} ${mini.MH}`}>

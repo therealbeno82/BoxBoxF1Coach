@@ -34,10 +34,15 @@ export function buildSubmission(lap) {
 
   // Round world positions to 10cm. They're only used to draw a racing line, the
   // recorder's own precision is nowhere near a millimetre, and at ~500 samples
-  // the trimmed digits are several KB of every upload.
+  // the trimmed digits are several KB of every upload. `y` gets the same
+  // treatment: it's published so a downloaded reference can drape elevation onto
+  // the T-cam's road, and it would otherwise ride along at full float width —
+  // sanitizeTraceSamples and this builder both SPREAD rather than whitelist, so a
+  // new channel ships by default whether or not anyone meant it to.
   const samples = sanitizeTraceSamples(lap.samples).map((s) => {
     const out = { ...s };
     if (typeof out.x === "number") out.x = Math.round(out.x * 10) / 10;
+    if (typeof out.y === "number") out.y = Math.round(out.y * 10) / 10;
     if (typeof out.z === "number") out.z = Math.round(out.z * 10) / 10;
     return out;
   });

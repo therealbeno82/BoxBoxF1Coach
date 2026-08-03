@@ -739,7 +739,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
             setup, tyreVisual, tyreActual, tyreAge, tyreWear, fuelInTank, fuelRemainingLaps,
             weather, trackTemp, airTemp,
-            worldX, worldZ,
+            worldX, worldY, worldZ,
             sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
             tyreSurfaceTemps, tyreInnerTemps } = tel;
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
@@ -993,6 +993,11 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       if (tCarc > 0) bin.tyreCarc = Math.round(tCarc);
       if (typeof worldX === "number" && typeof worldZ === "number" && isFinite(worldX) && isFinite(worldZ)) {
         bin.x = worldX; bin.z = worldZ;
+        // Elevation, draped onto the track model for the T-cam (trackGeometry's
+        // drapeElevation). Separately guarded because x/z come from the Motion
+        // packet's position and y is the only one a lap can do without — a lap
+        // recorded before this existed simply renders flat.
+        if (typeof worldY === "number" && isFinite(worldY)) bin.y = worldY;
       }
       buf.bins.set(Math.round(lapDistance / 10), bin);
     }

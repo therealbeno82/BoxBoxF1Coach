@@ -16,17 +16,20 @@
 //
 // model = {
 //   status: "real" | "fallback",
-//   centerline: [{ x, z, wl, wr, k }],     // world frame; wl/wr = width (m) left/right
+//   centerline: [{ x, y, z, wl, wr, k }],  // world frame; wl/wr = width (m) left/right
 //                                          // of travel; k = signed curvature (1/m)
 //   closed: boolean,                       // does the loop wrap?
 //   startIndex: number,                    // row nearest the lap's start/finish point
 //   rmse: number|null,                     // fit quality (real only)
 //   attribution: string|null,              // dataset credit (real only)
+//   seated: number,                        // m — peak lateral correction applied to
+//                                          // seat the road under the car (real only)
 // }
 //
-// The model is FLAT: the view is a top-down 2D plan, so rows carry no elevation.
-// (A `y` per row and an `elevAt(x, z)` sampler existed for the 3D chase-cam scene,
-// which was deleted — nothing read either once the view went 2D.)
+// Row height (`y`) is DRAPED FROM THE LAPS, not read from public/tracks/*.json —
+// the shipped geometry is 2D. The top-down plan view ignores it; the T-cam rides
+// it. Laps recorded before the recorder captured height drape flat (y = 0), which
+// is harmless in both views. Use elevAtRowFrac() to sample between rows.
 //
 // Pure math — no rendering dependency, so this stays cheap to import.
 // (The one exception is the corner-anchor cache: a real fit is the only place the
@@ -286,7 +289,200 @@ function boxBlur(vals, hw, passes, closed) {
   return v;
 }
 
+// Drape recorded elevation onto centerline rows: nearest-row accumulation of every
+// sample's y, cyclic gap fill, then smoothing. Mutates rows[i].y — every path here
+// writes it, so callers need no `y: 0` seed. No y anywhere → the model stays flat,
+// which is exactly what a lap recorded before the recorder captured height gets.
+//
+// Note the source is the LAPS, not the shipped track file: public/tracks/*.json is
+// 2D. So one lap with height lifts the whole scene for every comparison on that
+// circuit, including for a lap that has none of its own.
+function drapeElevation(rows, lines, closed) {
+  const samples = [];
+  for (const l of lines || []) {
+    for (const p of l?.pts || []) {
+      if (typeof p.y === "number" && isFinite(p.y) && typeof p.x === "number" && typeof p.z === "number") {
+        samples.push(p);
+      }
+    }
+  }
+  if (!samples.length) { for (const r of rows) r.y = 0; return; }
+
+  const n = rows.length;
+  const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
+  const nearestRow = buildGrid(rows, Math.max(8, arcSpacing(rows, closed) * 4));
+  for (const p of samples) {
+    const bi = nearestRow(p.x, p.z);
+    if (bi >= 0) { sum[bi] += p.y; cnt[bi]++; }
+  }
+  // Seed hit rows, then fill gaps by linear interpolation between hit rows.
+  const y = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) if (cnt[i]) y[i] = sum[i] / cnt[i];
+  const hits = [];
+  for (let i = 0; i < n; i++) if (y[i] != null) hits.push(i);
+  if (!hits.length) { for (const r of rows) r.y = 0; return; }
+  for (let h = 0; h < hits.length; h++) {
+    const i0 = hits[h];
+    const i1 = hits[(h + 1) % hits.length];
+    const gap = (i1 - i0 + n) % n || n;
+    for (let d = 1; d < gap; d++) {
+      const i = (i0 + d) % n;
+      if (!closed && i < i0) break; // open loop: don't wrap the fill
+      y[i] = y[i0] + ((y[i1] - y[i0]) * d) / gap;
+    }
+  }
+  for (let i = 0; i < n; i++) if (y[i] == null) y[i] = y[hits[0]];
+  // ~27 m smoothing window at 2.5 m spacing kills curb strikes and bin noise
+  // while keeping real gradients (Eau Rouge climbs ~40 m over 500 m — survives).
+  // This is why the T-cam reads height from the ROAD and never from a lap's own
+  // y: raw y carries ride height and suspension travel, which would bob the camera.
+  const smoothed = boxBlur(y, 5, 3, closed);
+  for (let i = 0; i < n; i++) rows[i].y = smoothed[i];
+}
+
+// Road height at a FRACTIONAL row index, linearly interpolated.
+//
+// Deliberately not a spatial (x, z) lookup: the old makeElevAt() hashed position to
+// the nearest row, which is piecewise-constant, so a camera crossing 2.5 m rows at
+// racing speed popped vertically ~14×/s. Every caller that wants height is already
+// walking rows by index, so interpolating between two of them is both cheaper and
+// smooth.
+export function elevAtRowFrac(rows, fi, closed = true) {
+  const n = rows?.length || 0;
+  if (!n) return 0;
+  const i0 = Math.floor(fi);
+  const t = fi - i0;
+  const wrap = (i) => (closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i)));
+  const a = rows[wrap(i0)].y || 0, b = rows[wrap(i0 + 1)].y || 0;
+  return a + (b - a) * t;
+}
+
+// ── Seat the road under the car ────────────────────────────────────────────────
+// solveAlignment is RIGID — one rotation and one translation for the whole
+// circuit. The shipped centerlines are OpenStreetMap traces whose local accuracy
+// varies along a lap, so no rigid transform can sit under the car everywhere, and
+// RMSE_ACCEPT tolerates up to 12 m of that.
+//
+// Measured on the demo session (Singapore, 25 laps) the residual is unmistakably
+// the GEOMETRY and not the driving: at a fixed point on the circuit the lap-to-lap
+// spread is 0.5-2.6 m while the offset common to all 25 laps swings −11.8 to
+// +11.1 m against a 7 m half-width. Twenty-five independent laps are not all
+// eleven metres off-road at the same corner.
+//
+// In the top-down plan view that's a few pixels. From the T-cam it puts the car in
+// the gravel, so this nudges each row sideways to take it back up.
+//
+// Minimal intervention, deliberately: it only ever corrects the amount by which a
+// line would sit OUTSIDE the road, so a circuit whose fit is already good gets a
+// correction of zero and keeps its surveyed geometry untouched. The shift is then
+// heavily smoothed, so the road bends rather than kinking, and the racing line's own
+// apexing — the high-frequency part, which is real driving — is preserved.
+const SNAP_MARGIN = 0.5;   // m — how far inside the edge to bring a line that's out
+const SNAP_MAX    = 15;    // m — cap, so a catastrophic fit can't warp the road absurdly
+const SNAP_WINDOW = 22;    // m — smoothing half-window for the correction
+const SNAP_PASSES = 4;     // see the iteration note below
+
+// Pair each line point with the row it's REALLY beside, by walking both in order.
+//
+// A Euclidean nearest-row lookup is wrong here and dangerously so. Street circuits
+// run alongside themselves — Singapore has several — so a grid lookup happily
+// matches a point to the road on the far side of a barrier, twenty metres of
+// concrete away. Feeding that into a lateral correction shoves the row across the
+// gap: the first version of this produced a 126°-per-row fold in the centerline.
+// Walking a monotone cursor forward along the lap cannot make that mistake, because
+// the correspondence is constrained by arc length, not by proximity.
+// Rows either side of the cursor. Consecutive lap samples are 10 m apart — about
+// four rows — so ±16 (40 m) is a wide margin on the step the cursor actually has to
+// make, while staying far short of the distance across to a parallel section. This
+// window is the inner loop of the whole seating pass, and a live lap re-fits every
+// 64 samples on the UI thread, so it's worth not making it bigger than it needs.
+const SNAP_SEARCH = 16;
+
+function pairLineToRows(rows, n, closed, pts) {
+  const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
+  const d2 = (i, p) => (rows[i].x - p.x) ** 2 + (rows[i].z - p.z) ** 2;
+  const wrap = (i) => (closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i)));
+  // Seed on the first point with a full scan; after that the cursor carries.
+  let cur = 0, bd = Infinity;
+  for (let i = 0; i < n; i++) { const d = d2(i, pts[0]); if (d < bd) { bd = d; cur = i; } }
+
+  for (const p of pts) {
+    let best = cur, bestD = d2(cur, p);
+    for (let k = -SNAP_SEARCH; k <= SNAP_SEARCH; k++) {
+      const i = wrap(cur + k);
+      const d = d2(i, p);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    cur = best;
+    // Signed lateral offset along this row's left normal (nx, nz) = (tz, −tx).
+    const prev = rows[wrap(best - 1)], next = rows[wrap(best + 1)];
+    let tx = next.x - prev.x, tz = next.z - prev.z;
+    const tl = hyp(0, 0, tx, tz) || 1; tx /= tl; tz /= tl;
+    sum[best] += (p.x - rows[best].x) * tz + (p.z - rows[best].z) * -tx;
+    cnt[best] += 1;
+  }
+  return { sum, cnt };
+}
+
+function seatRoadUnderLines(rows, lines, closed) {
+  const pts = [];
+  for (const l of lines || []) {
+    const own = (l?.pts || []).filter((p) => isFinite(p?.x) && isFinite(p?.z));
+    if (own.length >= 20) pts.push(own);
+  }
+  if (!pts.length) return 0;
+  const n = rows.length;
+  const hw = Math.max(2, Math.round(SNAP_WINDOW / Math.max(1, arcSpacing(rows, closed))));
+  const nx = new Array(n), nz = new Array(n), excess = new Array(n);
+  const applied = new Array(n).fill(0);
+
+  // ITERATE. One pass under-corrects badly: smoothing is what stops the road
+  // kinking, but blurring a localised excess also flattens its peak, so a single
+  // pass removed only about a third of the error. Re-measuring after each pass
+  // converges it, and it plateaus after a handful — no point running more.
+  for (let pass = 0; pass < SNAP_PASSES; pass++) {
+    for (let i = 0; i < n; i++) {
+      const prev = rows[closed ? (i - 1 + n) % n : Math.max(0, i - 1)];
+      const next = rows[closed ? (i + 1) % n : Math.min(n - 1, i + 1)];
+      let tx = next.x - prev.x, tz = next.z - prev.z;
+      const tl = hyp(0, 0, tx, tz) || 1; tx /= tl; tz /= tl;
+      nx[i] = tz; nz[i] = -tx;                 // left normal, the codebase convention
+      excess[i] = 0;
+    }
+    // Worst overhang per row across every line, so the road ends up wide enough
+    // for both cars rather than seated under whichever was processed last.
+    let worst = 0;
+    for (const own of pts) {
+      const { sum, cnt } = pairLineToRows(rows, n, closed, own);
+      for (let i = 0; i < n; i++) {
+        if (!cnt[i]) continue;
+        const d = sum[i] / cnt[i];
+        const halfW = Math.max(1, (d > 0 ? rows[i].wl : rows[i].wr) - SNAP_MARGIN);
+        const over = Math.abs(d) - halfW;
+        if (over <= 0) continue;
+        const want = Math.sign(d) * Math.min(over, SNAP_MAX);
+        if (Math.abs(want) > Math.abs(excess[i])) excess[i] = want;
+        worst = Math.max(worst, over);
+      }
+    }
+    if (worst < 0.25) break;                   // already seated
+    const shift = boxBlur(excess, hw, 3, closed);
+    for (let i = 0; i < n; i++) {
+      rows[i].x += nx[i] * shift[i];
+      rows[i].z += nz[i] * shift[i];
+      applied[i] += shift[i];
+    }
+  }
+  let peak = 0;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(applied[i]));
+  return peak;
+}
+
 function finishModel(rows, { status, closed, rmse = null, attribution = null, reverse = false, apexes = null }, lines) {
+  // Order matters: seat the road first so the elevation drape and the curvature
+  // channel are both computed on the geometry that actually gets drawn.
+  const seated = status === "real" ? seatRoadUnderLines(rows, lines, closed) : 0;
+  drapeElevation(rows, lines, closed);
   const kStep = Math.max(2, Math.round(6 / Math.max(1, arcSpacing(rows, closed))));
   const kappa = boxBlur(signedCurvature(rows, kStep, closed), Math.round(kStep * 2.5), 2, closed);
   rows.forEach((r, i) => { r.k = kappa[i]; });
@@ -331,6 +527,10 @@ function finishModel(rows, { status, closed, rmse = null, attribution = null, re
   return {
     status, centerline: rows, closed, startIndex, rmse, attribution,
     reverse, sfFrac, apexes,
+    // How far the road had to move to get under the car. 0 on a circuit whose
+    // rigid fit was already good; the T-cam surfaces it when it's large, because
+    // that's the honest signal that the shipped geometry is approximate there.
+    seated,
   };
 }
 

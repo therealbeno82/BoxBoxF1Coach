@@ -467,6 +467,9 @@ mod tests {
             assert!((0..=100).contains(&snap.ersBattery), "battery {}", snap.ersBattery);
             assert!(snap.sector2Pct > 0.0 && snap.sector2Pct < snap.sector3Pct && snap.sector3Pct < 1.0);
             assert!(snap.worldX.is_some() && snap.worldZ.is_some(), "the track map needs world position");
+            // worldY too: the lap recorder drapes it onto the track model to give the
+            // T-cam its road height, and a lap recorded without it renders dead flat.
+            assert!(snap.worldY.is_some(), "the T-cam needs world height");
             assert!(matches!(snap.tyreVisual, 7 | 8 | 16 | 17 | 18), "compound {}", snap.tyreVisual);
         }
 
