@@ -194,6 +194,8 @@ export default function LiveScreen({
   laps = [], sessionId, activeTrace, lastAdvice, refMismatch = null,
   liveMini = { durations: [], current: -1, tyre: null },
   mapSlot, legendChips = [], audioOn, onToggleAudio,
+  // Call lead: seconds of warning on every cue the legend chips above govern.
+  leadSeconds = 0, onLeadSeconds, leadRange = { min: 0, max: 1.5, step: 0.05 },
   focusAudioOn = true, onToggleFocusAudio, onOpenSetup, onResetSessionLaps,
   onSaveSession, onLoadSession, onSaveMap,
   // Demo Mode is replaying: the lap in progress is a replay, so grade its splits
@@ -581,6 +583,27 @@ export default function LiveScreen({
               )}
             </div>
           </div>
+          {/* Call lead — how far ahead of the reference's own mark the cues above are
+              spoken. Directly under the legend chips because it governs exactly those
+              categories, and next to the map because that map is where the marks are.
+              What it moves is the FIRST moment of sound: at 0.00 the leading edge of
+              the beep lands on the mark itself (brake as you hear the "br"), and
+              winding it up buys room to hear the whole word before acting. */}
+          {onLeadSeconds && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap",
+              opacity: audioOn ? 1 : 0.5, transition: "opacity .12s" }}>
+              <span style={{ flex: "none", fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase",
+                fontWeight: 700, color: C.textDim, fontFamily: FONT.ui }}>Call lead</span>
+              <input type="range" min={leadRange.min} max={leadRange.max} step={leadRange.step}
+                value={leadSeconds} onChange={(e) => onLeadSeconds(+e.target.value)}
+                title="How far ahead of the reference's mark every cue is spoken. 0 = the call starts on the mark."
+                style={{ flex: "1 1 140px", minWidth: 110, accentColor: C.blue, cursor: "pointer" }} />
+              <span style={{ flex: "none", minWidth: 68, textAlign: "right", fontFamily: FONT.mono,
+                fontSize: 11, fontWeight: 700, color: leadSeconds > 0 ? C.textBody2 : C.blue }}>
+                {leadSeconds > 0 ? `${leadSeconds.toFixed(2)}s early` : "ON MARK"}
+              </span>
+            </div>
+          )}
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{mapSlot}</div>
             <div onClick={onToggleAudio} title="Toggle track audio cues" style={{
