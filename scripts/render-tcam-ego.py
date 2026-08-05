@@ -70,7 +70,20 @@ GHOST_DECIMATE = 0.15   # 96k tris → ~14k. The ghost never draws nearer than
                         # it takes the .glb from 2.8 MB to under 450 KB.
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BLEND = os.path.join(HERE, "public", "Car Models", "Formula 2 Car High Poly.blend")
+# The model lives OUTSIDE public/, because anything under public/ is copied verbatim
+# by Vite into dist/ and from there into the installer — 49 MB of .blend/.c4d/.fbx
+# that nothing needs at runtime. assets-src/ is gitignored, so a fresh clone won't
+# have it; that's fine, the three baked files in public/ are committed and this script
+# only has to run when a camera constant changes. Set F1_COACH_MODELS to keep the
+# models somewhere else entirely.
+MODELS = os.environ.get("F1_COACH_MODELS") or os.path.join(HERE, "assets-src", "car-models")
+BLEND = os.path.join(MODELS, "Formula 2 Car High Poly.blend")
+if not os.path.exists(BLEND):
+    raise SystemExit(
+        f"[tcam-ego] model not found: {BLEND}\n"
+        "  It is gitignored (~49 MB). Restore it to assets-src/car-models/, or set\n"
+        "  F1_COACH_MODELS to the directory holding it."
+    )
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = argv[0] if argv else os.path.join(HERE, "public")

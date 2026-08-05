@@ -13,6 +13,14 @@ src-tauri/target
 # ~90 MB, near GitHub's 100 MB hard limit); re-fetch with `node scripts/fetch-kokoro-model.mjs`
 public/kokoro/
 
+# Source art for the baked T-Cam car assets — ~49 MB of .blend/.c4d/.fbx/.obj.
+# Deliberately OUTSIDE public/, which Vite copies verbatim into dist/ and the
+# installer; only the three derived files in public/ are needed at runtime, and those
+# ARE committed. Needed solely to re-run scripts/render-tcam-ego.py, so a clone
+# without it builds and runs fine — point F1_COACH_MODELS elsewhere if you keep the
+# models outside the repo.
+assets-src/
+
 # Dev-only synthetic lap (scripts/make-fixture-lap.mjs) — never commit; it would
 # ship in the packaged app from public/
 public/dev-fixture-lap.json
