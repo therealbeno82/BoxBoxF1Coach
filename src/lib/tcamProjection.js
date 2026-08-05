@@ -33,11 +33,20 @@
 // Tuning constants. All of these are meant to be adjusted by eye — a T-cam either
 // feels right or it doesn't, and no amount of derivation settles it.
 export const CAM_HEIGHT  = 1.25;  // m above the road — roughly airbox height
-export const CAM_SETBACK = 0.6;   // m behind the recorded point (that's the car's
-                                  // reference position; the camera sits behind the driver)
-export const CAM_PITCH   = 8;     // degrees down. Larger than a real onboard on
+export const CAM_SETBACK = 0.35;  // m behind the recorded point (that's the car's
+                                  // reference position, i.e. its centre). Was 0.6,
+                                  // where the ego car's own engine cover filled the
+                                  // bottom of the frame; 0.35 sits between the roll
+                                  // hoop and the cockpit, looking out THROUGH the
+                                  // halo, whose crown is at 1.11 m against a 1.25 m
+                                  // eye. Judge any change to this at a real pane's
+                                  // vertical FOV (~50°), not the 68° cap — the extra
+                                  // 18° is all below the frame, which is precisely
+                                  // where the halo lives.
+export const CAM_PITCH   = 14;    // degrees down. Larger than a real onboard on
                                   // purpose: with no scenery, a level camera fills
-                                  // half the frame with empty sky.
+                                  // half the frame with empty sky — and now that the
+                                  // ego car occupies the lower frame, more so.
 export const FOV_H       = 78;    // degrees horizontal. A real onboard is nearer
                                   // 90-100° — that wide angle is WHY onboards read
                                   // as fast. 65° feels telephoto and undersells speed.
@@ -99,11 +108,14 @@ export function horizonY(cam) {
 // canvas. So this isn't optional tidiness — without it the road tears apart at
 // every frame the camera is inside its own geometry, which is always.
 //
-// NEAR = 1.0 m rather than a hair above zero, and it provably never crops. With
-// height 1.25, pitch 8° and focal ≈ 426, solving sy = h for the ground puts the
-// frame's bottom edge at the road 1.84 m ahead; NEAR = 1.0 sits at fwd ≈ 0.83 m,
-// comfortably nearer. What it buys is a bound on the worst-case projected |sx|
-// (~2,600 px instead of tens of thousands), which keeps the rasteriser honest.
+// NEAR = 1.0 m rather than a hair above zero, and it provably never crops. Take the
+// WORST case — the vertical FOV cap, where the frame's bottom edge looks down
+// CAM_PITCH + FOV_V_MAX/2 = 48° — and the ground enters frame at 1.25/tan 48° =
+// 1.13 m. NEAR = 1.0 is measured along the view axis, so for a ground point it sits
+// at fwd = (1 − 1.25·sin 14°)/cos 14° = 0.72 m, still nearer. (At the old 8° pitch
+// those were 1.84 m and 0.83 m; raising the pitch closes the gap but doesn't shut
+// it.) What NEAR buys is a bound on the worst-case projected |sx| — thousands of
+// pixels instead of tens of thousands — which keeps the rasteriser honest.
 
 // Clip a segment to zc ≥ near, lerping in WORLD space so any per-vertex attribute
 // can be carried with the same t. Mutates nothing; returns null when fully behind.

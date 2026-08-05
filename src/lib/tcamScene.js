@@ -19,7 +19,8 @@
 // racing speed that's 0-3 steps a frame.
 
 import {
-  makeCamera, project, depth, horizonY, clipPolyNear, pathPoly, smoothYaw, SNAP_DIST,
+  makeCamera, project, depth, horizonY, clipPolyNear, pathPoly, smoothYaw,
+  SNAP_DIST, CAM_SETBACK, FOV_H,
 } from "./tcamProjection.js";
 import { posAtFracSmooth, headingAtMeters, pedalT, pedalColor } from "./racingLine.js";
 
@@ -148,12 +149,17 @@ export function buildTCamCamera({ line, frac, model, cursor, yawState, dt, w, h,
 
   const cam = makeCamera({
     // Set the eye back along the heading: the recorded x/z is the car's reference
-    // point, and the airbox camera sits behind the driver.
-    x: p.x - Math.cos(yaw) * 0.6,
-    z: p.z - Math.sin(yaw) * 0.6,
+    // point (its centre) and the camera sits behind it. Read from the constant rather
+    // than repeated here — this was a literal 0.6 silently shadowing CAM_SETBACK, so
+    // editing the constant changed nothing.
+    x: p.x - Math.cos(yaw) * CAM_SETBACK,
+    z: p.z - Math.sin(yaw) * CAM_SETBACK,
     y, yaw, w, h,
   });
-  return { cam, rowIndex, rowFrac, yawTarget, yaw };
+  // `ego` is where the driver's OWN car sits: at the recorded point itself, on the
+  // road, facing the smoothed heading. The camera is the same pose pulled back by
+  // CAM_SETBACK and raised by CAM_HEIGHT, so a car drawn here lands rigidly in frame.
+  return { cam, rowIndex, rowFrac, yawTarget, yaw, ego: { x: p.x, y, z: p.z, yaw } };
 }
 
 // ─── Road geometry ────────────────────────────────────────────────────────────
@@ -606,41 +612,70 @@ function paintRefRibbon(ctx, cam, pts) {
 }
 
 // ─── The other car ────────────────────────────────────────────────────────────
-// A ground-plane decal rather than a model. Everything in this scene is already a
-// polygon on the road surface, so a flat silhouette costs one more clipped quad and
-// carries the meaning exactly: "the other car was HERE". A vertical tick sells its
-// position when it's far enough away that the decal is a few pixels.
+// PLACEMENT IS RESOLVED SEPARATELY FROM PAINTING, because two consumers need the
+// identical answer: tcamCarLayer renders a WebGL car from it before the 2D pass
+// starts, and the blit further down has to agree about whether there is a car there
+// at all. Resolve once, hand both the same placement, and they cannot disagree.
 const OTHER_MIN_Z = 8;   // m — see below
 
-function paintOtherCar(ctx, cam, x, y, z, yaw, color) {
-  const zc = depth(cam, x, y, z);
+// Sit the car on the ROAD, not at its own recorded ride height — the same reason
+// the ribbons are draped: a car floating at suspension height beside a road drawn at
+// surface height reads as a bug rather than as travel. Returns null when there's
+// nothing to draw.
+export function resolveOtherCar(model, rowIndex, cam, other) {
+  if (!other || !cam) return null;
+  const rows = model?.centerline || null;
+  const n = rows?.length || 0;
+  const closed = !!model?.closed;
+  const y = rows ? (rows[walkTo(rows, n, closed, rowIndex, other.x, other.z)].y || 0) : 0;
   // Nothing until it's genuinely up the road. In POS-SYNC the other car is by
-  // definition at the same track distance, so it sits alongside at ~zero depth —
-  // a 5 m decal there straddles the near plane, sprawls across the whole lower
-  // frame and reads as a grey wall. It tells you nothing anyway: when the cars are
+  // definition at the same track distance, so it sits alongside at ~zero depth,
+  // straddling the near plane. It tells you nothing there anyway: when the cars are
   // level the ribbon already shows the line difference. This marker earns its place
   // in PACE-SYNC, where the gap opens and you want to see where they actually got to.
-  if (!(zc > OTHER_MIN_Z)) return;
-  const fx = Math.cos(yaw), fz = Math.sin(yaw);
+  if (!(depth(cam, other.x, y, other.z) > OTHER_MIN_Z)) return null;
+  return { x: other.x, y, z: other.z, yaw: other.yaw, color: other.color };
+}
+
+// The car's footprint on the tarmac. With no WebGL this IS the marker — everything
+// else in the scene is already a polygon on the road surface, so a flat silhouette
+// costs one more clipped quad and carries the meaning exactly: "the other car was
+// HERE". Under a 3D car it becomes the contact shadow, which is what keeps a lit
+// model from reading as pasted onto the road.
+function carQuad(ctx, cam, p, grow = 0) {
+  const fx = Math.cos(p.yaw), fz = Math.sin(p.yaw);
   const nx = fz, nz = -fx;
-  const L = 2.6, W = 0.95;   // half-length / half-width, ≈ a 5.2 × 1.9 m car
+  const L = 2.6 + grow, W = 0.95 + grow;   // half-length / half-width, ≈ a 5.2 × 1.9 m car
   ctx.beginPath();
-  if (pathPoly(ctx, cam, [
-    x + fx * L + nx * W, y, z + fz * L + nz * W,
-    x + fx * L - nx * W, y, z + fz * L - nz * W,
-    x - fx * L - nx * W, y, z - fz * L - nz * W,
-    x - fx * L + nx * W, y, z - fz * L + nz * W,
-  ])) {
+  return pathPoly(ctx, cam, [
+    p.x + fx * L + nx * W, p.y, p.z + fz * L + nz * W,
+    p.x + fx * L - nx * W, p.y, p.z + fz * L - nz * W,
+    p.x - fx * L - nx * W, p.y, p.z - fz * L - nz * W,
+    p.x - fx * L + nx * W, p.y, p.z - fz * L + nz * W,
+  ]);
+}
+
+function paintOtherCar(ctx, cam, p) {
+  if (carQuad(ctx, cam, p)) {
     ctx.closePath();
-    ctx.fillStyle = color; ctx.globalAlpha = 0.35; ctx.fill();
-    ctx.globalAlpha = 0.9; ctx.lineWidth = 1.4; ctx.strokeStyle = color; ctx.stroke();
+    ctx.fillStyle = p.color; ctx.globalAlpha = 0.35; ctx.fill();
+    ctx.globalAlpha = 0.9; ctx.lineWidth = 1.4; ctx.strokeStyle = p.color; ctx.stroke();
     ctx.globalAlpha = 1;
   }
-  const base = project(cam, x, y, z);
-  const top = project(cam, x, y + 1.4, z);
+  // A vertical tick sells its position once it's far enough away that the decal is
+  // only a few pixels.
+  const base = project(cam, p.x, p.y, p.z);
+  const top = project(cam, p.x, p.y + 1.4, p.z);
   ctx.beginPath();
   ctx.moveTo(base.sx, base.sy); ctx.lineTo(top.sx, top.sy);
-  ctx.strokeStyle = color; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.strokeStyle = p.color; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function paintCarShadow(ctx, cam, p) {
+  if (!carQuad(ctx, cam, p, 0.12)) return;
+  ctx.closePath();
+  ctx.fillStyle = "#000"; ctx.globalAlpha = 0.45; ctx.fill();
   ctx.globalAlpha = 1;
 }
 
@@ -650,7 +685,68 @@ function paintOtherCar(ctx, cam, x, y, z, yaw, color) {
 // move in frame. It's the cheapest way to make the view feel like an onboard: it
 // gives the eye a fixed reference, so yaw reads as the car turning rather than the
 // world swinging around for no reason.
-function paintEgo(ctx, w, h, color) {
+// The overlay is a Blender bake of the real car from THIS camera
+// (scripts/render-tcam-ego.py) — see public/tcam-ego.png. Compositing it needs one
+// scalar, because the render and the pane are pinhole views of the same car from the
+// same eye: the ratio of their focal lengths. The image supplies its own focal from
+// its width, so re-rendering at a different resolution needs no change here.
+//
+// It carries no livery, so tint it the way the ghost car is tinted — the colour is
+// what says whose seat this is in a two-pane Compare. Tinting is per-pixel over a
+// 1600 px image, so the result is cached; in practice that's two entries.
+const EGO_HALF_TAN = Math.tan(FOV_H * Math.PI / 360);
+const egoTintCache = new Map();
+
+// The overlay is a flat image, so on its own it has no idea which pixels are
+// paintwork and which are rubber. public/tcam-ego-mask.png answers that: a second
+// render over the identical camera whose ALPHA is "this pixel is bodywork". Cutting
+// the accent to that alpha and MULTIPLYING it in lands the lap colour on the body's
+// own shading and touches nothing else — where the mask is empty the source alpha is
+// zero, which source-over leaves exactly as rendered, so tyres, wishbones and wings
+// keep the black the model gave them.
+//
+// The obvious cheaper trick, tinting by luminosity with the "color" blend mode, does
+// not work: it washes the accent over every pixel with any brightness at all, so
+// rims and tyre highlights go blue too.
+function tintedEgo(img, mask, color) {
+  let c = egoTintCache.get(color);
+  if (!c) {
+    c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    if (mask?.naturalWidth) {
+      const t = document.createElement("canvas");
+      t.width = c.width;
+      t.height = c.height;
+      const tg = t.getContext("2d");
+      tg.drawImage(mask, 0, 0);
+      tg.globalCompositeOperation = "source-in";   // accent, cut to the body
+      tg.fillStyle = color;
+      tg.fillRect(0, 0, t.width, t.height);
+      g.globalCompositeOperation = "multiply";
+      g.drawImage(t, 0, 0);
+      // Guarantee the silhouette still matches the render exactly, whatever the two
+      // passes did at their antialiased edges.
+      g.globalCompositeOperation = "destination-in";
+      g.drawImage(img, 0, 0);
+    }
+    if (egoTintCache.size > 8) egoTintCache.clear();  // skins can mint new accents
+    egoTintCache.set(color, c);
+  }
+  return c;
+}
+
+function paintEgo(ctx, cam, w, h, color, img, mask) {
+  if (img?.naturalWidth) {
+    const s = cam.focal / ((img.naturalWidth / 2) / EGO_HALF_TAN);
+    const dw = img.naturalWidth * s, dh = img.naturalHeight * s;
+    ctx.drawImage(tintedEgo(img, mask, color), w / 2 - dw / 2, h / 2 - dh / 2, dw, dh);
+    return;
+  }
+  // Fallback for the frames before the image loads, and for anywhere it can't be
+  // fetched at all: the drawn hoop this replaced.
   ctx.save();
   // Halo hoop + central strut. Kept low and shallow: it's a reference mark, and
   // anything bigger just eats the road you're trying to read.
@@ -678,9 +774,14 @@ function paintEgo(ctx, w, h, color) {
 // Layer order is fixed rather than depth-sorted: everything sits on one surface, so
 // there is no occlusion to resolve — what matters is that the reference reads OVER
 // the driven line, matching the plan view's document order next door.
+//
+// `other` is a placement already resolved by resolveOtherCar, not a raw car. When
+// `drawOther` is supplied it replaces the flat decal — that's the hook the WebGL
+// car blits through, and it fires HERE, mid-scene, so the fog and the ego cockpit
+// still layer over the car exactly as they layer over the decal.
 export function drawTCamFrame(ctx, {
   cam, model, rowIndex, w, h, camDist, driven, reference, other, egoColor,
-  cornerMarks, brakeMarks,
+  egoImage, egoMask, egoLive, cornerMarks, brakeMarks, drawOther,
 }) {
   const hy = paintBackdrop(ctx, cam, w, h);
   const win = model ? roadWindow(model, rowIndex, cam) : null;
@@ -703,18 +804,23 @@ export function drawTCamFrame(ctx, {
     const pts = lineWindow(reference, camDist, rows, n, closed, rowIndex, cam);
     if (pts) paintRefRibbon(ctx, cam, pts);
   }
+  // The ghost's contact shadow is 2D either way — it's a mark on the tarmac, not a
+  // body. Then the blit, which carries BOTH cars and so has to fire whether or not
+  // there's a ghost: the ego is always in it.
   if (other) {
-    // Sit it on the road too, for the same reason the ribbons are: a car floating
-    // at its own recorded ride height beside a road drawn at surface height reads
-    // as a bug, not as suspension travel.
-    const y = rows ? (rows[walkTo(rows, n, closed, rowIndex, other.x, other.z)].y || 0) : 0;
-    paintOtherCar(ctx, cam, other.x, y, other.z, other.yaw, other.color);
+    if (drawOther) paintCarShadow(ctx, cam, other);
+    else paintOtherCar(ctx, cam, other);
   }
+  if (drawOther) drawOther(ctx);
   // Fog sits ABOVE the road and the lines but BELOW the labels: it should bury the
   // far geometry in haze, not the text telling you what's out there.
   paintFog(ctx, hy, w, h);
   paintCornerPosts(ctx, cam, cornerMarks, rows, n, closed, rowIndex);
-  paintEgo(ctx, w, h, egoColor || "#34c8ff");
+  // When the car layer is drawing the ego live it has already gone in above, with
+  // real wheels and real depth against the ghost. The baked overlay is then the
+  // fallback for exactly the cases the layer can't cover: no WebGL, a lost context,
+  // or the model still loading.
+  if (!egoLive) paintEgo(ctx, cam, w, h, egoColor || "#34c8ff", egoImage, egoMask);
 
   return { horizonY: hy, window: win };
 }
