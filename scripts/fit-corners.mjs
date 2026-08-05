@@ -1,10 +1,25 @@
-// ─── MEASURE CORNER APEXES FROM THE SHIPPED CENTERLINES ────────────────────────
+// ─── MEASURE CORNER APEXES FROM THE SOURCE CENTERLINE ──────────────────────────
 // One-time dev script (NOT wired into predev/prebuild — the output is committed).
-// Reads public/tracks/<slug>.json, finds each circuit's apexes from the centerline's
-// own curvature, and writes them back into the same file as `apexes`.
+// Finds each circuit's apexes from its centerline curvature and writes them back
+// into public/tracks/<slug>.json as `apexes`. Safe to run after fetch-tracks.
 //
 //   node scripts/fit-corners.mjs             # every covered circuit
 //   node scripts/fit-corners.mjs singapore   # just one
+//
+// DETECTION RUNS ON THE CHORD, NOT ON THE SHIPPED CENTERLINE — this is the one thing
+// to understand before touching this file (chordFromSource() has the full argument).
+// fetch-tracks resamples the source along a SPLINE, which is right for drawing a
+// corner but wrong for finding one: the detector calls a point "turning" by its
+// per-point heading change, and a spline smears every surveyed vertex's wobble across
+// the straight between vertices, so straights pick up a faint sustained curvature that
+// clears TURN_FLOOR and register as corners. Detecting on the spline put 42 of 424
+// apexes >25 m wrong and no threshold fixed it. So this script rebuilds the CHORD (a
+// linear resample of the same source, where a straight is exactly straight), detects
+// on that, and writes the fractions into the spline file. Rebuilt at the committed
+// 2-decimal precision, it reproduces the reviewed apexes exactly.
+//
+// The FORCED/EXCLUDED tables below are therefore still in the frame they were authored
+// in (chord fractions), and did not need re-tuning for the spline.
 //
 // WHY THIS EXISTS: corner positions used to be hand-estimated lap fractions in
 // src/lib/cornerData.js, and there was nothing to check them against — so they
@@ -31,6 +46,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The SAME source, id→slug map and projection fetch-tracks uses — detection has to
+// start from the identical circuit, just resampled differently (see below).
+import { TRACKS, fetchCircuits, toMetres } from "./lib/f1circuits.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "public/tracks");
@@ -38,6 +56,13 @@ const outDir = resolve(root, "public/tracks");
 const { CORNERS_BY_TRACK } = await import(
   pathToFileURL(resolve(root, "src/lib/cornerData.js")).href
 );
+
+// Must match the committed geometry's spacing and stored precision. Detection runs
+// on a chord rounded to the SAME 2 decimals public/tracks/*.json stores, so a corner
+// sitting exactly on TURN_FLOOR resolves identically here and there rather than
+// flipping on sub-centimetre noise (Zandvoort's T6/T7 is the one that does).
+const SPACING = 2.5;
+const COORD_DP = 2;
 
 const TURN_FLOOR = 0.005;   // rad/point of smoothed heading change — below this the road is straight
 const MERGE_M    = 70;      // same-direction apexes closer than this are ONE corner, split by a brief straightening
@@ -97,6 +122,40 @@ function arcLengths(P) {
   for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
   const total = cum[n - 1] + Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]);
   return { cum, total };
+}
+
+// THE CHORD — a LINEAR resample of the source, to SPACING, which is what the shipped
+// geometry USED to be before fetch-tracks moved to a spline. Detection runs on this,
+// not on the shipped centerline, and the reason is the whole point of this file:
+//   • The detector calls a point "turning" by its per-point heading change. On the
+//     chord a straight is EXACTLY straight — every heading change sits at the sparse
+//     surveyed vertices — so real straights read flat and stay below TURN_FLOOR.
+//   • The spline distributes each survey vertex's wobble smoothly across all the
+//     2.5 m points between vertices, so a straight carries a faint sustained curvature
+//     that clears the floor. Detecting there turns straights into corners and no
+//     threshold separates them (42/424 apexes land >25 m wrong).
+// So detect on the honest chord, then write the fractions into the spline file. The
+// apex is a fraction of the CHORD's arc length; the spline's differs by <0.3% of a
+// lap, which places the drawn marker 0.6 m from the true corner on average (2.5 m
+// worst) — the same acceptable gap the road itself moved when it was smoothed.
+function chordFromSource(coords) {
+  const pts = toMetres(coords);
+  const loop = [...pts, pts[0]];
+  const cum = [0];
+  for (let i = 1; i < loop.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(loop[i][0] - loop[i - 1][0], loop[i][1] - loop[i - 1][1]));
+  const total = cum[cum.length - 1];
+  const out = [];
+  let j = 1;
+  for (let d = 0; d < total; d += SPACING) {
+    while (j < cum.length - 1 && cum[j] < d) j++;
+    const t = (d - cum[j - 1]) / (cum[j] - cum[j - 1] || 1);
+    out.push([
+      +(loop[j - 1][0] + (loop[j][0] - loop[j - 1][0]) * t).toFixed(COORD_DP),
+      +(loop[j - 1][1] + (loop[j][1] - loop[j - 1][1]) * t).toFixed(COORD_DP),
+    ]);
+  }
+  return out;
 }
 
 // Smoothed per-point heading change (rad). Positive = left in the data's
@@ -182,17 +241,28 @@ if (only && !slugs.length) {
   process.exit(1);
 }
 
+// The source, so detection can rebuild the chord. fetch-tracks already fetched it to
+// build the spline that's committed — this is the same download, and the only thing
+// that stops this script running offline (it's a one-time dev tool, like fetch-tracks).
+const idBySlug = new Map(Object.entries(TRACKS).map(([id, slug]) => [slug, id]));
+const circuits = await fetchCircuits();
+
 let written = 0;
 for (const slug of slugs) {
   const file = resolve(outDir, `${slug}.json`);
   let data;
   try { data = JSON.parse(readFileSync(file, "utf8")); }
   catch { console.warn(`[fit-corners] ${slug}: no geometry — skipped`); continue; }
+  const feat = circuits.get(idBySlug.get(slug));
+  if (!feat) { console.warn(`[fit-corners] ${slug}: not in the f1-circuits dataset — skipped`); continue; }
 
   const want = CORNERS_BY_TRACK[slug].length;
-  const { cum, total } = arcLengths(data.points);
-  const s = heading(data.points);
-  let cs = mergeSplit(candidates(data.points, s, cum, total), total);
+  // Detect on the chord (see chordFromSource), write the apexes back into the shipped
+  // spline geometry (data.points) untouched.
+  const chord = chordFromSource(feat.geometry.coordinates);
+  const { cum, total } = arcLengths(chord);
+  const s = heading(chord);
+  let cs = mergeSplit(candidates(chord, s, cum, total), total);
 
   const apart = (a, b) => Math.min(Math.abs(a - b), 1 - Math.abs(a - b)) * total;
 
