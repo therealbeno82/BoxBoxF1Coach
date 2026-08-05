@@ -3,177 +3,177 @@
   "tracks": {
     "australia": {
       "file": "australia.json",
-      "lengthM": 5273,
+      "lengthM": 5276,
       "declaredM": 5278,
-      "points": 2110,
+      "points": 2111,
       "widths": "measured"
     },
     "bahrain": {
       "file": "bahrain.json",
-      "lengthM": 5418,
+      "lengthM": 5423,
       "declaredM": 5412,
-      "points": 2168,
+      "points": 2170,
       "widths": "measured"
     },
     "china": {
       "file": "china.json",
-      "lengthM": 5448,
+      "lengthM": 5453,
       "declaredM": 5451,
-      "points": 2180,
+      "points": 2182,
       "widths": "measured"
     },
     "spain": {
       "file": "spain.json",
-      "lengthM": 4664,
+      "lengthM": 4667,
       "declaredM": 4655,
-      "points": 1866,
+      "points": 1867,
       "widths": "measured"
     },
     "monaco": {
       "file": "monaco.json",
-      "lengthM": 3324,
+      "lengthM": 3329,
       "declaredM": 3337,
-      "points": 1330,
+      "points": 1332,
       "widths": "nominal"
     },
     "canada": {
       "file": "canada.json",
-      "lengthM": 4365,
+      "lengthM": 4368,
       "declaredM": 4361,
-      "points": 1747,
+      "points": 1748,
       "widths": "measured"
     },
     "austria": {
       "file": "austria.json",
-      "lengthM": 4302,
+      "lengthM": 4305,
       "declaredM": 4318,
-      "points": 1721,
+      "points": 1723,
       "widths": "measured"
     },
     "silverstone": {
       "file": "silverstone.json",
-      "lengthM": 5878,
+      "lengthM": 5883,
       "declaredM": 5891,
-      "points": 2352,
+      "points": 2354,
       "widths": "measured"
     },
     "hungary": {
       "file": "hungary.json",
-      "lengthM": 4376,
+      "lengthM": 4379,
       "declaredM": 4381,
-      "points": 1751,
+      "points": 1752,
       "widths": "measured"
     },
     "belgium": {
       "file": "belgium.json",
-      "lengthM": 6978,
+      "lengthM": 6983,
       "declaredM": 7004,
-      "points": 2792,
+      "points": 2794,
       "widths": "measured"
     },
     "italy": {
       "file": "italy.json",
-      "lengthM": 5787,
+      "lengthM": 5788,
       "declaredM": 5793,
-      "points": 2315,
+      "points": 2316,
       "widths": "measured"
     },
     "singapore": {
       "file": "singapore.json",
-      "lengthM": 4943,
+      "lengthM": 4947,
       "declaredM": 4928,
-      "points": 1978,
+      "points": 1979,
       "widths": "nominal"
     },
     "japan": {
       "file": "japan.json",
-      "lengthM": 5812,
+      "lengthM": 5816,
       "declaredM": 5807,
-      "points": 2325,
+      "points": 2327,
       "widths": "measured"
     },
     "usa": {
       "file": "usa.json",
-      "lengthM": 5520,
+      "lengthM": 5522,
       "declaredM": 5514,
-      "points": 2208,
+      "points": 2209,
       "widths": "measured"
     },
     "mexico": {
       "file": "mexico.json",
-      "lengthM": 4302,
+      "lengthM": 4305,
       "declaredM": 4304,
-      "points": 1721,
+      "points": 1723,
       "widths": "measured"
     },
     "brazil": {
       "file": "brazil.json",
-      "lengthM": 4298,
+      "lengthM": 4300,
       "declaredM": 4309,
       "points": 1720,
       "widths": "measured"
     },
     "abudhabi": {
       "file": "abudhabi.json",
-      "lengthM": 5293,
+      "lengthM": 5296,
       "declaredM": 5281,
-      "points": 2118,
+      "points": 2119,
       "widths": "nominal"
     },
     "imola": {
       "file": "imola.json",
-      "lengthM": 4898,
+      "lengthM": 4901,
       "declaredM": 4909,
-      "points": 1960,
+      "points": 1961,
       "widths": "nominal"
     },
     "netherlands": {
       "file": "netherlands.json",
-      "lengthM": 4255,
+      "lengthM": 4261,
       "declaredM": 4259,
-      "points": 1703,
+      "points": 1705,
       "widths": "measured"
     },
     "saudiarabia": {
       "file": "saudiarabia.json",
-      "lengthM": 6196,
+      "lengthM": 6202,
       "declaredM": 6175,
-      "points": 2479,
+      "points": 2481,
       "widths": "nominal"
     },
     "miami": {
       "file": "miami.json",
-      "lengthM": 5415,
+      "lengthM": 5423,
       "declaredM": 5412,
-      "points": 2167,
+      "points": 2170,
       "widths": "nominal"
     },
     "qatar": {
       "file": "qatar.json",
-      "lengthM": 5421,
+      "lengthM": 5425,
       "declaredM": 5380,
-      "points": 2169,
+      "points": 2171,
       "widths": "nominal"
     },
     "madring": {
       "file": "madring.json",
-      "lengthM": 5430,
+      "lengthM": 5440,
       "declaredM": 5474,
-      "points": 2173,
+      "points": 2177,
       "widths": "nominal"
     },
     "azerbaijan": {
       "file": "azerbaijan.json",
-      "lengthM": 5942,
+      "lengthM": 5946,
       "declaredM": 6003,
-      "points": 2377,
+      "points": 2379,
       "widths": "nominal"
     },
     "lasvegas": {
       "file": "lasvegas.json",
-      "lengthM": 6221,
+      "lengthM": 6226,
       "declaredM": 6201,
-      "points": 2489,
+      "points": 2491,
       "widths": "nominal"
     }
   }

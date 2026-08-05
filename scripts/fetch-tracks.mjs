@@ -1,10 +1,11 @@
 // ─── FETCH + CONVERT REAL CIRCUIT GEOMETRY ─────────────────────────────────────
 // One-time dev script (NOT wired into predev/prebuild — the output is committed).
 // Downloads the f1-circuits GeoJSON (github.com/bacinger/f1-circuits, MIT), projects
-// each circuit's lat/long centerline into a local metric frame, resamples to a uniform
-// ~2.5 m arc-length spacing, and writes compact JSON into public/tracks/ so the
-// packaged app can fetch them same-origin (the CSP blocks external hosts — same
-// reason /ort/ exists).
+// each circuit's lat/long centerline into a local metric frame, resamples it along a
+// spline to a uniform ~2.5 m arc-length spacing (see resample() — the spline is not a
+// cosmetic choice), and writes compact JSON into public/tracks/ so the packaged app
+// can fetch them same-origin (the CSP blocks external hosts — same reason /ort/
+// exists).
 //
 //   node scripts/fetch-tracks.mjs
 //
@@ -32,26 +33,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { catmullRom } from "../src/lib/racingLine.js";
+// The source dataset, the id→slug map and the projection are shared with
+// fit-corners.mjs — see scripts/lib/f1circuits.mjs for why they must agree.
+import { SRC, ATTRIBUTION, TRACKS, fetchText, toMetres } from "./lib/f1circuits.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "public/tracks");
-
-const SRC = "https://raw.githubusercontent.com/bacinger/f1-circuits/master";
-const ATTRIBUTION =
-  "Track geometry: f1-circuits (github.com/bacinger/f1-circuits), MIT © Tomislav Bacinger.";
-
-// f1-circuits feature id → app track slug (src/lib/trackData.js).
-const TRACKS = {
-  "au-1953": "australia",   "bh-2002": "bahrain",     "cn-2004": "china",
-  "es-1991": "spain",       "mc-1929": "monaco",      "ca-1978": "canada",
-  "at-1969": "austria",     "gb-1948": "silverstone", "hu-1986": "hungary",
-  "be-1925": "belgium",     "it-1922": "italy",       "sg-2008": "singapore",
-  "jp-1962": "japan",       "us-2012": "usa",         "mx-1962": "mexico",
-  "br-1940": "brazil",      "ae-2009": "abudhabi",    "it-1953": "imola",
-  "nl-1948": "netherlands", "sa-2021": "saudiarabia", "us-2022": "miami",
-  "qa-2004": "qatar",       "es-2026": "madring",     "az-2016": "azerbaijan",
-  "us-2023": "lasvegas",
-};
 
 // Median measured half-widths (m) from the TUMFTM racetrack-database, kept because the
 // GeoJSON carries centerlines only. Circuits absent here use NOMINAL_WIDTH.
@@ -65,27 +53,49 @@ const WIDTHS = {
 const NOMINAL_WIDTH = [6.0, 6.0];
 
 const SPACING = 2.5;   // meters between resampled centerline points
-const R_EARTH = 6371000;
 
-async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
-  return res.text();
+// ─── Resampling ────────────────────────────────────────────────────────────────
+// THE SOURCE IS COARSER THAN THE OUTPUT, and that is the whole reason this is a
+// spline and not a lerp. The GeoJSON ways carry a vertex every 5-10 m through a
+// corner; resampling them linearly puts the extra points ON THE CHORDS, so the
+// output looks dense while its shape stays a polygon — measured on the first
+// version of this file, 600+ points per lap turned by under 0.05° while individual
+// ones turned as much as 56° in a single 2.5 m step. Invisible in the plan view,
+// but the T-cam draws a corner from the seat and it arrived as flat panels.
+//
+// So interpolate BETWEEN the source vertices along a centripetal Catmull-Rom, the
+// same curve src/lib/racingLine.js runs the drawn lines through — imported rather
+// than re-typed, so the geometry and the app can't disagree about what a curve is.
+// It passes through every surveyed vertex; only the invented points in between move.
+const SUB = 16;   // spline samples per source segment — at 5-10 m spacing that's a
+                  // sub-metre polyline, whose own chord error is a few mm
+
+// The curve through a closed ring of [x, y] vertices, as a dense polyline.
+export function spline(pts) {
+  // A GeoJSON ring usually repeats its first vertex last. Left in, that's a
+  // zero-length span, which collapses a centripetal knot and drops the join back
+  // to a chord — the one corner in the lap that stays faceted.
+  const ring = pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]
+    ? pts.slice(0, -1) : pts;
+  const m = ring.length;
+  const at = (i) => { const p = ring[((i % m) + m) % m]; return { x: p[0], z: p[1] }; };
+  const out = [];
+  for (let i = 0; i < m; i++) {
+    for (let s = 0; s < SUB; s++) {
+      const q = catmullRom(at(i - 1), at(i), at(i + 1), at(i + 2), s / SUB);
+      out.push([q.x, q.z]);
+    }
+  }
+  return out;
 }
 
-// Equirectangular projection about the circuit's own centroid: distortion over a few km
-// is far below the 12 m fit tolerance, and trackGeometry only ever aligns rigidly.
-function toMetres(coords) {
-  const lat0 = coords.reduce((a, c) => a + c[1], 0) / coords.length;
-  const lon0 = coords.reduce((a, c) => a + c[0], 0) / coords.length;
-  const kx = (Math.PI / 180) * R_EARTH * Math.cos((lat0 * Math.PI) / 180);
-  const ky = (Math.PI / 180) * R_EARTH;
-  return coords.map(([lon, lat]) => [(lon - lon0) * kx, (lat - lat0) * ky]);
-}
-
-// Uniform arc-length resample around the closed loop.
+// Uniform arc-length resample around the closed loop. Walks the DENSE polyline, so
+// the output keeps its exact uniform spacing (a spline is not unit-speed in its own
+// parameter, and plenty of the app assumes these points are evenly spaced) while
+// sitting on the curve rather than on the chords.
 function resample(pts, spacing) {
-  const loop = [...pts, pts[0]];
+  const curve = spline(pts);
+  const loop = [...curve, curve[0]];
   const cum = [0];
   for (let i = 1; i < loop.length; i++) {
     const dx = loop[i][0] - loop[i - 1][0], dy = loop[i][1] - loop[i - 1][1];
