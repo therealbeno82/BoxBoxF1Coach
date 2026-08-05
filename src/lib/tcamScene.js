@@ -22,7 +22,7 @@ import {
   makeCamera, project, depth, horizonY, clipPolyNear, pathPoly, smoothYaw,
   SNAP_DIST, CAM_SETBACK, FOV_H,
 } from "./tcamProjection.js";
-import { posAtFracSmooth, headingAtMeters, pedalT, pedalColor } from "./racingLine.js";
+import { posAtFracSmooth, headingAtMeters, pedalT, pedalColor, catmullRom } from "./racingLine.js";
 
 const BEHIND_M = 30;   // the road behind is clipped away, but the quads STRADDLING
                        // the camera must exist to be clipped rather than dropped
@@ -514,27 +514,63 @@ function walkTo(rows, n, closed, i, x, z) {
 // sit at visibly different heights and the ribbons would cross in mid-air. Lifting
 // both onto the road keeps the only difference between them the one that matters —
 // where on the road they are.
+//
+// SUBDIVIDED, because a 10 m bin is a 10 m straight. From the seat that's the single
+// most visible artefact in the frame: a 30 m-radius corner turns 19° per sample, so
+// the ribbon arrives as a run of flat panels rather than an arc. Sub-points come off
+// the same centripetal Catmull-Rom the camera rides, so the ribbon and the eye follow
+// one curve — and the curve still passes through every recorded sample, so nothing is
+// moved off where the car was. SUB_M is the facet length that survives: 2.5 m keeps
+// the tightest corner on the calendar under ~5° a step, which reads as smooth.
+const SUB_M = 2.5;
+const SUB_MAX = 8;     // cap, so a dropped-packet gap can't explode into work
+
 function lineWindow(line, camDist, rows, n, closed, startRow, cam) {
-  if (!line?.pts?.length) return null;
+  const P = line?.pts;
+  if (!P?.length) return null;
   const lo = camDist - BEHIND_M, hi = camDist + AHEAD_M;
+  // The samples inside the window, as an index range: sub-points need their SHAPE
+  // neighbours, which for the first and last span sit outside the window itself.
+  let i0 = 0;
+  while (i0 < P.length && P[i0].dist < lo) i0++;
+  let i1 = i0;
+  while (i1 + 1 < P.length && P[i1 + 1].dist <= hi) i1++;
+  if (i1 <= i0) return null;
+  const at = (j) => P[j < 0 ? 0 : j >= P.length ? P.length - 1 : j];
+
   const out = [];
   let row = startRow;
   let wasAhead = false;
-  for (let i = 0; i < line.pts.length; i++) {
-    const p = line.pts[i];
-    if (p.dist < lo) continue;
-    if (p.dist > hi) break;
+  // Drape onto the road, then apply the same doubling-back cut the road window
+  // makes: on a tight complex the line 250 m ahead is beside the car, and a ribbon
+  // painted there reads as the driver having swerved into the runoff. Returns false
+  // once the line has come back behind us, which ends the walk.
+  const emit = (x, z, src) => {
     let y = 0;
-    if (rows) { row = walkTo(rows, n, closed, row, p.x, p.z); y = (rows[row].y || 0) + RIBBON_LIFT; }
-    // Same doubling-back cut the road window makes: on a tight complex the line
-    // 250 m down the road is beside the car, and a ribbon painted there reads as
-    // the driver having swerved into the runoff.
+    if (rows) { row = walkTo(rows, n, closed, row, x, z); y = (rows[row].y || 0) + RIBBON_LIFT; }
     if (cam) {
-      const zc = depth(cam, p.x, y, p.z);
+      const zc = depth(cam, x, y, z);
       if (zc > 2) wasAhead = true;
-      else if (wasAhead) break;
+      else if (wasAhead) return false;
     }
-    out.push({ x: p.x, z: p.z, y, throttle: p.throttle, brake: p.brake, dist: p.dist });
+    out.push({ x, z, y, throttle: src.throttle, brake: src.brake, dist: src.dist });
+    return true;
+  };
+
+  if (emit(P[i0].x, P[i0].z, P[i0])) {
+    outer:
+    for (let i = i0; i < i1; i++) {
+      const a = P[i], b = P[i + 1];
+      const steps = Math.max(1, Math.min(SUB_MAX, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / SUB_M)));
+      for (let s = 1; s <= steps; s++) {
+        const t = s / steps;
+        const q = s === steps ? b : catmullRom(at(i - 1), a, b, at(i + 2), t);
+        // Every sub-point of this span carries the span's OWN pedal reading — the
+        // painter colours each quad by its far end, so this keeps the gradient
+        // quantised exactly where it was before, one bin at a time.
+        if (!emit(q.x, q.z, { throttle: b.throttle, brake: b.brake, dist: a.dist + (b.dist - a.dist) * t })) break outer;
+      }
+    }
   }
   return out.length >= 2 ? out : null;
 }

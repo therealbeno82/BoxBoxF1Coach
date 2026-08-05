@@ -26,7 +26,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { C, FONT } from "../lib/ui/tokens.js";
 import { clamp, formatLapTime } from "../lib/format.js";
 import { cornerLabel, resolveSlug, CORNER_NAMES } from "../lib/cornerData.js";
-import { pedalT, pedalColor, lerpT, posAtFrac, headingAtDeg } from "../lib/racingLine.js";
+import { pedalT, pedalColor, lerpT, posAtFrac, headingAtDeg, catmullRomBezier } from "../lib/racingLine.js";
 import TrackCamView from "./TrackCamView.jsx";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
@@ -34,9 +34,21 @@ const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted o
 const BRAKE_ON   = 12;          // brake % that counts as "on the brakes" (matches BoxBoxApp)
 const MIN_ZOOM = 0.5, MAX_ZOOM = 8; // map framing range; high end lets a single corner fill the view
 
+// ─── Curved path segments ─────────────────────────────────────────────────────
+// Laps are recorded in 10 m distance bins, so joining samples with `L` draws every
+// corner as a run of chords — obvious once the map is zoomed in, and the same
+// artefact the T-cam ribbons had. A cubic through the same samples costs one `C`
+// instead of one `L` (identical DOM weight) and passes through every one of them.
+// `p0`/`p3` are the shape neighbours, taken from the DOWNSAMPLED index list so the
+// curve follows the points actually being drawn.
+function curveSeg(a, b, p0, p3) {
+  const { c1x, c1z, c2x, c2z } = catmullRomBezier(p0, a, b, p3);
+  return ` C ${c1x.toFixed(1)},${c1z.toFixed(1)} ${c2x.toFixed(1)},${c2z.toFixed(1)} ${b.x.toFixed(1)},${b.z.toFixed(1)}`;
+}
+
 // Split a line's points into a handful of quantised-colour paths so the driven
 // line renders as a smooth throttle/brake gradient with only ~BUCKETS DOM nodes
-// (one <path> per colour bucket, each a bundle of M/L subpaths) rather than one
+// (one <path> per colour bucket, each a bundle of M/C subpaths) rather than one
 // element per segment — cheap enough to survive the per-frame camera pan.
 function drivenGradientPaths(pts, maxPts = 600, buckets = 16) {
   if (!pts || pts.length < 2) return [];
@@ -44,12 +56,13 @@ function drivenGradientPaths(pts, maxPts = 600, buckets = 16) {
   const idxs = [];
   for (let i = 0; i < pts.length; i += step) idxs.push(i);
   if (idxs[idxs.length - 1] !== pts.length - 1) idxs.push(pts.length - 1);
+  const at = (k) => pts[idxs[clamp(k, 0, idxs.length - 1)]];
   const byBucket = new Map(); // bucket → concatenated subpath string
   for (let k = 1; k < idxs.length; k++) {
     const a = pts[idxs[k - 1]], b = pts[idxs[k]];
     const t = pedalT(b.throttle, b.brake);
     const bucket = Math.round(t * (buckets - 1));
-    const seg = ` M ${a.x.toFixed(1)},${a.z.toFixed(1)} L ${b.x.toFixed(1)},${b.z.toFixed(1)}`;
+    const seg = ` M ${a.x.toFixed(1)},${a.z.toFixed(1)}` + curveSeg(a, b, at(k - 2), at(k + 1));
     byBucket.set(bucket, (byBucket.get(bucket) || "") + seg);
   }
   const out = [];
@@ -222,14 +235,17 @@ function refDistForCompDist(refLine, compDistFrac) {
   return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
 }
 
-// World-space SVG path for a line's points, downsampled to keep the DOM light.
+// World-space SVG path for a line's points, downsampled to keep the DOM light and
+// curved through them rather than chorded (see curveSeg).
 function linePathD(pts, maxPts = 800) {
   if (!pts || pts.length < 2) return "";
   const step = Math.max(1, Math.floor(pts.length / maxPts));
-  let d = `M ${pts[0].x.toFixed(1)},${pts[0].z.toFixed(1)}`;
-  for (let i = step; i < pts.length; i += step) d += ` L ${pts[i].x.toFixed(1)},${pts[i].z.toFixed(1)}`;
-  const last = pts[pts.length - 1];
-  d += ` L ${last.x.toFixed(1)},${last.z.toFixed(1)}`;
+  const idxs = [];
+  for (let i = 0; i < pts.length; i += step) idxs.push(i);
+  if (idxs[idxs.length - 1] !== pts.length - 1) idxs.push(pts.length - 1);
+  const at = (k) => pts[idxs[clamp(k, 0, idxs.length - 1)]];
+  let d = `M ${pts[idxs[0]].x.toFixed(1)},${pts[idxs[0]].z.toFixed(1)}`;
+  for (let k = 1; k < idxs.length; k++) d += curveSeg(at(k - 1), at(k), at(k - 2), at(k + 1));
   return d;
 }
 
