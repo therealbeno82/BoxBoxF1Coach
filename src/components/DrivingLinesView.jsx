@@ -594,13 +594,14 @@ export default function DrivingLinesView({
   useEffect(() => {
     if (camMode === "compare" && !canCompare) setCamMode("tcam");
   }, [camMode, canCompare]);
-  // Entering Compare forces POS-SYNC. At the same track distance both panes show
-  // the SAME corner from each seat, so the difference in where the tarmac sits IS
-  // the line difference — that's the whole point of putting them side by side.
-  // Pace-sync would have the two cameras in different parts of the circuit, which
-  // reads gap-building rather than line. It stays available; it's just not the
-  // sensible thing to land on.
-  useEffect(() => { if (camMode === "compare") setSyncMode("pos"); }, [camMode]);
+  // Sync mode is the USER'S, and it survives every camera switch. Compare used to
+  // force it back to pos-sync on entry, on the reasoning that two panes at the same
+  // track distance show the same corner from each seat so the difference in where the
+  // tarmac sits IS the line difference. That reasoning is still right, and it's why
+  // the initial state below is "pos" — which is all it ever needed to be. Forcing it
+  // on every entry meant a deliberate pace-sync was destroyed by a glance at Compare
+  // and did not come back on the way out, so cycling the cameras silently undid a
+  // choice the driver had made. A default is a starting point, not a correction.
 
   // One camera per pane. Each rides its own car, but BOTH draw both ribbons — the
   // point is to see your line and theirs from each vantage, not to split them up.
