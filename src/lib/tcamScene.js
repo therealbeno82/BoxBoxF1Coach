@@ -452,8 +452,10 @@ function paintCornerPosts(ctx, cam, marks, rows, n, closed, rowIndex) {
     // Same bounded-walk caveat as the brake gates, but harmless here: the post is
     // drawn at the MARK's own position and only its height comes from the row, so a
     // walk that fell short costs a metre or two of elevation, not a misplaced post.
+    // A post is world-static so it can't judder the way the ghost did, but it shares
+    // the drape for the same reason the ribbon does — one road surface, one answer.
     let y = 0;
-    if (rows) y = rows[walkTo(rows, n, closed, rowIndex, m.x, m.z)].y || 0;
+    if (rows) y = roadYAt(rows, n, closed, rowIndex, m.x, m.z);
     const zc = depth(cam, m.x, y, m.z);
     if (zc < cam.near || zc > AHEAD_M) continue;
     vis.push({ m, y, zc });
@@ -508,6 +510,22 @@ function walkTo(rows, n, closed, i, x, z) {
   return i;
 }
 
+// The draped road height under an arbitrary world point — INTERPOLATED between rows,
+// exactly as buildTCamCamera already does for the eye.
+//
+// Taking `rows[nearest].y` instead is a step function, and for anything that MOVES
+// along the road that step is a visible judder. Rows sit 2.5 m apart, so a car at
+// racing speed crosses one every ~2-3 frames at 60 Hz; each crossing teleports it by
+// the whole height difference between neighbouring rows. Spa is the worst case on the
+// calendar — Eau Rouge climbs about 17%, so that's ~0.4 m a step, and at 30 m up the
+// road it throws the ghost roughly 10 px up the screen between one frame and the next
+// while the tarmac beneath it slides by perfectly smoothly. That mismatch is the
+// surging: the camera was interpolating its own height and the ghost was not.
+function roadYAt(rows, n, closed, seedRow, x, z) {
+  const i = walkTo(rows, n, closed, seedRow, x, z);
+  return elevAt(rows, closed, rowFracAt(rows, closed, i, x, z));
+}
+
 // The stretch of a line inside the camera's window, with each point lifted onto the
 // draped ROAD surface rather than its own recorded y. Deliberate: raw y carries ride
 // height, kerb strikes and suspension travel, so two laps over the same tarmac would
@@ -547,7 +565,13 @@ function lineWindow(line, camDist, rows, n, closed, startRow, cam) {
   // once the line has come back behind us, which ends the walk.
   const emit = (x, z, src) => {
     let y = 0;
-    if (rows) { row = walkTo(rows, n, closed, row, x, z); y = (rows[row].y || 0) + RIBBON_LIFT; }
+    // Interpolated, like the eye and the ghost: the ribbon is the surface the ghost's
+    // shadow lands on, so if one snapped to rows and the other didn't they'd disagree
+    // by up to a row's worth of gradient wherever the track climbs.
+    if (rows) {
+      row = walkTo(rows, n, closed, row, x, z);   // running cursor, kept for the next point
+      y = elevAt(rows, closed, rowFracAt(rows, closed, row, x, z)) + RIBBON_LIFT;
+    }
     if (cam) {
       const zc = depth(cam, x, y, z);
       if (zc > 2) wasAhead = true;
@@ -652,7 +676,21 @@ function paintRefRibbon(ctx, cam, pts) {
 // identical answer: tcamCarLayer renders a WebGL car from it before the 2D pass
 // starts, and the blit further down has to agree about whether there is a car there
 // at all. Resolve once, hand both the same placement, and they cannot disagree.
-const OTHER_MIN_Z = 8;   // m — see below
+//
+// CLOSE RANGE IS A FADE, NOT A CUTOFF. This used to return null the moment the ghost
+// came within 8 m of the eye, and on a lap that's within a tenth of the reference the
+// gap crosses that line over and over: the car vanished whole and came back whole a
+// frame later, which reads as a rendering fault rather than as catching someone.
+// Nothing about 8 m is a real boundary. Instead the placement carries an `alpha` that
+// ramps off across the last several metres, and both painters honour it. It still
+// ends at nothing — once the ghost's rear wing is at the lens there is no view of it
+// that isn't a wall of bodywork across the frame, and holding it there would bury the
+// road you're being shown — but it gets there over ~9 m of closing instead of in one
+// frame. The other end of that ramp is also what keeps POS-SYNC honest: there both
+// cars sit at the same track distance, so the ghost is alongside at ~zero depth and
+// falls out at alpha 0 exactly as the old cutoff dropped it.
+const FADE_FULL = 12;   // m of camera-axis depth — fully opaque at or beyond this
+const FADE_GONE = 3;    // m — the car's rear wing is about at the eye here
 
 // Sit the car on the ROAD, not at its own recorded ride height — the same reason
 // the ribbons are draped: a car floating at suspension height beside a road drawn at
@@ -663,14 +701,12 @@ export function resolveOtherCar(model, rowIndex, cam, other) {
   const rows = model?.centerline || null;
   const n = rows?.length || 0;
   const closed = !!model?.closed;
-  const y = rows ? (rows[walkTo(rows, n, closed, rowIndex, other.x, other.z)].y || 0) : 0;
-  // Nothing until it's genuinely up the road. In POS-SYNC the other car is by
-  // definition at the same track distance, so it sits alongside at ~zero depth,
-  // straddling the near plane. It tells you nothing there anyway: when the cars are
-  // level the ribbon already shows the line difference. This marker earns its place
-  // in PACE-SYNC, where the gap opens and you want to see where they actually got to.
-  if (!(depth(cam, other.x, y, other.z) > OTHER_MIN_Z)) return null;
-  return { x: other.x, y, z: other.z, yaw: other.yaw, color: other.color };
+  const y = rows ? roadYAt(rows, n, closed, rowIndex, other.x, other.z) : 0;
+  const zc = depth(cam, other.x, y, other.z);
+  const t = Math.max(0, Math.min(1, (zc - FADE_GONE) / (FADE_FULL - FADE_GONE)));
+  const alpha = t * t * (3 - 2 * t);   // smoothstep: no kink at either end of the ramp
+  if (alpha < 0.01) return null;
+  return { x: other.x, y, z: other.z, yaw: other.yaw, color: other.color, alpha };
 }
 
 // The car's footprint on the tarmac. With no WebGL this IS the marker — everything
@@ -692,10 +728,11 @@ function carQuad(ctx, cam, p, grow = 0) {
 }
 
 function paintOtherCar(ctx, cam, p) {
+  const a = p.alpha ?? 1;
   if (carQuad(ctx, cam, p)) {
     ctx.closePath();
-    ctx.fillStyle = p.color; ctx.globalAlpha = 0.35; ctx.fill();
-    ctx.globalAlpha = 0.9; ctx.lineWidth = 1.4; ctx.strokeStyle = p.color; ctx.stroke();
+    ctx.fillStyle = p.color; ctx.globalAlpha = 0.35 * a; ctx.fill();
+    ctx.globalAlpha = 0.9 * a; ctx.lineWidth = 1.4; ctx.strokeStyle = p.color; ctx.stroke();
     ctx.globalAlpha = 1;
   }
   // A vertical tick sells its position once it's far enough away that the decal is
@@ -704,14 +741,17 @@ function paintOtherCar(ctx, cam, p) {
   const top = project(cam, p.x, p.y + 1.4, p.z);
   ctx.beginPath();
   ctx.moveTo(base.sx, base.sy); ctx.lineTo(top.sx, top.sy);
-  ctx.strokeStyle = p.color; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.strokeStyle = p.color; ctx.globalAlpha = 0.75 * a; ctx.lineWidth = 1.6; ctx.stroke();
   ctx.globalAlpha = 1;
 }
 
+// The shadow fades with the car it belongs to — left at full strength it would
+// outlive the ghost by several metres and leave a dark patch sliding up the road
+// with nothing casting it.
 function paintCarShadow(ctx, cam, p) {
   if (!carQuad(ctx, cam, p, 0.12)) return;
   ctx.closePath();
-  ctx.fillStyle = "#000"; ctx.globalAlpha = 0.45; ctx.fill();
+  ctx.fillStyle = "#000"; ctx.globalAlpha = 0.45 * (p.alpha ?? 1); ctx.fill();
   ctx.globalAlpha = 1;
 }
 

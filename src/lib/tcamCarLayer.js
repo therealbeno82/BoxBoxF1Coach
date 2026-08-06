@@ -44,6 +44,14 @@ const FAR = 400;
 const WHEEL_RADIUS = 0.335;   // m — the model's tyre measures 0.67 m across
 const TYRE_MATERIAL = "Tyres";
 
+// The ghost is never fully solid. It isn't a car that's there — it's where someone
+// else's lap had got to — and at 0.86 the tarmac reads faintly through it without
+// the model losing its shape or its lap colour. It's also what makes the proximity
+// fade (resolveOtherCar's `alpha`, multiplied in below) look like more of the same
+// thing rather than a separate effect switching on: the car is already translucent,
+// so closing on it just makes it more so until it's gone.
+const GHOST_ALPHA = 0.86;
+
 // ─── Camera sync ──────────────────────────────────────────────────────────────
 // Rebuild tcamProjection's pinhole as a three PerspectiveCamera. This is an exact
 // re-expression of the same camera, not an approximation, and scripts/check-tcam-
@@ -191,25 +199,37 @@ export function createCarLayer(onReady) {
   // One car per ROLE and colour. Role matters because the ego and the ghost are on
   // screen at the same time in different colours, and keying on colour alone would
   // hand both the same object.
+  //
+  // The ghost's materials are marked transparent HERE, once, rather than whenever its
+  // opacity first drops below 1: `transparent` is part of three's program state and
+  // flipping it mid-run costs a shader recompile, whereas `opacity` is a plain uniform
+  // that can be rewritten every frame for free. They keep depthWrite on, so the model
+  // still occludes its own far side and reads as a shell rather than an x-ray of its
+  // own suspension. Being in the transparent queue also puts the ghost after the
+  // opaque ego in one pass, which is exactly the order the blend needs.
   const cars = new Map();
   const carFor = (role, color) => {
     const key = `${role}:${color}`;
     let entry = cars.get(key);
     if (!entry) {
+      const fades = role === "ghost";
       const root = template.clone(true);
+      const mats = [];
       root.traverse((o) => {
         if (!o.isMesh || !o.material) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        o.material = Array.isArray(o.material) ? mats.map((m) => m.clone()) : mats[0].clone();
+        const src = Array.isArray(o.material) ? o.material : [o.material];
+        o.material = Array.isArray(o.material) ? src.map((m) => m.clone()) : src[0].clone();
         for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
           if (m.name === BODY_MATERIAL) m.color.set(color);
+          if (fades) { m.transparent = true; m.opacity = GHOST_ALPHA; }
+          mats.push(m);
         }
       });
       const wheels = [];
       root.traverse((o) => { if (o.name === "wheelPivot") wheels.push(o); });
       root.visible = false;
       scene.add(root);
-      entry = { root, wheels };
+      entry = { root, wheels, mats, fades };
       cars.set(key, entry);
     }
     return entry;
@@ -219,6 +239,10 @@ export function createCarLayer(onReady) {
     entry.root.visible = true;
     entry.root.position.set(p.x, p.y, p.z);
     entry.root.rotation.set(0, modelYaw(p.yaw), 0);
+    if (entry.fades) {
+      const o = GHOST_ALPHA * (p.alpha ?? 1);
+      for (const m of entry.mats) m.opacity = o;
+    }
     if (typeof dist === "number") {
       // Roll angle straight off ground distance — no speed channel needed, and it
       // stays correct through a scrub or a pause because it isn't integrated.
@@ -245,9 +269,10 @@ export function createCarLayer(onReady) {
     },
 
     // `items` is one entry per pane: { cam, car, ego, dist, rect }. `car` is the
-    // ghost's resolved placement { x, y, z, yaw, color } or null; `ego` is the
-    // driver's own car in the same shape; `dist` is lap distance in metres, which
-    // rolls the wheels. `rect` is the pane's box in CSS px measured from the TOP.
+    // ghost's resolved placement { x, y, z, yaw, color, alpha } or null, where alpha
+    // is resolveOtherCar's proximity fade; `ego` is the driver's own car in the same
+    // shape, minus the fade — you are never far from yourself. `dist` is lap distance
+    // in metres, which rolls the wheels. `rect` is the pane's box in CSS px from the TOP.
     //
     // Both cars go in ONE pass so the depth buffer sorts them: an ego wheel really
     // does occlude a ghost further up the road, and two passes would have to fake it.
