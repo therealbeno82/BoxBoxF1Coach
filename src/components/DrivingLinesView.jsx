@@ -28,6 +28,7 @@ import { clamp, formatLapTime } from "../lib/format.js";
 import { cornerLabel, resolveSlug, CORNER_NAMES } from "../lib/cornerData.js";
 import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRomBezier } from "../lib/racingLine.js";
 import TrackCamView from "./TrackCamView.jsx";
+import TrackOrbitView from "./TrackOrbitView.jsx";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted on the map)
@@ -356,7 +357,9 @@ export default function DrivingLinesView({
   playhead = 0, playing = false, onSeek, onSetPlaying,
 }) {
   const [viewMode, setViewMode] = useState("segments"); // "segments" | "sectors"
-  const [camMode, setCamMode]   = useState("map");      // "map" | "tcam" | "compare"
+  // "map" and "orbit" are the two views of the whole scene (flat / free camera);
+  // "tcam" and "compare" are the onboard ones, which several overlays below key on.
+  const [camMode, setCamMode]   = useState("map");      // "map" | "orbit" | "tcam" | "compare"
   const [zoom, setZoom]         = useState(1);
   const [syncMode, setSyncMode] = useState("pos");      // "pos" | "pace"
   const [speed, setSpeed]       = useState(1);
@@ -586,6 +589,8 @@ export default function DrivingLinesView({
   // Compare needs two drawable lines; fall back the moment one goes away (picking
   // a position-less reference mid-session would otherwise leave an empty pane).
   const canCompare = !!(compLine && refLine);
+  // The two onboard modes, which the T-cam viewport and several overlays key on.
+  const onboard = camMode === "tcam" || camMode === "compare";
   useEffect(() => {
     if (camMode === "compare" && !canCompare) setCamMode("tcam");
   }, [camMode, canCompare]);
@@ -836,6 +841,17 @@ export default function DrivingLinesView({
   const CAR_WORLD = 0.16;                 // local-unit → world-metre scale (car ≈ 7 m)
   const carScale = clamp(CAR_WORLD, (11 * sc) / 44, (46 * sc) / 44); // floor 11 px, cap 46 px
 
+  // The same two cars for the 3D view, in ITS units: heading in radians, and lap
+  // distance in metres so the model's wheels roll. `main` marks the one the orbit
+  // camera watches — the driven lap, since that's the car you're steering the
+  // comparison from. Rebuilt per render, which is per frame while playing anyway.
+  const orbitCars = [
+    refCar && { x: refCar.x, z: refCar.z, yaw: refAngle * Math.PI / 180,
+      color: REF_COLOR, dist: refFrac * (refLine?.lapLen || 0) },
+    compCar && { x: compCar.x, z: compCar.z, yaw: compAngle * Math.PI / 180,
+      color: COMP_COLOR, dist: playhead * (compLine?.lapLen || 0), main: true },
+  ].filter(Boolean);
+
   return (
     <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",gap:10,overflow:"hidden"}}>
       {hidden.length > 0 && (
@@ -849,11 +865,20 @@ export default function DrivingLinesView({
         border:"1px solid var(--line)",background:"radial-gradient(120% 120% at 50% 0%, #131a26 0%, #0a0d14 70%)"}}>
         {/* Onboard camera. Swaps only the VIEWPORT — every overlay below is an
             absolutely-positioned sibling and carries straight over. */}
-        {camMode !== "map" && camLine && (
+        {onboard && camLine && (
           <TrackCamView model={trackModel || null}
             driven={compLine} reference={refLine}
             cornerMarks={cornerMarks} brakeMarks={refBrakeMarks}
             panes={camPanes} />
+        )}
+        {/* Free camera over the same scene. Shares the zoom control with the map —
+            one slider, read as a viewBox there and as a camera distance here. */}
+        {camMode === "orbit" && camLine && (
+          <TrackOrbitView model={trackModel || null}
+            driven={compLine} reference={refLine}
+            cornerMarks={cornerMarks} brakeMarks={refBrakeMarks}
+            cars={orbitCars} zoom={zoom}
+            onZoomBy={(f) => setZoom((z) => clamp(z * f, MIN_ZOOM, MAX_ZOOM))} />
         )}
         {camMode === "map" && vbox && (
           <svg viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
@@ -908,7 +933,7 @@ export default function DrivingLinesView({
           {/* A synthetic road is mildly misleading in plan view and ACTIVELY
               misleading from the seat, so say so louder in the camera modes. */}
           {trackModel && trackModel.status === "fallback"
-            ? (camMode === "map" ? " · approximate track" : " · ⚠ approximate track shape")
+            ? (onboard ? " · ⚠ approximate track shape" : " · approximate track")
             : ""}
           {/* Say when the road had to be moved to sit under the car. The shipped
               centerlines are OSM traces and the fit is rigid, so on some circuits
@@ -922,7 +947,7 @@ export default function DrivingLinesView({
         <div style={{position:"absolute",left:"50%",transform:"translateX(-50%)",top:8,zIndex:3,
           display:"flex",gap:3,background:"rgba(8,11,18,0.7)",border:`1px solid ${C.borderStrong}`,
           borderRadius:8,padding:3,backdropFilter:"blur(3px)"}}>
-          {[["map","Map"],["tcam","T-Cam"],["compare","Compare"]].map(([m,l])=>(
+          {[["map","Map"],["orbit","3D"],["tcam","T-Cam"],["compare","Compare"]].map(([m,l])=>(
             <button key={m} onClick={()=>setCamMode(m)}
               disabled={m === "compare" && !canCompare}
               title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
@@ -1002,9 +1027,11 @@ export default function DrivingLinesView({
           </div>
         )}
 
-        {/* Zoom (bottom-centre) — map only. A T-cam with a variable FOV is just
-            disorienting, and the control has no natural meaning from the seat. */}
-        {camMode === "map" && (
+        {/* Zoom (bottom-centre) — the two whole-scene views. A T-cam with a variable
+            FOV is just disorienting, and the control has no natural meaning from the
+            seat; in 3D it's the camera's distance, and the mouse wheel drives the
+            same state so the slider tracks a scroll. */}
+        {!onboard && (
         <div style={{...overlayBox,left:"50%",transform:"translateX(-50%)",bottom:10,borderRadius:999,
           display:"flex",alignItems:"center",gap:8,padding:"5px 12px"}}>
           <button style={{...navBtn,border:"none",width:18}} title="Zoom out"

@@ -17,21 +17,11 @@
 // construction.
 //
 // WHY AN ASSET AND NOT PROCEDURAL GEOMETRY. This used to build a car out of three.js
-// primitives, because the ghost is TINTED per lap — white for the reference, the
-// panel's accent for the comparison — and a model with its livery baked into a
-// texture can only ever be one car. public/tcam-car.glb has no textures at all: it's
-// fourteen flat materials, of which `Body` is its own. So the bodywork takes the lap
-// colour while tyres stay black and rims stay metal, which is better separation than
-// the procedural car ever had. See scripts/render-tcam-ego.py for how it's baked.
-//
-// FRAME. The app's world is already y-up with x/z on the ground, which is three's
-// convention too, so world coordinates pass through untouched. All the mapping work
-// is in the camera, below.
+// primitives, because the ghost is TINTED per lap. The model, its rig and the tinting
+// rules now live in lib/carModel.js, shared with the orbit map — all the mapping work
+// left here is in the camera, below.
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-
-const MODEL_URL = "/tcam-car.glb";
-const BODY_MATERIAL = "Body";   // the one material that carries the lap colour
+import { loadCarTemplate, instanceCar } from "./carModel.js";
 
 // Depth range for the GL pass. NEAR has to be tiny because the EGO car surrounds the
 // camera — its halo crown passes about 0.2 m in front of the eye — so anything like
@@ -40,9 +30,6 @@ const BODY_MATERIAL = "Body";   // the one material that carries the lap colour
 // logarithmic depth buffer below is for: without it the far car z-fights itself.
 const NEAR = 0.03;
 const FAR = 400;
-
-const WHEEL_RADIUS = 0.335;   // m — the model's tyre measures 0.67 m across
-const TYRE_MATERIAL = "Tyres";
 
 // The ghost is never fully solid. It isn't a car that's there — it's where someone
 // else's lap had got to — and at 0.86 the tarmac reads faintly through it without
@@ -98,12 +85,6 @@ export function syncThreeCamera(c3, cam) {
   return c3;
 }
 
-// The model is exported nose-along +Z — Blender's −Y, which the glTF exporter's
-// Z-up→Y-up conversion maps to +Z. The world's heading ψ points along
-// (cos ψ, sin ψ) in x/z, and a yaw of θ about +Y sends +Z to (sin θ, cos θ), so
-// matching the two gives sin θ = cos ψ, cos θ = sin ψ — i.e. θ = π/2 − ψ.
-export const modelYaw = (yaw) => Math.PI / 2 - yaw;
-
 // ─── Layer ────────────────────────────────────────────────────────────────────
 // Returns null when WebGL is unavailable — a machine with a blocked or exhausted
 // GL context still gets the panel, just with tcamScene's flat decal. Nothing here
@@ -155,100 +136,41 @@ export function createCarLayer(onReady) {
   let disposed = false;
   let template = null;
 
-  new GLTFLoader().load(
-    MODEL_URL,
-    (gltf) => {
-      if (disposed) return;
-      template = gltf.scene;
-      rigWheels(template);
-      onReady?.();
-    },
-    undefined,
-    () => { /* no model — tcamScene's decal is the fallback, permanently */ },
-  );
-
-  // ── Wheel rig ───────────────────────────────────────────────────────────────
-  // The model carries its wheels as two nodes, each a Geometry-Nodes-generated PAIR
-  // spanning the full track width. That's convenient rather than awkward: both
-  // wheels of a pair share one axle line, so a single rotation about the axle's X
-  // axis spins the pair correctly.
-  //
-  // Their node origins are not on that axle though, so each gets wrapped in a pivot
-  // placed at the node's own bounding-box centre. Done once on the template, before
-  // any clone is taken, so every car inherits the rig.
-  const _box = new THREE.Box3();
-  const _c = new THREE.Vector3();
-  const rigWheels = (root) => {
-    const nodes = new Set();
-    root.traverse((o) => {
-      if (o.isMesh && o.material?.name === TYRE_MATERIAL && o.parent) nodes.add(o.parent);
-    });
-    for (const node of nodes) {
-      const parent = node.parent;
-      if (!parent) continue;
-      _box.setFromObject(node).getCenter(_c);
-      const pivot = new THREE.Group();
-      pivot.name = "wheelPivot";
-      pivot.position.copy(_c);
-      parent.add(pivot);
-      pivot.add(node);
-      node.position.sub(_c);
-    }
-  };
+  loadCarTemplate().then((t) => {
+    // A null template means the model wouldn't load — tcamScene's decal is then the
+    // fallback, permanently.
+    if (disposed || !t) return;
+    template = t;
+    onReady?.();
+  });
 
   // One car per ROLE and colour. Role matters because the ego and the ghost are on
   // screen at the same time in different colours, and keying on colour alone would
   // hand both the same object.
   //
-  // The ghost's materials are marked transparent HERE, once, rather than whenever its
-  // opacity first drops below 1: `transparent` is part of three's program state and
-  // flipping it mid-run costs a shader recompile, whereas `opacity` is a plain uniform
-  // that can be rewritten every frame for free. They keep depthWrite on, so the model
+  // The ghost blends and the ego doesn't. The ghost keeps depthWrite ON, so the model
   // still occludes its own far side and reads as a shell rather than an x-ray of its
-  // own suspension. Being in the transparent queue also puts the ghost after the
-  // opaque ego in one pass, which is exactly the order the blend needs.
+  // own suspension; being in the transparent queue also puts it after the opaque ego
+  // in one pass, which is exactly the order the blend needs.
   const cars = new Map();
   const carFor = (role, color) => {
     const key = `${role}:${color}`;
     let entry = cars.get(key);
     if (!entry) {
       const fades = role === "ghost";
-      const root = template.clone(true);
-      const mats = [];
-      root.traverse((o) => {
-        if (!o.isMesh || !o.material) return;
-        const src = Array.isArray(o.material) ? o.material : [o.material];
-        o.material = Array.isArray(o.material) ? src.map((m) => m.clone()) : src[0].clone();
-        for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
-          if (m.name === BODY_MATERIAL) m.color.set(color);
-          if (fades) { m.transparent = true; m.opacity = GHOST_ALPHA; }
-          mats.push(m);
-        }
-      });
-      const wheels = [];
-      root.traverse((o) => { if (o.name === "wheelPivot") wheels.push(o); });
-      root.visible = false;
-      scene.add(root);
-      entry = { root, wheels, mats, fades };
+      const car = instanceCar(template, { color, opacity: fades ? GHOST_ALPHA : 1 });
+      car.root.visible = false;
+      scene.add(car.root);
+      entry = { car, fades };
       cars.set(key, entry);
     }
     return entry;
   };
 
   const place = (entry, p, dist) => {
-    entry.root.visible = true;
-    entry.root.position.set(p.x, p.y, p.z);
-    entry.root.rotation.set(0, modelYaw(p.yaw), 0);
-    if (entry.fades) {
-      const o = GHOST_ALPHA * (p.alpha ?? 1);
-      for (const m of entry.mats) m.opacity = o;
-    }
-    if (typeof dist === "number") {
-      // Roll angle straight off ground distance — no speed channel needed, and it
-      // stays correct through a scrub or a pause because it isn't integrated.
-      const a = dist / WHEEL_RADIUS;
-      for (const w of entry.wheels) w.rotation.x = a;
-    }
+    entry.car.root.visible = true;
+    entry.car.place(p, dist);
+    if (entry.fades) entry.car.setOpacity(GHOST_ALPHA * (p.alpha ?? 1));
   };
 
   let size = { w: 0, h: 0, dpr: 1 };
@@ -283,7 +205,7 @@ export function createCarLayer(onReady) {
         renderer.clear(true, true, false);
         for (const it of items) {
           if (!it?.cam || (!it.car && !it.ego)) continue;
-          for (const c of cars.values()) c.root.visible = false;
+          for (const c of cars.values()) c.car.root.visible = false;
           if (it.ego) place(carFor("ego", it.ego.color), it.ego, it.dist);
           if (it.car) place(carFor("ghost", it.car.color), it.car, it.dist);
           syncThreeCamera(cam3, it.cam);
@@ -303,14 +225,13 @@ export function createCarLayer(onReady) {
       }
     },
 
+    // Materials are this layer's, geometry is the shared template's — see carModel.
+    // Disposing the geometry here would pull it out from under the orbit map's cars.
     dispose() {
       alive = false;
       disposed = true;
       canvas.removeEventListener("webglcontextlost", onLost);
-      scene.traverse((o) => {
-        o.geometry?.dispose?.();
-        if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose?.());
-      });
+      for (const c of cars.values()) c.car.dispose();
       cars.clear();
       template = null;
       renderer.dispose();

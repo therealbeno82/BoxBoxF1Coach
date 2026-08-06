@@ -8,7 +8,8 @@
 //   node scripts/check-tcam-camera.mjs
 import * as THREE from "three";
 import { makeCamera, project } from "../src/lib/tcamProjection.js";
-import { syncThreeCamera, modelYaw } from "../src/lib/tcamCarLayer.js";
+import { syncThreeCamera } from "../src/lib/tcamCarLayer.js";
+import { modelYaw } from "../src/lib/carModel.js";
 
 const DEG = Math.PI / 180;
 let checked = 0, worst = 0, worstAt = null;
