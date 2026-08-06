@@ -26,7 +26,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { C, FONT } from "../lib/ui/tokens.js";
 import { clamp, formatLapTime } from "../lib/format.js";
 import { cornerLabel, resolveSlug, CORNER_NAMES } from "../lib/cornerData.js";
-import { pedalT, pedalColor, lerpT, posAtFrac, headingAtDeg, catmullRomBezier } from "../lib/racingLine.js";
+import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRomBezier } from "../lib/racingLine.js";
 import TrackCamView from "./TrackCamView.jsx";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
@@ -139,11 +139,120 @@ function lapHasLine(lap) {
   return false;
 }
 
+// ─── Monotone cubic addressing ────────────────────────────────────────────────
+// Every curve in this file is a LOOKUP TABLE that gets differentiated by the eye:
+// the ghost's speed is the slope of its pace curve, so how the table interpolates
+// isn't a detail of accuracy, it's what the motion LOOKS like. Read linearly, that
+// slope is piecewise-constant — the ghost holds one pace for the ~11 frames it takes
+// to cross a 10 m sample, then changes it inside a single frame and holds the new one.
+// Replayed against real demo laps that step reaches 11 m/s of apparent speed in one
+// frame. A staircase in the position table is a surge on the screen.
+//
+// Fritsch-Carlson gives a C1 curve through the same points, so the slope is
+// continuous and the pace changes the way a car's does instead of in jumps. Measured
+// worst-case single-frame step drops ~6-7× (11.3 → 2.0 m/s on the worst pair).
+// Monotone-preserving is the load-bearing half of the name: an ordinary cubic
+// overshoots, and an overshoot in a position table is a ghost that drives backwards
+// for a few frames. No reversal appears on any lap pair tested.
+//
+// Slopes are precomputed per line (buildLines is memoised); evaluation is the same
+// linear scan the lookups already did, so nothing gets more expensive per frame.
+function monoSlopes(xs, ys) {
+  const n = xs.length;
+  if (n < 2) return null;
+  const del = new Array(n - 1), m = new Array(n);
+  for (let i = 0; i < n - 1; i++) {
+    const h = xs[i + 1] - xs[i];
+    del[i] = h > 0 ? (ys[i + 1] - ys[i]) / h : 0;  // a zero-width step flattens, never divides by 0
+  }
+  m[0] = del[0]; m[n - 1] = del[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    // A sign change (or a flat step) is a local extremum: pin the slope to 0, which
+    // is exactly what stops the curve bulging past the data.
+    if (del[i - 1] * del[i] <= 0) { m[i] = 0; continue; }
+    const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i];
+    const w0 = 2 * h1 + h0, w1 = h1 + 2 * h0;
+    m[i] = (w0 + w1) / (w0 / del[i - 1] + w1 / del[i]);   // weighted harmonic mean
+  }
+  return m;
+}
+
+// Evaluate the table (xs → ys) at x. Falls back to a plain lerp when no slope array
+// was built, so every caller keeps working on a degenerate one- or two-point curve.
+function monoAt(xs, ys, ms, x) {
+  const f = clamp(x, 0, 1);
+  let i = 1; while (i < xs.length && xs[i] < f) i++;
+  i = Math.min(i, xs.length - 1);
+  const lo = xs[i - 1] ?? 0, hi = xs[i] ?? 1;
+  const ylo = ys[i - 1] ?? 0, yhi = ys[i] ?? 1;
+  const h = hi - lo;
+  if (!(h > 0)) return yhi;
+  const t = clamp((f - lo) / h, 0, 1);
+  if (!ms) return ylo + (yhi - ylo) * t;
+  const t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * ylo + (t3 - 2 * t2 + t) * h * ms[i - 1]
+       + (-2 * t3 + 3 * t2) * yhi + (t3 - t2) * h * ms[i];
+}
+
+// ─── The time axis ────────────────────────────────────────────────────────────
+// Pace-sync stands entirely on knowing WHEN each car was where, and there are two
+// ways to know it.
+//
+// The good way is to have written it down. The recorder now stamps every 10 m bin
+// with the game's own lap clock (BoxBoxApp), so for those laps this is a read, not a
+// calculation, and it carries no error at all.
+//
+// The other way — the only one available for every lap recorded before that, which is
+// all of the existing history — is to reconstruct it by integrating Δdistance ÷ speed.
+// That works, but it is an approximation twice over: speed is a POINT sample at each
+// bin while the bin spans anywhere from 3 to 13 m, and the bins are 10 m apart in a
+// place where the car may be braking hard. Measured against the 25 demo laps the
+// integral runs ~1.9% long, and locally it is out by order 10 ms. 10 ms at Spa's
+// 66 m/s is two thirds of a metre — and since the ghost's position IS this curve,
+// that error is visible as the ghost drifting fore and aft against a car it should be
+// holding station with.
+function recordedTimeAxis(pts) {
+  // All-or-nothing: a lap that only half-carries the clock would splice a measured
+  // curve onto a derived one, and the seam is worse than either.
+  if (pts.length < 2 || !pts.every(p => typeof p.t === "number")) return null;
+  const t0 = pts[0].t;
+  const cum = pts.map(p => p.t - t0);
+  // A flashback or a stationary spell can send the clock backwards or flat; the curve
+  // has to stay non-decreasing for the monotone lookups built on it.
+  for (let i = 1; i < cum.length; i++) if (!(cum[i] > cum[i - 1])) cum[i] = cum[i - 1];
+  return cum[cum.length - 1] > 0 ? cum : null;
+}
+
+// Trapezoid, not the end-point speed. The time to cross a bin at constant
+// acceleration is its length over the MEAN of the two speeds; charging the whole bin
+// at the speed it ended on overstates a braking zone and understates the exit by as
+// much. Across the 25 demo laps it tightens how consistently the curve reproduces the
+// game's real lap time (spread 0.338% → 0.278%), which is the figure pace-sync depends
+// on. Same rule the demo session's own time axis uses (scripts/make-demo-session.mjs).
+function integratedTimeAxis(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const dd = Math.max(0, pts[i].dist - pts[i - 1].dist);
+    const v1 = Math.max(pts[i].speed / 3.6, 1);       // km/h → m/s, floor 1
+    const v0 = Math.max(pts[i - 1].speed / 3.6, 1);
+    cum[i] = cum[i - 1] + dd / ((v0 + v1) / 2);
+  }
+  return cum;
+}
+
+// NOT SMOOTHED: pre-filtering the speed channel before integrating was tried and
+// rejected. It does buy a little more smoothness (worst frame-to-frame jump 1.29 →
+// 0.83 m/s at ±2 samples), but measured across the 25 demo laps it WIDENS the
+// lap-to-lap spread of the derived lap time (0.278% → 0.317%) even as it lowers the
+// mean bias. Pace-sync reads the RATIO of two laps' curves, so a bias they share
+// cancels and only the spread between them survives — a filter that trades spread for
+// bias is trading away the only part that matters here.
+
 // Build per-lap racing lines. For each drawable lap (≥20 own x/z samples) returns
 // its captured WORLD points plus the two addressing curves the timeline uses:
 // distAt (lap-fraction → position-sync) and timeAt (a normalised Δdist÷speed time
-// integral → pace-sync). `laps` is an array of { id, label, lap, color };
-// undrawable laps are dropped. Returns [] when none qualify.
+// integral → pace-sync), each with its monotone-cubic slopes. `laps` is an array of
+// { id, label, lap, color }; undrawable laps are dropped. Returns [] when none qualify.
 function buildLines(laps) {
   const out = [];
   for (const d of laps || []) {
@@ -157,20 +266,19 @@ function buildLines(laps) {
         // to drape the road; laps without it leave the model flat.
         ...(typeof s.y === "number" && isFinite(s.y) ? { y: s.y } : null),
         dist: s.dist || 0, speed: s.speed || 0,
+        // The game's own lap clock, when the lap was recorded with it. See below.
+        ...(typeof s.t === "number" && isFinite(s.t) ? { t: s.t } : null),
         throttle: typeof s.throttle === "number" ? s.throttle : null,
         brake:    typeof s.brake    === "number" ? s.brake    : null,
       }));
     const lapLen = pts.reduce((m, p) => Math.max(m, p.dist), 0) || 1;
     const distAt = pts.map(p => p.dist / lapLen);
-    const cum = [0];
-    for (let i = 1; i < pts.length; i++) {
-      const dd = Math.max(0, pts[i].dist - pts[i - 1].dist);
-      const v = Math.max(pts[i].speed / 3.6, 1); // km/h → m/s, floor 1
-      cum[i] = cum[i - 1] + dd / v;
-    }
+    const cum = recordedTimeAxis(pts) || integratedTimeAxis(pts);
     const total = cum[cum.length - 1] || 1;
     const timeAt = cum.map(t => t / total);
-    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen });
+    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen,
+      // Both directions of the time↔distance pair, precomputed once per line.
+      tdSlopes: monoSlopes(timeAt, distAt), dtSlopes: monoSlopes(distAt, timeAt) });
   }
   attachPaceCurves(out);
   return out;
@@ -186,9 +294,13 @@ function attachPaceCurves(lines) {
     || lines.reduce((b, l) => (!b || l.pts.length > b.pts.length ? l : b), null);
   if (!anchor) return;
   for (const l of lines) {
-    if (l === anchor || !(anchor.timeTotal > 0)) { l.paceAt = l.distAt; continue; }
+    if (l === anchor || !(anchor.timeTotal > 0)) {
+      l.paceAt = l.distAt; l.pdSlopes = monoSlopes(l.paceAt, l.distAt); continue;
+    }
     l.paceAt = l.timeAt.map((tf) =>
       clamp(timeFracToDistFrac(anchor, (tf * l.timeTotal) / anchor.timeTotal), 0, 1));
+    // The curve the ghost is actually read off, so it gets slopes of its own.
+    l.pdSlopes = monoSlopes(l.paceAt, l.distAt);
   }
 }
 
@@ -200,39 +312,25 @@ function attachPaceCurves(lines) {
 // line's own time/distance curves.
 function timeFracToDistFrac(line, ft) {
   if (!line) return ft;
-  const { timeAt, distAt } = line;
-  const f = clamp(ft, 0, 1);
-  let i = 1; while (i < timeAt.length && timeAt[i] < f) i++;
-  const lo = timeAt[i - 1] ?? 0, hi = timeAt[i] ?? 1;
-  const t = lerpT(f, lo, hi);
-  return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
+  return monoAt(line.timeAt, line.distAt, line.tdSlopes, ft);
 }
 
 // The inverse: track-distance fraction → lap-time fraction. Used for the elapsed
-// time readout, the live delta, and per-segment times.
+// time readout, the live delta, and per-segment times. Same curve, read the same
+// way — a staircase here made the delta readout tick in steps too.
 function distFracToTimeFrac(line, fd) {
   if (!line) return fd;
-  const { timeAt, distAt } = line;
-  const f = clamp(fd, 0, 1);
-  let i = 1; while (i < distAt.length && distAt[i] < f) i++;
-  i = Math.min(i, distAt.length - 1);
-  const lo = distAt[i - 1] ?? 0, hi = distAt[i] ?? 1;
-  const t = lerpT(f, lo, hi);
-  return (timeAt[i - 1] ?? 0) + ((timeAt[i] ?? 1) - (timeAt[i - 1] ?? 0)) * t;
+  return monoAt(line.distAt, line.timeAt, line.dtSlopes, fd);
 }
 
 // The reference car's track-distance fraction when the shared clock is at
 // `compDistFrac` — reads the reference line's pace curve so the marker sits where
 // the reference car really is on track in pace-sync. Falls back to the clock.
+// This is THE ghost-motion lookup: its slope is the ghost's speed.
 function refDistForCompDist(refLine, compDistFrac) {
   const paceAt = refLine?.paceAt, distAt = refLine?.distAt;
   if (!paceAt || !distAt) return compDistFrac;
-  const f = clamp(compDistFrac, 0, 1);
-  let i = 1; while (i < paceAt.length && paceAt[i] < f) i++;
-  i = Math.min(i, paceAt.length - 1);
-  const lo = paceAt[i - 1], hi = paceAt[i];
-  const t = lerpT(f, lo, hi);
-  return (distAt[i - 1] ?? 0) + ((distAt[i] ?? 1) - (distAt[i - 1] ?? 0)) * t;
+  return monoAt(paceAt, distAt, refLine.pdSlopes, compDistFrac);
 }
 
 // World-space SVG path for a line's points, downsampled to keep the DOM light and
@@ -472,8 +570,12 @@ export default function DrivingLinesView({
 
   // ── Car positions at the playhead (also steer the camera follow below) ──
   const refFrac = syncMode === "pace" ? refDistForCompDist(refLine, playhead) : playhead;
-  const compCar = compLine ? posAtFrac(compLine, playhead) : null;
-  const refCar  = refLine  ? posAtFrac(refLine, refFrac)   : null;
+  // Ride the SMOOTH sampler, the one the T-cam camera and the drawn curves already
+  // use. posAtFrac walks 10 m chords, so a car placed with it cuts every corner it is
+  // drawn going round and twitches laterally at each bin — and in the onboard view the
+  // ghost was doing that against a camera that wasn't.
+  const compCar = compLine ? posAtFracSmooth(compLine, playhead) : null;
+  const refCar  = refLine  ? posAtFracSmooth(refLine, refFrac)   : null;
   const compAngle = compLine ? headingAtDeg(compLine, playhead) : 0;
   const refAngle  = refLine  ? headingAtDeg(refLine, refFrac)   : 0;
 
