@@ -986,6 +986,15 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       // to the shared session outline. Keys match buildTrackMapGeometry's expectation.
       const bin = { dist: lapDistance, throttle, brake, steer, speed, gear, ersMode, ersSpent: ersDeploy,
         boost: overtakeActive ? 1 : 0, aeroMode: activeAeroMode ?? 0 }; // 2026: boost deploy + active-aero wing mode per sample
+      // The game's own lap clock at this sample. Costs one number a bin and removes
+      // an entire class of error downstream: without it the Driving Lines view has to
+      // RECONSTRUCT when the car was where, by integrating Δdistance ÷ speed across
+      // 10 m bins. That integral runs ~1.9% long and — the part that shows — carries
+      // roughly 10 ms of local noise, which is what makes the pace-sync ghost surge:
+      // at Spa's 66 m/s, 10 ms is two thirds of a metre of phantom movement. Recorded
+      // time has none of it. Laps without the field keep the derived curve, so this
+      // only improves laps from here on (see buildLines in DrivingLinesView).
+      if (typeof lapTime === "number" && isFinite(lapTime) && lapTime > 0) bin.t = lapTime;
       // Averaged tyre temps (°C) — surface + carcass worms on the Telemetry tab.
       // >0 guards both a missing field (NaN) and the all-zeros no-data case.
       const tSurf = avg4(tyreSurfaceTemps), tCarc = avg4(tyreInnerTemps);
