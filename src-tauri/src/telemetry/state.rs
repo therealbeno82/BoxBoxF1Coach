@@ -214,6 +214,12 @@ pub struct CarSetup {
 }
 
 /// The FFB-facing physics snapshot (read lock-free by the FFB thread).
+///
+/// Deliberately NOT cfg'd out on mobile even though only the desktop FFB engine
+/// reads it: it's 13 `f32`s, so publishing one `Arc` of it per packet is free, and
+/// gating it would give Android a different `Snapshot`/`publish` shape than the
+/// unit tests exercise. Identical code on both targets is worth ~50 bytes a packet.
+#[cfg_attr(mobile, allow(dead_code))]
 #[derive(Clone, Copy, Default)]
 pub struct FfbTelemetry {
     pub lateral_g: f32,
@@ -392,6 +398,10 @@ impl Snapshot {
 /// FFB safety / pause signals, plus the wake primitive the FFB engine blocks on.
 /// Written by the UDP thread, read by the FFB thread — cheap atomics, no lock on
 /// the hot path (mirrors the C++ `AppStats`).
+///
+/// The FFB-only fields stay on mobile for the same reason `FfbTelemetry` does:
+/// the UDP thread writes them either way, and nothing reads them there.
+#[cfg_attr(mobile, allow(dead_code))]
 pub struct AppStats {
     pub udp_packets: AtomicU64,
     pub last_udp_ms: AtomicI64,
@@ -445,6 +455,9 @@ impl Default for AppStats {
     }
 }
 
+/// Accessors for the atomics above. The getters exist for the FFB engine, so on
+/// mobile they are written but never read — see the note on the struct.
+#[cfg_attr(mobile, allow(dead_code))]
 impl AppStats {
     pub fn set_lap_distance(&self, v: f32) {
         self.lap_distance.store(v.to_bits(), Ordering::Relaxed);

@@ -1,14 +1,22 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+// Only the FFB commands' request/reply channels use this.
+#[cfg(desktop)]
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{Emitter, Manager, RunEvent};
 
+// FFB is desktop-only: it drives a wheel over SDL2, which has no Android
+// counterpart and whose bundled C build can't cross-compile. The whole module —
+// and every command, state struct and event that hangs off it — is gated out on
+// mobile, which is what lets the `sdl2` dependency be gated out in Cargo.toml.
+#[cfg(desktop)]
 mod ffb;
 mod telemetry;
 
-use ffb::{DeviceInfo, FfbCommand, FfbHandle, FfbSettings, FfbSystem};
+#[cfg(desktop)]
+use ffb::{DeviceInfo, FfbCommand, FfbGauges, FfbHandle, FfbSettings, FfbStatus, FfbSystem};
 use telemetry::{now_ms, TelemetryCore};
 
 // Default UDP port the game broadcasts telemetry on.
@@ -21,6 +29,7 @@ struct CoreState {
 }
 
 /// Holds the running FFB system (thread) for shutdown on exit.
+#[cfg(desktop)]
 struct FfbState {
     system: Mutex<FfbSystem>,
 }
@@ -102,8 +111,9 @@ fn get_fake_mode(state: tauri::State<CoreState>) -> bool {
     state.core.lock().map(|core| core.is_fake()).unwrap_or(false)
 }
 
-// ── FFB commands ────────────────────────────────────────────────────────────
+// ── FFB commands (desktop only) ─────────────────────────────────────────────
 
+#[cfg(desktop)]
 #[tauri::command]
 fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
     let (tx, rx) = sync_channel(1);
@@ -113,6 +123,7 @@ fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
     rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn open_ffb_device(index: i32, handle: tauri::State<Arc<FfbHandle>>) -> Result<String, String> {
     let (tx, rx) = sync_channel(1);
@@ -124,11 +135,13 @@ fn open_ffb_device(index: i32, handle: tauri::State<Arc<FfbHandle>>) -> Result<S
         .map_err(|_| "FFB engine timed out opening the device".to_string())?
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn close_ffb_device(handle: tauri::State<Arc<FfbHandle>>) {
     let _ = handle.cmd_tx.send(FfbCommand::Close);
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_ffb_settings(settings: FfbSettings, handle: tauri::State<Arc<FfbHandle>>) {
     handle.settings.store(Arc::new(settings));
@@ -136,17 +149,20 @@ fn set_ffb_settings(settings: FfbSettings, handle: tauri::State<Arc<FfbHandle>>)
 
 /// The engine's default tuning — the single source of truth the UI seeds its
 /// sliders / "Reset all" from (no hand-mirrored copy in JS).
+#[cfg(desktop)]
 #[tauri::command]
 fn get_ffb_defaults() -> FfbSettings {
     FfbSettings::default()
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_ffb_enabled(enabled: bool, handle: tauri::State<Arc<FfbHandle>>) {
     handle.enabled.store(enabled, Ordering::Relaxed);
 }
 
 /// Reset the "peak lateral force this session" tracker (Auto Max Force panel).
+#[cfg(desktop)]
 #[tauri::command]
 fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
     let _ = handle.cmd_tx.send(FfbCommand::ResetPeak);
@@ -169,28 +185,70 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
 // value is an exact "nothing new" test — an idle app costs no IPC. The FFB
 // engine reads the shared telemetry directly at full rate — the UI event
 // cadence never affects FFB latency.
+/// Remember `cur` and report whether it differs (by pointer) from last time.
+fn changed<T>(last: &mut Option<Arc<T>>, cur: &Arc<T>) -> bool {
+    if last.as_ref().is_some_and(|p| Arc::ptr_eq(p, cur)) {
+        return false;
+    }
+    *last = Some(cur.clone());
+    true
+}
+
+/// The emitter's FFB half, factored out so the sampling loop below is byte-for-byte
+/// the same on both platforms. On mobile there is no FFB engine, so this collapses
+/// to a zero-sized no-op — better than a `#[cfg]` inside the loop, which would leave
+/// two subtly different hot paths to keep in step.
+#[cfg(desktop)]
+struct FfbEmit {
+    handle: Arc<FfbHandle>,
+    last_gauges: Option<Arc<FfbGauges>>,
+    last_status: Option<Arc<FfbStatus>>,
+}
+
+#[cfg(desktop)]
+impl FfbEmit {
+    fn new(app: &tauri::AppHandle) -> Self {
+        FfbEmit {
+            handle: app.state::<Arc<FfbHandle>>().inner().clone(),
+            last_gauges: None,
+            last_status: None,
+        }
+    }
+
+    fn tick(&mut self, app: &tauri::AppHandle) {
+        let gauges = self.handle.gauges.load_full();
+        if changed(&mut self.last_gauges, &gauges) {
+            let _ = app.emit("ffb_gauges", gauges.as_ref());
+        }
+        let status = self.handle.status.load_full();
+        if changed(&mut self.last_status, &status) {
+            let _ = app.emit("ffb_status", status.as_ref());
+        }
+    }
+}
+
+#[cfg(mobile)]
+struct FfbEmit;
+
+#[cfg(mobile)]
+impl FfbEmit {
+    fn new(_app: &tauri::AppHandle) -> Self {
+        FfbEmit
+    }
+    fn tick(&mut self, _app: &tauri::AppHandle) {}
+}
+
 fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let shared = {
         let core = app.state::<CoreState>();
         let core = core.core.lock().unwrap_or_else(|e| e.into_inner());
         core.shared.clone()
     };
-    let ffb = app.state::<Arc<FfbHandle>>().inner().clone();
-
-    /// Remember `cur` and report whether it differs (by pointer) from last time.
-    fn changed<T>(last: &mut Option<Arc<T>>, cur: &Arc<T>) -> bool {
-        if last.as_ref().is_some_and(|p| Arc::ptr_eq(p, cur)) {
-            return false;
-        }
-        *last = Some(cur.clone());
-        true
-    }
+    let mut ffb = FfbEmit::new(&app);
 
     std::thread::spawn(move || {
         let mut last_core: Option<(bool, u16)> = None;
         let mut last_snap = None;
-        let mut last_gauges = None;
-        let mut last_status = None;
         while running.load(Ordering::Relaxed) {
             let now = now_ms();
             let got_packet = shared.got_packet.load(Ordering::Relaxed);
@@ -214,14 +272,7 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
                     let _ = app.emit("telemetry", snap.as_ref());
                 }
             }
-            let gauges = ffb.gauges.load_full();
-            if changed(&mut last_gauges, &gauges) {
-                let _ = app.emit("ffb_gauges", gauges.as_ref());
-            }
-            let status = ffb.status.load_full();
-            if changed(&mut last_status, &status) {
-                let _ = app.emit("ffb_status", status.as_ref());
-            }
+            ffb.tick(&app);
             std::thread::sleep(Duration::from_millis(33));
         }
     });
@@ -232,15 +283,25 @@ pub fn run() {
     // Optional dev switch: F1_FAKE=1 starts the core in synthetic-telemetry mode.
     let fake = std::env::var("F1_FAKE").ok().as_deref() == Some("1");
     let core = TelemetryCore::start(DEFAULT_UDP_PORT, fake);
+
+    #[cfg(desktop)]
     let ffb = FfbSystem::start(core.shared.clone());
+    #[cfg(desktop)]
     let ffb_handle = ffb.handle.clone();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(CoreState {
             core: Mutex::new(core),
-        })
+        });
+
+    // `generate_handler!` parses a plain path list and rejects `#[cfg]` on the
+    // individual entries, so the platform split is two whole invocations rather
+    // than one annotated list. Attributes on `let` are stable and `invoke_handler`
+    // returns the builder, so shadowing keeps this a single chain.
+    #[cfg(desktop)]
+    let builder = builder
         .manage(FfbState {
             system: Mutex::new(ffb),
         })
@@ -258,7 +319,18 @@ pub fn run() {
             set_ffb_enabled,
             reset_ffb_peak,
             write_text_file,
-        ])
+        ]);
+
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        set_udp_port,
+        get_local_ips,
+        set_fake_mode,
+        get_fake_mode,
+        write_text_file,
+    ]);
+
+    builder
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -279,6 +351,7 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<EmitterState>() {
                     state.running.store(false, Ordering::Relaxed);
                 }
+                #[cfg(desktop)]
                 if let Some(state) = app_handle.try_state::<FfbState>() {
                     if let Ok(mut sys) = state.system.lock() {
                         sys.stop();

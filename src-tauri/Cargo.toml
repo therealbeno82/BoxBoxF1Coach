@@ -35,10 +35,20 @@ tauri-plugin-dialog = "2"
 # Lock-free hand-off of the latest telemetry snapshot from the UDP thread to the
 # FFB thread (and the UI emitter) — no mutex on the real-time read path.
 arc-swap = "1"
-# Force-feedback output to the wheel via SDL2's haptic API. `bundled` builds SDL2
-# from source and `static-link` folds it into the exe, so no SDL2.dll is shipped
-# (needs the MSVC C compiler + CMake, already installed).
-sdl2 = { version = "0.36", features = ["bundled", "static-link"] }
 # Enumerate this machine's LAN IPv4 addresses so console players can see which
 # address to point the game's telemetry output at (the app runs on a 2nd device).
+# Portable: routes through getifaddrs on Android too, so it stays unconditional.
 local-ip-address = "0.6"
+
+# Force-feedback output to the wheel via SDL2's haptic API. `bundled` builds SDL2
+# from source and `static-link` folds it into the exe, so no SDL2.dll is shipped
+# (needs the MSVC C compiler + CMake, already installed). That C build can't
+# cross-compile to Android, and FFB is desktop-only anyway, so the dep is gated
+# off there — `ffb/wheel.rs` is the crate's only `sdl2` reference.
+#
+# NOTE the cfg keys on `target_os`, NOT on tauri's `desktop`/`mobile`. Those are
+# `cargo:rustc-cfg` values emitted by tauri-build when the crate COMPILES; Cargo
+# reads dependency tables at RESOLUTION time, before any build script runs, so it
+# has never heard of them. Code gating uses `#[cfg(desktop)]`; deps can't.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+sdl2 = { version = "0.36", features = ["bundled", "static-link"] }
