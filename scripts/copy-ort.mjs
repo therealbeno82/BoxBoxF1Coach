@@ -15,6 +15,16 @@ import { copyFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Android speaks through android.speech.tts, not Kokoro, so there is no ORT
+// runtime to stage there — and staging it would just be deleted again by
+// vite.config.js's strip-voice-assets. Bail before the missing-file exit(1)
+// below, which would otherwise fail an Android build on a machine that never
+// installed the TTS deps.
+if (process.env.TAURI_ENV_PLATFORM === "android") {
+  console.log("[copy-ort] android build — Kokoro is excluded, skipping");
+  process.exit(0);
+}
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const srcDir = resolve(root, "node_modules/@huggingface/transformers/dist");
 const outDir = resolve(root, "public/ort");
