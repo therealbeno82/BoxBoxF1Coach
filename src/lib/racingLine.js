@@ -137,9 +137,128 @@ export function catmullRom(p0, p1, p2, p3, t) {
   };
 }
 
+// ─── Even path ────────────────────────────────────────────────────────────────
+// WHY A RESAMPLE AND NOT JUST THE SPLINE. A car placed by evaluating the spline at
+// locate()'s t moves in lurches, and it is worth being precise about why, because
+// there are two separate causes and fixing one alone barely helps.
+//
+// The first is that the playhead is parameterised by the game's ODOMETER while the
+// car is drawn at its recorded POSITIONS, and per 10 m bin those two disagree by
+// about ±20% (measured p5 0.86, p95 1.10 of each other). A bin where the odometer
+// says 10 m passed but the positions moved 8.6 forces the car to crawl it, and the
+// next bin makes it sprint. The disagreement is phase noise — the Motion and Lap
+// Data packets are not sampled at the same instant — so it is error, not signal.
+//
+// The second is the spline itself. Catmull-Rom evaluated at a t that runs 0→1 across
+// each span has a speed that varies WITHIN the span, and the spans here are 3 to 13 m
+// apart because the recorder writes one sample per rounded 10 m bin and the sample
+// lands wherever the tick happened. That roughly doubles what the odometer left.
+//
+// Together they put the ground covered per frame 31% (p5-p95) either side of its mean
+// — the cars visibly surging several times a second, in every sync mode, which is
+// exactly what it looked like. Resampling the same curve at even arc length fixes the
+// second directly (equal steps by construction) and carries a de-jittered fraction map
+// for the first. Measured on the demo laps that takes 31% down to about 11%.
+//
+// The odometer is smoothed only IN HERE. distAt is left exactly as recorded, so the
+// ribbons, the segment cards, the sector maths and the telemetry cursor all still
+// address the lap by the number the game gave. The cost is that a car can sit up to
+// ~0.7 m from where the raw odometer would have put it, which is well inside the noise
+// being removed and under a tenth of one bin.
+const EVEN_STEP = 1.0;    // m between resampled points — sagitta at a 12 m radius is 1 cm
+const SUB = 8;            // dense samples per span, before the even resample
+const DEJITTER = 2;       // ± knots for the odometer residual; ±20 m, deliberately short
+
+export function buildEvenPath(pts, distAt) {
+  const n = pts?.length || 0;
+  if (n < 4 || !distAt || distAt.length !== n) return null;
+  const at = (j) => pts[clamp(j, 0, n - 1)];
+
+  // Dense walk of the same curve, accumulating true arc length and each knot's arc.
+  const dx = [pts[0].x], dz = [pts[0].z], da = [0];
+  const knotArc = new Float64Array(n);
+  let arc = 0, px = pts[0].x, pz = pts[0].z;
+  for (let i = 1; i < n; i++) {
+    for (let s = 1; s <= SUB; s++) {
+      const p = catmullRom(at(i - 2), at(i - 1), at(i), at(i + 1), s / SUB);
+      arc += Math.hypot(p.x - px, p.z - pz);
+      px = p.x; pz = p.z;
+      dx.push(px); dz.push(pz); da.push(arc);
+    }
+    knotArc[i] = arc;
+  }
+  if (!(arc > 0)) return null;
+
+  // De-jitter the odometer against arc length: take each knot's residual from a
+  // straight arc→fraction map, smooth it with a CENTRED window (zero phase, so the
+  // lap's shape in time is not dragged either way), then pin the ends back so the
+  // lap still spans exactly the fractions it did and nothing accumulates.
+  const f0 = distAt[0], span = distAt[n - 1] - f0;
+  const res = new Float64Array(n);
+  for (let i = 0; i < n; i++) res[i] = (distAt[i] - f0) - (knotArc[i] / arc) * span;
+  const kf = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, k = 0;
+    for (let j = -DEJITTER; j <= DEJITTER; j++) {
+      const m = i + j;
+      if (m < 0 || m >= n) continue;
+      sum += res[m]; k++;
+    }
+    kf[i] = f0 + (knotArc[i] / arc) * span + sum / k;
+  }
+  const lo = kf[0], hi = kf[n - 1], scale = hi > lo ? span / (hi - lo) : 1;
+  for (let i = 0; i < n; i++) kf[i] = f0 + (kf[i] - lo) * scale;
+  for (let i = 1; i < n; i++) if (!(kf[i] > kf[i - 1])) kf[i] = kf[i - 1] + 1e-9;
+
+  // Fraction for every dense sample, linear in ARC within each span — not in the
+  // spline's own parameter. That distinction is the whole point: t runs 0→1 across a
+  // span at a speed the cubic chooses, so spreading the fraction evenly in t hands
+  // the car back exactly the speed variation this resample exists to remove.
+  const df = new Float64Array(da.length);
+  df[0] = kf[0];
+  for (let i = 1; i < n; i++) {
+    const a0 = knotArc[i - 1], spanArc = knotArc[i] - a0;
+    for (let s = 1; s <= SUB; s++) {
+      const idx = (i - 1) * SUB + s;
+      const u = spanArc > 0 ? (da[idx] - a0) / spanArc : s / SUB;
+      df[idx] = kf[i - 1] + (kf[i] - kf[i - 1]) * u;
+    }
+  }
+
+  // Resample at uniform arc length. Equal index steps are now equal ground.
+  const m = Math.max(2, Math.round(arc / EVEN_STEP) + 1);
+  const xs = new Float64Array(m), zs = new Float64Array(m), fs = new Float64Array(m);
+  let j = 1;
+  for (let k = 0; k < m; k++) {
+    const target = (arc * k) / (m - 1);
+    while (j < da.length - 1 && da[j] < target) j++;
+    const a0 = da[j - 1], a1 = da[j];
+    const u = a1 > a0 ? (target - a0) / (a1 - a0) : 0;
+    xs[k] = dx[j - 1] + (dx[j] - dx[j - 1]) * u;
+    zs[k] = dz[j - 1] + (dz[j] - dz[j - 1]) * u;
+    fs[k] = df[j - 1] + (df[j] - df[j - 1]) * u;
+  }
+  for (let k = 1; k < m; k++) if (fs[k] < fs[k - 1]) fs[k] = fs[k - 1];
+  return { xs, zs, fs, n: m };
+}
+
+function posAtEven(path, fd) {
+  const { xs, zs, fs, n } = path;
+  const f = clamp(fd, 0, 1);
+  let lo = 0, hi = n - 1;
+  while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (fs[mid] <= f) lo = mid; else hi = mid; }
+  const a = fs[lo], b = fs[hi];
+  const u = b > a ? clamp((f - a) / (b - a), 0, 1) : 0;
+  return { x: xs[lo] + (xs[hi] - xs[lo]) * u, z: zs[lo] + (zs[hi] - zs[lo]) * u };
+}
+
 // Interpolated world position of a line at a track-distance fraction, along that
-// curve. This is what the camera pose reads.
+// curve. This is what the camera pose and both car markers read. Lines that carry an
+// even path (buildLines attaches one) get the resample; anything else — a calibrator
+// trace, a line built somewhere that has not been through buildLines — falls back to
+// evaluating the spline directly, which is what this always did.
 export function posAtFracSmooth(line, fd) {
+  if (line.even) return posAtEven(line.even, fd);
   const { pts } = line;
   if (pts.length < 4) return posAtFrac(line, fd);
   const { i, t } = locate(line, fd);

@@ -26,7 +26,8 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { C, FONT } from "../lib/ui/tokens.js";
 import { clamp, formatLapTime } from "../lib/format.js";
 import { cornerLabel, resolveSlug, CORNER_NAMES } from "../lib/cornerData.js";
-import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRomBezier } from "../lib/racingLine.js";
+import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRomBezier,
+         buildEvenPath } from "../lib/racingLine.js";
 import TrackCamView from "./TrackCamView.jsx";
 import TrackOrbitView from "./TrackOrbitView.jsx";
 
@@ -279,7 +280,11 @@ function buildLines(laps) {
     const timeAt = cum.map(t => t / total);
     out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen,
       // Both directions of the time↔distance pair, precomputed once per line.
-      tdSlopes: monoSlopes(timeAt, distAt), dtSlopes: monoSlopes(distAt, timeAt) });
+      tdSlopes: monoSlopes(timeAt, distAt), dtSlopes: monoSlopes(distAt, timeAt),
+      // The arc-length-even resample the cars and the onboard camera are placed
+      // along, so equal steps of playhead are equal steps of ground. Built once
+      // here because buildLines is memoised; see buildEvenPath for why it exists.
+      even: buildEvenPath(pts, distAt) });
   }
   attachPaceCurves(out);
   return out;
