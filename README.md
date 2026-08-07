@@ -21,8 +21,16 @@ on the default livery. Team skins restyle the whole app.</sub>
 - **Live telemetry dashboard** — speed, throttle/brake, gear, ERS mode, tyre & brake temps,
   DRS, fuel, and per-sector / mini-sector timing, streamed live from the game at up to
   30 Hz.
-- **Reference-trace comparison** — pick a reference lap (a hot lap you drove, or a `.json`
-  trace file) and see where you're losing time, corner by corner, sector by sector.
+- **Reference-trace comparison** — pick a reference lap (a hot lap you drove, a `.json`
+  trace file, or someone else's lap off a leaderboard) and see where you're losing time,
+  corner by corner, sector by sector.
+- **Driving Lines — watch the two laps drive** against each other from four cameras: a
+  top-down map, a free-orbit 3D view, an onboard T-Cam from either seat, and a stacked
+  Compare showing both seats at once. Both cars are real 3D models on real circuit
+  geometry, and you can play, scrub and step segment by segment.
+- **Online leaderboards** — publish a lap to a public board for the circuit, see where it
+  puts you, and download a faster driver's lap to coach against. Opt-in, no sign-up, and
+  every submission is validated server-side against its own telemetry.
 - **Two-layer coaching** (see [Architecture](#architecture)):
   - A **real-time rule engine** makes in-corner calls (brake point, lift-and-coast, ERS
     deployment) the instant they're needed.
@@ -133,7 +141,7 @@ or a working rig, open an issue.
 
 ## Using the app
 
-The header switcher has five screens, with **UDP / AI / FFB** status pills and the driver
+The header switcher has six screens, with **UDP / AI / FFB** status pills and the driver
 chip alongside.
 
 ### Dashboard
@@ -162,6 +170,46 @@ readouts and a per-corner time-loss breakdown.
 - The reference only counts if it's **comparable** — same circuit, same wet/dry, same
   race-vs-push intent, same compound. If it isn't, the app tells you and withholds both the
   insights *and* the corner calls, since both are derived from that reference.
+
+#### Driving Lines
+
+The left half of Analytics replays the two laps against each other on the real circuit.
+Press play and both cars drive the lap; scrub the timeline, or step corner by corner with
+the segment card. One scene, four cameras:
+
+| View | What it's for |
+|------|---------------|
+| **Map** | Top-down. The whole shape of both lines at once — where you ran wide, where you turned in early. |
+| **3D** | Free-orbit camera you drag. For seeing a corner from an angle that shows the entry-to-apex sequence, which the plan view flattens. |
+| **T-Cam** | Onboard, from one seat. The other car is a real 3D model up the road, so the gap is something you can see rather than read. |
+| **Compare** | Both seats stacked, at the same track distance — the same corner from each driver's eyes. |
+
+Two sync modes decide where the *other* car goes:
+
+- **Pos-sync** — both cars at the same track distance, so the only difference on screen is
+  the line each driver took. This is the one for studying racing lines.
+- **Pace-sync** — the other car is placed where it actually was at the same elapsed time,
+  so the faster lap pulls away and the time gap builds in front of you.
+
+The road is built from the committed circuit geometry with kerbs, painted edges, corner
+markers and the reference driver's brake points drawn as gates across the track, and it
+climbs and falls with the real elevation of the lap you recorded.
+
+![Driving Lines, T-Cam — the reference car up the road, your racing line coloured by throttle and brake, and the circuit's own kerbs and elevation](docs/screenshots/driving-lines.png)
+
+### Leaderboard
+
+Public boards for every circuit, split by Qualifying and Time Trial — 50 boards. Each row
+is a driver's best lap with the gap to the leader and the tyre they ran.
+
+- **Publishing is always yours to make.** Set a personal best on an eligible board and a
+  prompt offers to publish that lap; nothing goes up without you pressing Publish.
+- **Download any lap as your reference** and the whole coach — delta trace, corner calls,
+  between-lap debrief — measures you against it. Downloads are stored locally, so they
+  survive a restart and keep working offline.
+- **No sign-up**, one lap per driver per board, and every submission is re-validated
+  server-side from its own telemetry before it lands.
+- Opt-in: turned off in Settings, the app makes no leaderboard request at all.
 
 ### Coach
 The debrief. A structured read of one completed lap per telemetry channel, a
@@ -231,6 +279,8 @@ scope/anti-jailbreak, and untrusted-data wrapping.
 | Force feedback | Rust FFB engine → wheel via SDL2 haptics (statically linked)         |
 | Speech         | `kokoro-js` (TTS) on ONNX runtime, self-hosted wasm                  |
 | LLM            | OpenRouter                                                           |
+| 3D views       | three.js (lazy-loaded — never in the startup chunk) + a hand-written pinhole camera for the T-Cam |
+| Leaderboards   | Supabase (Postgres + storage + anonymous auth + Edge Functions)      |
 | Packaging      | Tauri NSIS installer                                                 |
 
 ---
@@ -240,11 +290,16 @@ scope/anti-jailbreak, and untrusted-data wrapping.
 ```
 src/                     React app
   BoxBoxApp.jsx          Root: telemetry/lap/coaching state, lap recorder, speech pipeline
-  components/screens/    Dashboard, Live, Analytics, Coach Log, FFB, Settings
-  components/            Shell (nav chrome), telemetry studio, driving lines, modals
+  components/screens/    Dashboard, Live, Analytics, Coach Log, Leaderboard, FFB, Settings
+  components/            Shell (nav chrome), telemetry studio, driving lines, T-cam + orbit views, modals
   lib/coach/             Prompts, schema, guardrails, lap analysis, reference matching, provider
+  lib/leaderboard/       Board keys, entry mapping, anti-tamper validation, thresholds, config
+  lib/racingLine.js      Curve addressing: Catmull-Rom, arc-length-even car placement, heading
+  lib/tcam*.js           Onboard view: pinhole camera (no imports), 2D scene painter, WebGL car layer
+  lib/orbitScene.js      Free-camera 3D scene for the Driving Lines 3D view
   lib/                   Track data & geometry, corner anchors, tyres, formatting, Kokoro TTS, UI tokens/skins
   hooks/                 useTelemetry, useTauriEvents, useFfbEngine, useLlmHealth, useTrackCorners, useUpdateCheck
+supabase/functions/      Edge Functions — the only writer to the leaderboard tables
 scripts/copy-ort.mjs     Copies ONNX runtime wasm into /public/ort (CSP: served same-origin, not via CDN)
 src-tauri/src/telemetry/ Rust core: UDP listener + 2026-format packet parsing, shared snapshot
 src-tauri/src/ffb/       Rust FFB engine: reads the snapshot, drives the wheel via SDL2
@@ -319,9 +374,11 @@ Outputs:
 ## Offline behaviour
 
 The app is built to work with no network — telemetry is UDP and the TTS weights are
-bundled, so a race weekend never needs the internet. Only three network calls exist, all
-optional and all failing soft: OpenRouter (coaching), the GitHub release check, and a
-Kokoro CDN fallback that only applies in dev.
+bundled, so a race weekend never needs the internet. Only four network calls exist, all
+optional and all failing soft: OpenRouter (coaching), the leaderboards, the GitHub release
+check, and a Kokoro CDN fallback that only applies in dev. Turn leaderboards off in
+Settings and the app makes no leaderboard request at all — not a failed one, none.
+References you've already downloaded keep working offline.
 
 ---
 
@@ -344,9 +401,20 @@ A full review lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
 ## Status
 
-v1.0.0 — first tagged release. Live telemetry, reference comparison, the two-layer coach,
-force feedback and voice out all work. See [CODE_REVIEW.md](CODE_REVIEW.md) for known
-hardening items and the issue tracker for the roadmap.
+**v4.0.0.** Live telemetry, reference comparison, Driving Lines with its four cameras,
+online leaderboards, the two-layer coach, force feedback and voice out all work.
+
+Known limitations worth stating plainly:
+
+- The leaderboard validator re-derives every published lap from its own telemetry, but the
+  app can't yet read the game's driving-assist flags, so a genuinely-driven lap with
+  assists on will pass.
+- Your OpenRouter API key is stored in plaintext locally (see [Security notes](#security-notes)).
+- On console, the coach's audio comes out of the PC, not the console (see
+  [Playing on console](#playing-on-console-ps5--xbox)).
+
+See [CODE_REVIEW.md](CODE_REVIEW.md) for hardening items and the issue tracker for the
+roadmap.
 
 ---
 
