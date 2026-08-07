@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { C, FONT, LIVERY_COLORS, eyebrow } from "../../lib/ui/tokens.js";
 import { SKINS } from "../../lib/ui/skins.js";
-import { KOKORO_VOICES, DEFAULT_KOKORO_VOICE } from "../../lib/kokoroTTS.js";
+import { KOKORO_VOICES, DEFAULT_KOKORO_VOICE } from "../../lib/tts/voices.js";
 import { listOpenRouterModels } from "../../lib/coach/provider.js";
 import { DEFAULT_OPENROUTER_MODEL } from "../../lib/coach/config.js";
 import { fileToAvatarDataUrl } from "../../lib/avatarImage.js";
@@ -17,7 +17,7 @@ import { APP_VERSION } from "../../lib/updateCheck.js";
 // The telemetry core is built into the native app (see src-tauri) and is always
 // running; there's nothing to launch. In plain browser dev there is no native
 // core at all, so the hint copy adapts to context (inTauri).
-import { inTauri } from "../../lib/env.js";
+import { inTauri, isAndroid } from "../../lib/env.js";
 import LeaderboardSettings from "../LeaderboardSettings.jsx";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -169,10 +169,15 @@ export default function SettingsScreen({
     // List every English system voice. We used to hide "Microsoft …" voices (to
     // favour Chrome's Google voices in dev), but the packaged app runs in WebView2
     // where the ONLY system voices are Microsoft ones — that filter emptied the list.
-    const load = () => setAvailVoices(window.speechSynthesis.getVoices().filter(v => v.lang.startsWith("en")));
+    // Guarded: the Android System WebView does not reliably implement the Web
+    // Speech API, and this runs in a mount effect — unguarded, a missing
+    // `speechSynthesis` throws and takes the whole Settings screen down with it.
+    const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
+    if (!synth) { setAvailVoices([]); return; }
+    const load = () => setAvailVoices(synth.getVoices().filter(v => v.lang.startsWith("en")));
     load();
-    window.speechSynthesis.addEventListener("voiceschanged", load);
-    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+    synth.addEventListener("voiceschanged", load);
+    return () => synth.removeEventListener("voiceschanged", load);
   }, []);
 
   const loadOrModels = async () => {
@@ -228,9 +233,13 @@ export default function SettingsScreen({
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
 
         {/* LEFT */}
-        <div style={{ flex: "1 1 420px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(320px, var(--col-min))", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* AI Model Connection · OpenRouter */}
+          {/* AI Model Connection · OpenRouter — desktop only. The between-lap
+              LLM analyst is left out of the Android build; the deterministic
+              rule-engine coach (in-corner brake/lift/ERS calls) still runs, so
+              the Coach tab keeps working without this. */}
+          {!isAndroid && (
           <div style={card}>
             <span style={eyebrow}>AI Model Connection · OpenRouter</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -253,6 +262,7 @@ export default function SettingsScreen({
               </span>
             </div>
           </div>
+          )}
 
           {/* Telemetry (native in-process core) */}
           <div style={card}>
@@ -388,7 +398,11 @@ export default function SettingsScreen({
               <div style={{ display: "flex", gap: 8 }}>
                 {/* Dots follow the skin: Kokoro = primary accent, System = secondary accent.
                     Fallbacks (purple / cyan) keep the Default skin's original look. */}
-                {[["kokoro", "Kokoro AI", "local", C.accent1], ["browser", "System", "instant", C.accent2]].map(([id, name, tag, dot]) => {
+                {/* Kokoro ships only on desktop — the Android build excludes the
+                    88 MB model and its 21 MB ORT runtime, and speaks through the
+                    platform's own engine instead, so offering the choice there
+                    would just be a button that can never become ready. */}
+                {[...(isAndroid ? [] : [["kokoro", "Kokoro AI", "local", C.accent1]]), ["browser", "System", "instant", C.accent2]].map(([id, name, tag, dot]) => {
                   const active = engine === id;
                   return (
                     <button key={id} onClick={() => setVoicePrefs(p => ({ ...p, engine: id }))} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start",
@@ -446,7 +460,11 @@ export default function SettingsScreen({
             </div>
           </div>
 
-          {/* Trace Configurator + Calibrator */}
+          {/* Trace Configurator + Calibrator — desktop only. The Calibrator
+              moves and resizes its channel panels off raw mouse events on thin
+              edge hit-areas; there is no touch equivalent, so Android doesn't
+              mount it (see App.jsx) and must not offer the way in either. */}
+          {!isAndroid && (
           <div style={card}>
             <span style={eyebrow}>Trace Configurator</span>
             <button onClick={onOpenCalibrator} style={{ width: "100%", padding: 13, borderRadius: 9, border: `1px solid ${C.blue}`,
@@ -458,10 +476,11 @@ export default function SettingsScreen({
               The Calibrator traces a reference lap from an onboard image to build the benchmark the Coach measures you against.
             </div>
           </div>
+          )}
         </div>
 
         {/* RIGHT */}
-        <div style={{ flex: "1 1 420px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(320px, var(--col-min))", display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* Appearance · Team Skin — recolours the whole app; selecting applies live */}
           <div style={card}>
@@ -558,7 +577,7 @@ export default function SettingsScreen({
               <span style={{ fontSize: 9, letterSpacing: 1, color: C.blue, fontWeight: 700, fontFamily: FONT.mono }}>{drivers.length} SIGNED</span>
             </div>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-              <div style={{ flex: "1 1 240px", minWidth: 220, display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ flex: "1 1 240px", minWidth: "min(220px, var(--col-min))", display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 90px", gap: 12 }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                     <label style={label}>Driver Name</label>
@@ -614,7 +633,7 @@ export default function SettingsScreen({
                   )}
                 </div>
               </div>
-              <div style={{ flex: "1 1 200px", minWidth: 200, display: "flex", flexDirection: "column", gap: 9 }}>
+              <div style={{ flex: "1 1 200px", minWidth: "min(200px, var(--col-min))", display: "flex", flexDirection: "column", gap: 9 }}>
                 <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase" }}>Current Roster</span>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto", paddingRight: 4 }}>
                   {drivers.map(d => {

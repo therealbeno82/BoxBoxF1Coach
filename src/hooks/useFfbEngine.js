@@ -14,8 +14,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { inTauri } from "../lib/env.js";
+import { inTauri, isAndroid } from "../lib/env.js";
 import { useTauriEvents } from "./useTauriEvents.js";
+
+// Is there a native FFB engine on the other end of the IPC at all? `inTauri`
+// alone is no longer the right test: Android IS Tauri, but its Rust side is
+// built with `mod ffb` cfg'd out (SDL2 can't cross-compile and a phone has no
+// wheel), so the seven FFB commands simply aren't registered there. Invoking
+// them would reject on every call. The hook stays mounted either way — React's
+// rules of hooks mean the caller can't conditionally skip it — it just goes
+// quiet, and BoxBoxApp never renders the screen that would use it.
+const ffbAvailable = inTauri && !isAndroid;
 
 // Browser-dev fallback only. Inside Tauri the engine's own defaults are fetched
 // via `get_ffb_defaults` on mount (single source of truth: ffb/settings.rs).
@@ -74,7 +83,7 @@ function loadProfiles() {
   }
 }
 
-const pushSettings = (s) => { if (inTauri) invoke("set_ffb_settings", { settings: s }).catch(() => {}); };
+const pushSettings = (s) => { if (ffbAvailable) invoke("set_ffb_settings", { settings: s }).catch(() => {}); };
 
 export function useFfbEngine() {
   const [settings, setSettingsState] = useState(loadSettings);
@@ -94,7 +103,7 @@ export function useFfbEngine() {
   });
 
   const refreshDevices = useCallback(async () => {
-    if (!inTauri) { setDevices([]); return; }
+    if (!ffbAvailable) { setDevices([]); return; }
     try { setDevices(await invoke("get_ffb_devices")); } catch { setDevices([]); }
   }, []);
 
@@ -102,7 +111,7 @@ export function useFfbEngine() {
   // and pull its default tuning (a fresh install adopts it as the live settings).
   useEffect(() => {
     pushSettings(settingsRef.current);
-    if (inTauri) {
+    if (ffbAvailable) {
       invoke("set_ffb_enabled", { enabled }).catch(() => {});
       invoke("get_ffb_defaults").then((d) => {
         const merged = clean({ ...DEFAULT_FFB_SETTINGS, ...d });
@@ -138,20 +147,20 @@ export function useFfbEngine() {
   const resetSettings = useCallback(() => applySettings(defaultsRef.current), [applySettings]);
 
   const openDevice = useCallback(async (index) => {
-    if (!inTauri) return;
+    if (!ffbAvailable) return;
     try { await invoke("open_ffb_device", { index }); }
     catch { /* the error surfaces via ffb_status */ }
   }, []);
 
-  const closeDevice = useCallback(() => { if (inTauri) invoke("close_ffb_device").catch(() => {}); }, []);
+  const closeDevice = useCallback(() => { if (ffbAvailable) invoke("close_ffb_device").catch(() => {}); }, []);
 
   const setEnabled = useCallback((v) => {
     setEnabledState(v);
     localStorage.setItem(ENABLED_KEY, v ? "1" : "0");
-    if (inTauri) invoke("set_ffb_enabled", { enabled: v }).catch(() => {});
+    if (ffbAvailable) invoke("set_ffb_enabled", { enabled: v }).catch(() => {});
   }, []);
 
-  const resetPeak = useCallback(() => { if (inTauri) invoke("reset_ffb_peak").catch(() => {}); }, []);
+  const resetPeak = useCallback(() => { if (ffbAvailable) invoke("reset_ffb_peak").catch(() => {}); }, []);
 
   // Profiles (localStorage map name → settings).
   const saveProfileAs = useCallback((name) => {

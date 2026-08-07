@@ -174,7 +174,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 18, alignItems: "stretch", flexWrap: "wrap" }}>
 
         {/* ── Left: driver hero + switch ── */}
-        <div style={{ flex: "1 1 440px", maxWidth: 520, minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ flex: "1 1 440px", maxWidth: 520, minWidth: "min(320px, var(--col-min))", display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Hero */}
           <div style={{ position: "relative",
             backgroundColor: C.surface,
@@ -263,7 +263,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
         </div>
 
         {/* ── Right: stats ── */}
-        <div style={{ flex: "1 1 560px", minWidth: 320, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ flex: "1 1 560px", minWidth: "min(320px, var(--col-min))", display: "flex", flexDirection: "column", gap: 16 }}>
           {!stats.hasLaps ? (
             <div style={{ flex: 1, ...cardStyle, display: "flex", flexDirection: "column", alignItems: "center",
               justifyContent: "center", textAlign: "center", padding: "48px 24px" }}>
@@ -297,7 +297,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
 
               {/* Recent laps + per-category PBs, side by side */}
               <div style={{ flex: 1, minHeight: 180, display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <div style={{ flex: "1.6 1 320px", minWidth: 280, ...cardStyle, display: "flex", flexDirection: "column" }}>
+                <div style={{ flex: "1.6 1 320px", minWidth: "min(280px, var(--col-min))", ...cardStyle, display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                     <span style={eyebrow}>Recent Laps</span>
                     <span style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, fontFamily: FONT.mono }}>CLICK → COMPARE</span>
@@ -322,7 +322,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
 
                 {/* Personal bests by category — best lap per track within each
                     featured session type (Time Trial / Qualifying / Race), stacked */}
-                <div style={{ flex: "1 1 260px", minWidth: 240, ...cardStyle, display: "flex", flexDirection: "column" }}>
+                <div style={{ flex: "1 1 260px", minWidth: "min(240px, var(--col-min))", ...cardStyle, display: "flex", flexDirection: "column" }}>
                   <div style={{ ...eyebrow, marginBottom: 12 }}>Personal Bests by Category</div>
                   <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14 }}>
                     {stats.perCategoryBest.map(({ type, tracks }) => {

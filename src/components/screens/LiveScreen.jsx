@@ -498,14 +498,14 @@ export default function LiveScreen({
 
       {/* ── KPI strip ── */}
       <div style={{ display: "flex", gap: 16, flex: "none", flexWrap: "wrap" }}>
-        <div style={{ flex: "2 1 480px", minWidth: 0, display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12 }}>
+        <div style={{ flex: "2 1 480px", minWidth: 0, display: "grid", gridTemplateColumns: "var(--grid-live-tiles)", gap: 12 }}>
           {kpis.map((k) => <Kpi key={k.label} {...k} />)}
           <div style={{ ...card, padding: "11px 15px", display: "flex", flexDirection: "column", justifyContent: "space-between", minWidth: 0 }}>
             <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>ERS Mode</div>
             <div style={{ fontWeight: 800, fontSize: 20, lineHeight: 1, color: C.red, whiteSpace: "nowrap" }}>{ersModeName}</div>
           </div>
         </div>
-        <div style={{ flex: "1 1 360px", minWidth: 0, display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+        <div style={{ flex: "1 1 360px", minWidth: 0, display: "grid", gridTemplateColumns: "var(--grid-live-sectors)", gap: 10 }}>
           {sectors.map((s, ci) => (
             <div key={s.name} style={{ ...card, borderTop: `3px solid ${s.bar}`, padding: "10px 14px",
               display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 6 }}>
@@ -557,7 +557,7 @@ export default function LiveScreen({
           so this row scrolls on its own rather than overflowing the fixed shell. */}
       <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap", overflowY: "auto" }}>
         {/* Track map */}
-        <div style={{ flex: "1 1 420px", minWidth: 320, maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(320px, var(--col-min))", maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
             <span style={eyebrow}>Live Track Map</span>
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -622,7 +622,7 @@ export default function LiveScreen({
         {/* maxHeight: a wrapping flex line sizes itself to its content, so without
             this cap a long lap list stretches the column (and the row) instead of
             scrolling inside the Session Laps panel below. */}
-        <div style={{ flex: "1 1 420px", minWidth: 330, minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(330px, var(--col-min))", minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ flex: 1, minHeight: 160, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

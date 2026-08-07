@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the Android build draw under the status bar and
+         gesture pill; the Shell then pays that back with env(safe-area-inset-*)
+         padding. Without it the app is letterboxed by system bars on a phone. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>F1 Coach</title>
     <!-- UI fonts are SELF-HOSTED (public/fonts/, vendored by
          scripts/fetch-fonts.mjs). They used to come from fonts.googleapis.com,
@@ -71,6 +74,63 @@
         --r-md:           14px;
         --r-sm:           10px;
         --tex-hero:       none;     /* carbon-weave hero texture (team skins only) */
+
+        /* ─── Responsive sizing tokens ──────────────────────────────────────
+           The app styles with inline React style objects, which cannot carry a
+           media query — so any value that must change with viewport width is
+           routed through a custom property and switched HERE. This costs no
+           re-render, unlike the JS breakpoint hook (hooks/useViewport.jsx),
+           which is reserved for changes to the MARKUP itself (the nav becoming
+           a bottom tab bar, modals becoming sheets).
+
+           Note the inline style must actually read `var(--x)` for this to bite:
+           an inline literal beats a stylesheet rule in the cascade, so a media
+           query alone can never override `gridTemplateColumns: "repeat(6,1fr)"`. */
+        --col-min:          320px;  /* flex column floor — the main cause of side-scroll on a phone */
+        --grid-live-tiles:  repeat(6, 1fr);  /* Live's KPI strip */
+        --grid-live-sectors: repeat(3, 1fr); /* Live's three sector cards */
+        /* Leaderboard row: pos · driver · lap · gap · S1 S2 S3 · tyre · use */
+        --grid-board-row:   48px 1fr 108px 92px repeat(3, 70px) 96px 128px;
+        --tap:              32px;   /* minimum interactive height */
+      }
+
+      /* Tablet — the layout still works, it just needs fewer columns. */
+      @media (max-width: 1023px) {
+        :root {
+          --col-min:         260px;
+          --grid-live-tiles: repeat(3, 1fr);
+        }
+      }
+
+      /* Phone. The column floor goes to zero: it exists to stop flex children
+         collapsing on a wide desktop, but `flex: 1 1 <basis>` already does that
+         job, and at 400 px a 320 px floor is exactly what forces a sideways
+         scroll. */
+      @media (max-width: 639px) {
+        :root {
+          --col-min:          0px;
+          --grid-live-tiles:  repeat(2, 1fr);
+          --grid-live-sectors: repeat(3, 1fr);
+          /* Five columns; .lb-secondary hides the four cells that fall outside,
+             so the cell count and the column count stay in step — a grid with
+             more children than columns spills into implicit ROWS rather than
+             hiding anything, which would break the row apart. */
+          --grid-board-row:   30px 1fr 76px 58px 62px;
+          --tap:              44px;
+        }
+        .lb-secondary { display: none; }
+      }
+
+      /* Nothing on a touch screen should be smaller than a fingertip. This works
+         because the buttons carry inline `padding` but no inline `min-height`, so
+         the stylesheet rule wins uncontested. Keyed on pointer type, not width —
+         a touch laptop is wide AND coarse. */
+      @media (pointer: coarse) {
+        button, [role="button"], select, input[type="checkbox"], input[type="radio"] {
+          min-height: var(--tap);
+        }
+        /* Range inputs need the thumb reachable, not the track tall. */
+        input[type="range"] { min-height: var(--tap); }
       }
 
       * { box-sizing: border-box; }

@@ -309,7 +309,7 @@ export default function CoachLogScreen({
 
           {/* Next-lap focus strip */}
           <div style={{ flex: "none", display: "flex", gap: 14, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 360px", minWidth: 280, background: "linear-gradient(135deg,#161029,#11151d)", border: "1px solid #2c2150", borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ flex: "1 1 360px", minWidth: "min(280px, var(--col-min))", background: "linear-gradient(135deg,#161029,#11151d)", border: "1px solid #2c2150", borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
               <span style={{ width: 26, height: 26, flex: "none", borderRadius: 7, background: "#b45bff22", border: `1px solid ${C.purple}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>✦</span>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 9, letterSpacing: 2, color: "#c39bff", textTransform: "uppercase", fontWeight: 700, marginBottom: 4 }}>Coach · Next-Lap Focus</div>

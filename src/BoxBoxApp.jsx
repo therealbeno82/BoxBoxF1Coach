@@ -29,7 +29,7 @@ import DrivingLinesView from "./components/DrivingLinesView.jsx";
 import { getTrack, sameTrack } from "./lib/trackData.js";
 import { cornerLabel } from "./lib/cornerData.js";
 import { useTrackCorners } from "./hooks/useTrackCorners.js";
-import { synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE } from "./lib/kokoroTTS.js";
+import { synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE } from "./lib/tts/index.js";
 import { buildCoachLog } from "./lib/coach/coachLog.js";
 import { matchReference, profileLabel } from "./lib/coach/refMatch.js";
 import { buildDebriefPrompt } from "./lib/coach/prompts.js";
@@ -45,7 +45,7 @@ import { traceToReference } from "./lib/leaderboard/payload.js";
 import { eligibility } from "./lib/leaderboard/eligibility.js";
 import { boardIdForLap } from "./lib/leaderboard/boardKey.js";
 import { LS_ENABLED } from "./lib/leaderboard/config.js";
-import { inTauri } from "./lib/env.js";
+import { inTauri, isAndroid } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
@@ -392,6 +392,10 @@ function useAudio(voicePrefs = {}) {
   };
 
   const pickVoice = () => {
+    // The Android System WebView may not implement the Web Speech API at all —
+    // return null rather than throwing, so callers fall through to silence
+    // instead of taking the render down.
+    if (typeof window === "undefined" || !window.speechSynthesis) return null;
     const voices = window.speechSynthesis.getVoices();
     const prefs  = voicePrefsRef.current;
     if (prefs.voiceName) {
@@ -2453,8 +2457,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     <Shell
       tab={tab} onTab={setTab} onSettings={()=>setTab("setup")}
       wsConnected={wsConnected}
-      llmConnected={llmOnline}
-      ffbConnected={ffb.connected}
+      llmConnected={!isAndroid && llmOnline}
+      ffbConnected={!isAndroid && ffb.connected}
       activeDriver={activeDriver} driverColor={activeDriverObj?.color || "#3671C6"} driverCount={drivers.length}
       onDriverChip={()=>setSwitchDriverOpen(true)}
     >
@@ -2617,7 +2621,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       )}
 
       {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
-      {tab==="ffb" && <FfbScreen ffb={ffb} />}
+      {/* Desktop only — the Rust engine is cfg'd out of the Android build, and
+          Shell drops the tab there, so this can never be reached anyway. */}
+      {!isAndroid && tab==="ffb" && <FfbScreen ffb={ffb} />}
 
       {/* ── Modals ── */}
       {switchDriverOpen && (

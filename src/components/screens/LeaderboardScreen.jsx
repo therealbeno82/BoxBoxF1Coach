@@ -44,7 +44,14 @@ const caret = {
   pointerEvents: "none", color: C.textFaint, fontSize: 11,
 };
 
-const GRID = "48px 1fr 108px 92px repeat(3, 70px) 96px 128px";
+// Nine columns at ~760px minimum, which a phone cannot show. Rather than let the
+// far side get silently clipped (there is no horizontal scroller here, and adding
+// one would desync the header from the rows — they're separate containers), the
+// narrow breakpoint drops to five columns and the cells that fall outside are
+// marked `.lb-secondary` for index.html's media query to hide. Position, driver,
+// lap time and gap are what a board is actually read for; sector splits and the
+// tyre/date chip are detail you go to Analytics for.
+const GRID = "var(--grid-board-row)";
 
 const fmtSectorMs = (ms) => (typeof ms === "number" && ms > 0 ? (ms / 1000).toFixed(3) : "—");
 const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—");
@@ -137,7 +144,7 @@ export default function LeaderboardScreen({
     }}>
       {/* ── Board picker ── */}
       <div style={{ display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap", flex: "none" }}>
-        <div style={{ flex: "1 1 260px", minWidth: 200, display: "flex", flexDirection: "column", gap: 5 }}>
+        <div style={{ flex: "1 1 260px", minWidth: "min(200px, var(--col-min))", display: "flex", flexDirection: "column", gap: 5 }}>
           <label style={eyebrow}>Circuit</label>
           <div style={{ position: "relative" }}>
             <select value={slug} onChange={(e) => setSlug(e.target.value)} style={selectStyle("#ffffff")}>
@@ -219,7 +226,7 @@ export default function LeaderboardScreen({
           borderBottom: `1px solid ${C.line}`, flex: "none",
         }}>
           {["", "Driver", "Lap Time", "Gap", "S1", "S2", "S3", "Tyre", ""].map((h, i) => (
-            <div key={i} style={{
+            <div key={i} className={i >= 4 && i <= 7 ? "lb-secondary" : undefined} style={{
               fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
               textAlign: i >= 4 && i <= 6 ? "center" : i === 2 || i === 3 ? "right" : "left",
             }}>{h}</div>
@@ -274,13 +281,13 @@ export default function LeaderboardScreen({
                 }}>{e.gapMs === 0 ? "—" : fmtDelta(e.gapMs / 1000)}</span>
 
                 {[0, 1, 2].map((i) => (
-                  <span key={i} style={{
+                  <span key={i} className="lb-secondary" style={{
                     fontFamily: FONT.mono, fontSize: 12, fontWeight: 600,
                     textAlign: "center", color: C.textMuted,
                   }}>{fmtSectorMs(e.sectorMs?.[i])}</span>
                 ))}
 
-                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span className="lb-secondary" style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <TyreChip visual={e.tyreVisual} />
                   <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono }}>
                     {fmtDate(e.recordedAt)}
