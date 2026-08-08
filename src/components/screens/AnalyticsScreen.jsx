@@ -9,6 +9,7 @@
 import { useMemo, useRef, useState } from "react";
 import { C, FONT, fmtDelta } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
+import { useViewport } from "../../hooks/useViewport.jsx";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
 
@@ -80,6 +81,7 @@ export default function AnalyticsScreen({
   demoMode = false,
 }) {
   // Is the consistency strip along the bottom expanded?
+  const { phone } = useViewport();
   const [stripOpen, setStripOpen] = useState(true);
   const fileRef = useRef(null);
 
@@ -124,8 +126,12 @@ export default function AnalyticsScreen({
   }, [laps]);
 
   return (
-    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px 28px 22px",
-      display: "flex", flexDirection: "column", gap: 14, fontFamily: FONT.ui }}>
+    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px var(--screen-px) 22px",
+      display: "flex", flexDirection: "column", gap: 14, fontFamily: FONT.ui,
+      // On a phone the panels below carry their own heights and the whole screen
+      // scrolls in Shell's body, so the screen must be free to grow past the
+      // viewport rather than squeezing its children into it.
+      ...(phone && { flex: "none", minHeight: "auto" }) }}>
 
       {/* Top bar */}
       <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", flex: "none" }}>
@@ -167,7 +173,11 @@ export default function AnalyticsScreen({
             )}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 11, color: C.textFaint, fontSize: 11, letterSpacing: 1 }}>VS</div>
+        {/* Reads as a divider only while the two selectors sit side by side; once
+            they stack it's a stray word hanging off the first one. */}
+        {!phone && (
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 11, color: C.textFaint, fontSize: 11, letterSpacing: 1 }}>VS</div>
+        )}
         <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 5 }}>
           <label style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Driven Lap</label>
           <div style={{ display: "flex", gap: 8 }}>
@@ -193,10 +203,17 @@ export default function AnalyticsScreen({
       {/* Left column: the driving-lines view above the lap strip (both share its width);
           right column: the telemetry trace stack running the full height. Both
           columns are equal width so the split lands under the "VS" above — the
-          two lap selectors are equal width too, centring the VS on the same axis. */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 14 }}>
-        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ flex: 1, minHeight: 0, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
+          two lap selectors are equal width too, centring the VS on the same axis.
+          NOTE this row does NOT wrap — the two columns are meant to share the
+          height, so on a narrow window they'd squash to ~170 px each rather than
+          stack. On a phone that's unreadable, so the row becomes a COLUMN and each
+          panel takes a fixed height and scrolls past instead. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 14,
+        ...(phone && { flexDirection: "column", flex: "none", minHeight: "auto" }) }}>
+        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", gap: 12,
+          ...(phone && { flex: "none" }) }}>
+          <div style={{ flex: 1, minHeight: 0, ...card, padding: "14px 16px", display: "flex", flexDirection: "column",
+            ...(phone && { flex: "none", height: 340 }) }}>
             {linesSlot}
           </div>
 
@@ -268,7 +285,8 @@ export default function AnalyticsScreen({
         </div>
 
         {/* TelemetryStudio (compact) draws its own card */}
-        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column",
+          ...(phone && { flex: "none", height: 460 }) }}>
           {tracesSlot}
         </div>
       </div>

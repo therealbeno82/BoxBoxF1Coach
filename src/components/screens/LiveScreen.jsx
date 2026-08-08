@@ -12,6 +12,7 @@ import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKe
 import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from "../../lib/tyres.js";
 import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
+import { useViewport } from "../../hooks/useViewport.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 const SECTOR_GREY = C.textFaint; // F1 "no time set yet" — neutral grey sector bar
@@ -30,12 +31,20 @@ const fuelColor = (d) => (d < 0 ? C.red : d < 0.5 ? C.yellow : C.textDim);
 const microLabel = { fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: C.textFaint };
 const microValue = { fontFamily: FONT.mono, fontSize: 10, fontWeight: 700, lineHeight: 1.15 };
 
-function Kpi({ label, value, unit, color }) {
+// `compact` is the phone treatment: the six readouts share ONE card rather than
+// carrying six sets of border + padding, which on a ~400px screen is most of a
+// screenful of chrome for six numbers. So the tile drops its own card styling and
+// shrinks its type; the grid around it supplies the panel.
+function Kpi({ label, short, value, unit, color, compact }) {
   return (
-    <div style={{ ...card, padding: "11px 15px", display: "flex", flexDirection: "column", justifyContent: "space-between", minWidth: 0 }}>
-      <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: 28, lineHeight: 1, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {value}{unit ? <span style={{ fontSize: 11, color: C.textFaint, marginLeft: 4 }}>{unit}</span> : null}
+    <div style={{ ...(compact ? null : card), padding: compact ? "2px 2px" : "11px 15px",
+      display: "flex", flexDirection: "column", justifyContent: "space-between", gap: compact ? 3 : 0, minWidth: 0 }}>
+      <div style={{ fontSize: compact ? 7.5 : 9, letterSpacing: compact ? 0 : 2, color: C.textDim, textTransform: "uppercase",
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{compact ? (short || label) : label}</div>
+      {/* Sized against the widest this ever gets — "300 km/h" — not against the
+          zeros it shows when parked, which fit at any size and prove nothing. */}
+      <div style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: compact ? 15 : 28, lineHeight: 1, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {value}{unit ? <span style={{ fontSize: compact ? 7 : 11, color: C.textFaint, marginLeft: compact ? 1 : 4 }}>{unit}</span> : null}
       </div>
     </div>
   );
@@ -415,12 +424,15 @@ export default function LiveScreen({
     };
   });
 
+  // `short` is the phone label: all six readouts share one line there, so a label
+  // only has ~53 px. The two that carry a redundant word lose it — the panel is
+  // already unambiguously the car's live state, so "ERS Batt" reads fine as "Batt".
   const kpis = [
-    { label: "Speed", value: toSpeed(tel.speed, units), unit: uLabel, color: C.teal },
-    { label: "Gear", value: tel.gear ?? "—", unit: "", color: C.purple },
-    { label: "Throttle", value: Math.round(tel.throttle ?? 0), unit: "%", color: "#fff" },
-    { label: "Brake", value: Math.round(tel.brake ?? 0), unit: "%", color: C.red },
-    { label: "ERS Batt", value: Math.round(tel.ersBattery ?? 0), unit: "%", color: C.ersYellow },
+    { label: "Speed", short: "Speed", value: toSpeed(tel.speed, units), unit: uLabel, color: C.teal },
+    { label: "Gear", short: "Gear", value: tel.gear ?? "—", unit: "", color: C.purple },
+    { label: "Throttle", short: "Thr", value: Math.round(tel.throttle ?? 0), unit: "%", color: "#fff" },
+    { label: "Brake", short: "Brake", value: Math.round(tel.brake ?? 0), unit: "%", color: C.red },
+    { label: "ERS Batt", short: "Batt", value: Math.round(tel.ersBattery ?? 0), unit: "%", color: C.ersYellow },
   ];
   const ersModeName = ERS_MODES[tel.ersMode ?? 0] || "None";
 
@@ -439,10 +451,40 @@ export default function LiveScreen({
   const energyBudget = `${Math.round(tel.ersDeploy ?? 0)} / ${Math.round(tel.ersHarvestLimit ?? 0)} kJ`;
 
   const focus = lastAdvice && !lastAdvice.info ? lastAdvice : null;
+  const { phone } = useViewport();
+
+  // Call lead — how far ahead of the reference's own mark the cues are spoken.
+  // What it moves is the FIRST moment of sound: at 0.00 the leading edge of the
+  // beep lands on the mark itself (brake as you hear the "br"), and winding it up
+  // buys room to hear the whole word before acting.
+  //
+  // Built here rather than inline because it renders in two different places: its
+  // own row under the chips on desktop, and sharing the panel's title line on a
+  // phone, where a row of its own costs more height than it is worth.
+  const leadControl = onLeadSeconds ? (
+    <div style={{ display: "flex", alignItems: "center", gap: phone ? 6 : 10,
+      marginBottom: phone ? 0 : 10, flexWrap: phone ? "nowrap" : "wrap",
+      ...(phone && { flex: "1 1 0", minWidth: 0 }),
+      opacity: audioOn ? 1 : 0.5, transition: "opacity .12s" }}>
+      <span style={{ flex: "none", fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 1.5, textTransform: "uppercase",
+        fontWeight: 700, color: C.textDim, fontFamily: FONT.ui }}>Call lead</span>
+      <input type="range" min={leadRange.min} max={leadRange.max} step={leadRange.step}
+        value={leadSeconds} onChange={(e) => onLeadSeconds(+e.target.value)}
+        title="How far ahead of the reference's mark every cue is spoken. 0 = the call starts on the mark."
+        style={{ flex: phone ? "1 1 0" : "1 1 140px", minWidth: phone ? 0 : 110, accentColor: C.blue, cursor: "pointer" }} />
+      <span style={{ flex: "none", minWidth: phone ? 54 : 68, textAlign: "right", fontFamily: FONT.mono,
+        fontSize: phone ? 9 : 11, fontWeight: 700, color: leadSeconds > 0 ? C.textBody2 : C.blue }}>
+        {leadSeconds > 0 ? `${leadSeconds.toFixed(2)}s early` : "ON MARK"}
+      </span>
+    </div>
+  ) : null;
 
   return (
-    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px 28px 22px",
-      display: "flex", flexDirection: "column", gap: 14, fontFamily: FONT.ui }}>
+    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px var(--screen-px) 22px",
+      display: "flex", flexDirection: "column", gap: 14, fontFamily: FONT.ui,
+      // On a phone every panel below carries its own height and the page scrolls
+      // in Shell's body, so the screen has to be free to grow past the viewport.
+      ...(phone && { flex: "none", minHeight: "auto" }) }}>
 
       {/* ── Top bar ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", flex: "none" }}>
@@ -498,24 +540,36 @@ export default function LiveScreen({
 
       {/* ── KPI strip ── */}
       <div style={{ display: "flex", gap: 16, flex: "none", flexWrap: "wrap" }}>
-        <div style={{ flex: "2 1 480px", minWidth: 0, display: "grid", gridTemplateColumns: "var(--grid-live-tiles)", gap: 12 }}>
-          {kpis.map((k) => <Kpi key={k.label} {...k} />)}
-          <div style={{ ...card, padding: "11px 15px", display: "flex", flexDirection: "column", justifyContent: "space-between", minWidth: 0 }}>
-            <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>ERS Mode</div>
-            <div style={{ fontWeight: 800, fontSize: 20, lineHeight: 1, color: C.red, whiteSpace: "nowrap" }}>{ersModeName}</div>
+        {/* On a phone the six readouts become one panel — 3 across, 2 down — so the
+            strip costs one border and one padding instead of six of each. */}
+        <div style={{ flex: "2 1 480px", minWidth: 0, display: "grid", gridTemplateColumns: "var(--grid-live-tiles)", gap: 12,
+          ...(phone && { ...card, padding: "8px 7px", gap: 4 }) }}>
+          {kpis.map((k) => <Kpi key={k.label} {...k} compact={phone} />)}
+          <div style={{ ...(phone ? null : card), padding: phone ? "2px 2px" : "11px 15px",
+            display: "flex", flexDirection: "column", justifyContent: "space-between", gap: phone ? 3 : 0, minWidth: 0 }}>
+            <div style={{ fontSize: phone ? 7.5 : 9, letterSpacing: phone ? 0 : 2, color: C.textDim, textTransform: "uppercase",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{phone ? "Mode" : "ERS Mode"}</div>
+            {/* Proportional text, not mono, and the longest name is "Medium" — 11px
+                is what clears the cell for that one rather than for the "None" on
+                screen when the car is parked. */}
+            <div style={{ fontWeight: 800, fontSize: phone ? 11 : 20, lineHeight: 1, color: C.red,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ersModeName}</div>
           </div>
         </div>
         <div style={{ flex: "1 1 360px", minWidth: 0, display: "grid", gridTemplateColumns: "var(--grid-live-sectors)", gap: 10 }}>
           {sectors.map((s, ci) => (
-            <div key={s.name} style={{ ...card, borderTop: `3px solid ${s.bar}`, padding: "10px 14px",
-              display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 6 }}>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{s.name}</span>
-                <span style={{ fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, color: s.color }}>{s.delta}</span>
+            <div key={s.name} style={{ ...card, borderTop: `3px solid ${s.bar}`,
+              padding: phone ? "6px 8px" : "10px 14px",
+              display: "flex", flexDirection: "column", justifyContent: "space-between", gap: phone ? 4 : 6 }}>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 4 }}>
+                <span style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase" }}>{s.name}</span>
+                <span style={{ fontFamily: FONT.mono, fontSize: phone ? 9 : 11, fontWeight: 700, color: s.color,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.delta}</span>
               </div>
-              <div style={{ fontFamily: FONT.mono, fontSize: 22, fontWeight: 800, lineHeight: 1 }}>{s.time}</div>
+              <div style={{ fontFamily: FONT.mono, fontSize: phone ? 16 : 22, fontWeight: 800, lineHeight: 1,
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.time}</div>
               {/* Live mini-sectors: this third of the lap, filling in + colouring as it's driven. */}
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={{ display: "flex", gap: phone ? 3 : 4 }}>
                 {Array.from({ length: MINI_PER_SECTOR }).map((_, j) => {
                   const g = ci * MINI_PER_SECTOR + j;             // global mini-sector index 0..MINI_SECTORS-1
                   const d = liveMini.durations[g];
@@ -524,7 +578,7 @@ export default function LiveScreen({
                   return (
                     <div key={j}
                       title={col ? `${s.name}.${j + 1} · ${d.toFixed(3)}s` : active ? "On track" : ""}
-                      style={{ flex: 1, height: 7, borderRadius: 2,
+                      style={{ flex: 1, height: phone ? 5 : 7, borderRadius: 2,
                         background: col ? col + "cc" : active ? C.accent55 : "transparent",
                         border: `1px solid ${col || (active ? C.blue : C.borderStrong)}`,
                         boxShadow: col ? `0 0 6px ${col}99` : active ? `0 0 6px ${C.accentGlow}` : "none",
@@ -555,21 +609,52 @@ export default function LiveScreen({
       {/* ── Main: track map + right column ── */}
       {/* overflowY: below the wrap threshold the map and the right column stack,
           so this row scrolls on its own rather than overflowing the fixed shell. */}
-      <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap", overflowY: "auto" }}>
+      {/* On a phone this must NOT be its own scroller. The children are capped at
+          maxHeight:100% of it, but the map inside has minHeight:240 — stacked, that
+          content exceeds the cap and spills out of the box, landing on top of the
+          Session Laps card below it. Growing naturally and letting Shell scroll is
+          both simpler and the only way the panels can't overlap. */}
+      <div style={{ flex: 1, minHeight: 320, display: "flex", gap: 16, flexWrap: "wrap", overflowY: "auto",
+        ...(phone && { flex: "none", minHeight: "auto", overflowY: "visible" }) }}>
         {/* Track map */}
-        <div style={{ flex: "1 1 420px", minWidth: "min(320px, var(--col-min))", maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
-            <span style={eyebrow}>Live Track Map</span>
-            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(320px, var(--col-min))", maxHeight: "100%", ...card, padding: "16px 18px", display: "flex", flexDirection: "column",
+          ...(phone && { maxHeight: "none", height: 380, padding: "10px 9px" }) }}>
+          {/* On a phone the title row and the chip row stack, so the chips get the
+              full panel width to lay out in — sharing a line with the eyebrow left
+              them ~150px and squashed every label to an ellipsis. The call-lead
+              slider rides on the title line instead, where there IS room. */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 8,
+            ...(phone && { flexDirection: "column", alignItems: "stretch", gap: 6 }) }}>
+            {phone ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <span style={{ ...eyebrow, flex: "none" }}>Live Map</span>
+                {leadControl}
+              </div>
+            ) : (
+              <span style={eyebrow}>Live Map</span>
+            )}
+            {/* All seven cue toggles on ONE line on a phone: two rows of chips cost
+                more height than the map they annotate. Everything shrinks together
+                — swatch, gaps, padding, type — and the row is allowed to shrink
+                (minWidth 0) rather than wrap. */}
+            <div style={{ display: "flex", gap: phone ? 3 : 7, flexWrap: phone ? "nowrap" : "wrap",
+              ...(phone && { minWidth: 0, justifyContent: "space-between" }) }}>
               {legendChips.map((l) => (
                 <div key={l.label} onClick={l.onToggle || undefined} style={{
-                  display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8,
+                  display: "flex", alignItems: "center", gap: phone ? 3 : 8,
+                  padding: phone ? "4px 5px" : "6px 10px", borderRadius: phone ? 6 : 8,
+                  // Sized to their own label, not forced equal: equal widths make the
+                  // row as narrow as its longest member can be squeezed, which
+                  // ellipsised all seven.
+                  ...(phone && { flex: "none", minWidth: 0 }),
                   background: l.on ? C.inset : "transparent", border: `1px solid ${l.on ? l.color + "66" : C.line}`,
                   cursor: l.onToggle ? "pointer" : "default", opacity: l.on ? 1 : 0.45, transition: "opacity .12s" }}>
-                  <span style={{ width: 12, height: 12, borderRadius: 3, flex: "none",
-                    background: l.on ? l.color : "transparent", border: `1.5px solid ${l.color}`,
+                  <span style={{ width: phone ? 7 : 12, height: phone ? 7 : 12, borderRadius: phone ? 2 : 3, flex: "none",
+                    background: l.on ? l.color : "transparent", border: `${phone ? 1 : 1.5}px solid ${l.color}`,
                     boxShadow: l.on ? `0 0 7px ${l.color}88` : "none" }} />
-                  <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: .3, color: l.on ? C.textBody2 : C.textDim }}>{l.label}</span>
+                  <span style={{ fontSize: phone ? 8.5 : 11, fontWeight: 600, letterSpacing: phone ? 0 : .3,
+                    color: l.on ? C.textBody2 : C.textDim,
+                    ...(phone && { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }) }}>{l.label}</span>
                 </div>
               ))}
               {onSaveMap && (
@@ -583,27 +668,10 @@ export default function LiveScreen({
               )}
             </div>
           </div>
-          {/* Call lead — how far ahead of the reference's own mark the cues above are
-              spoken. Directly under the legend chips because it governs exactly those
-              categories, and next to the map because that map is where the marks are.
-              What it moves is the FIRST moment of sound: at 0.00 the leading edge of
-              the beep lands on the mark itself (brake as you hear the "br"), and
-              winding it up buys room to hear the whole word before acting. */}
-          {onLeadSeconds && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap",
-              opacity: audioOn ? 1 : 0.5, transition: "opacity .12s" }}>
-              <span style={{ flex: "none", fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase",
-                fontWeight: 700, color: C.textDim, fontFamily: FONT.ui }}>Call lead</span>
-              <input type="range" min={leadRange.min} max={leadRange.max} step={leadRange.step}
-                value={leadSeconds} onChange={(e) => onLeadSeconds(+e.target.value)}
-                title="How far ahead of the reference's mark every cue is spoken. 0 = the call starts on the mark."
-                style={{ flex: "1 1 140px", minWidth: 110, accentColor: C.blue, cursor: "pointer" }} />
-              <span style={{ flex: "none", minWidth: 68, textAlign: "right", fontFamily: FONT.mono,
-                fontSize: 11, fontWeight: 700, color: leadSeconds > 0 ? C.textBody2 : C.blue }}>
-                {leadSeconds > 0 ? `${leadSeconds.toFixed(2)}s early` : "ON MARK"}
-              </span>
-            </div>
-          )}
+          {/* Desktop keeps it on its own row directly under the legend chips, since it
+              governs exactly those categories. On a phone it has already been drawn
+              up on the title line above. */}
+          {!phone && leadControl}
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{mapSlot}</div>
             <div onClick={onToggleAudio} title="Toggle track audio cues" style={{
@@ -622,8 +690,10 @@ export default function LiveScreen({
         {/* maxHeight: a wrapping flex line sizes itself to its content, so without
             this cap a long lap list stretches the column (and the row) instead of
             scrolling inside the Session Laps panel below. */}
-        <div style={{ flex: "1 1 420px", minWidth: "min(330px, var(--col-min))", minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ flex: 1, minHeight: 160, ...card, padding: "14px 16px", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "1 1 420px", minWidth: "min(330px, var(--col-min))", minHeight: 0, maxHeight: "100%", display: "flex", flexDirection: "column", gap: 14,
+          ...(phone && { maxHeight: "none", minHeight: "auto" }) }}>
+          <div style={{ flex: 1, minHeight: 160, ...card, padding: "14px 16px", display: "flex", flexDirection: "column",
+            ...(phone && { flex: "none", minHeight: 300 }) }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.liveRed, boxShadow: `0 0 8px ${C.liveRed}`, animation: "blink 1.4s infinite" }} />

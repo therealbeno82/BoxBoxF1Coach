@@ -87,6 +87,7 @@
            an inline literal beats a stylesheet rule in the cascade, so a media
            query alone can never override `gridTemplateColumns: "repeat(6,1fr)"`. */
         --col-min:          320px;  /* flex column floor — the main cause of side-scroll on a phone */
+        --screen-px:        28px;   /* each screen's own left/right padding */
         --grid-live-tiles:  repeat(6, 1fr);  /* Live's KPI strip */
         --grid-live-sectors: repeat(3, 1fr); /* Live's three sector cards */
         /* Leaderboard row: pos · driver · lap · gap · S1 S2 S3 · tyre · use */
@@ -99,6 +100,7 @@
         :root {
           --col-min:         260px;
           --grid-live-tiles: repeat(3, 1fr);
+          --screen-px:       18px;
         }
       }
 
@@ -109,7 +111,13 @@
       @media (max-width: 639px) {
         :root {
           --col-min:          0px;
-          --grid-live-tiles:  repeat(2, 1fr);
+          /* 28px each side costs 56px of a ~400px screen — the single cheapest
+             width win available. */
+          --screen-px:        10px;
+          /* All six readouts on ONE line. Vertical space is the scarce one on a
+             phone, and at ~53px per cell the values still clear their widest case
+             ("300 km/h") — so the strip costs one row instead of three. */
+          --grid-live-tiles:  repeat(6, 1fr);
           --grid-live-sectors: repeat(3, 1fr);
           /* Five columns; .lb-secondary hides the four cells that fall outside,
              so the cell count and the column count stay in step — a grid with

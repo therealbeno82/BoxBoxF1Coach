@@ -114,7 +114,10 @@ const LIVE_LEGEND = [
   ["#ff5252", "Brake",  "brake"],
   ["#ffab00", "LiCo",   "lico"],
   ["#ffd54f", "Lift",   "lift"],
-  ["#888888", "Medium", "ers1"],  // 6-digit so the chip's `color + "66"` alpha border is valid
+  // "Med", not "Medium": the seven chips have to fit one line on a phone, and this
+  // was the longest label carrying the least information. Shared with the PNG
+  // export's legend (exportTrackMapPng), so both stay in step.
+  ["#888888", "Med",    "ers1"],  // 6-digit so the chip's `color + "66"` alpha border is valid
   ["#e040fb", "Hotlap", "ers2"],
   ["#2979ff", "Boost",  "ers3"],
   ["#6b7280", "None",   "normal"], // visible neutral grey (was near-black #1e1e1e)

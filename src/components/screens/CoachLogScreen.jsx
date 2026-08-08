@@ -44,7 +44,7 @@ export default function CoachLogScreen({
   const gate = coachingSet?.gate || null;
 
   return (
-    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px 28px 22px",
+    <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px var(--screen-px) 22px",
       display: "flex", flexDirection: "column", gap: 14, fontFamily: FONT.ui }}>
 
       {/* Top bar */}
