@@ -52,6 +52,7 @@ import { inTauri, isAndroid } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
+import { useAndroidBack } from "./hooks/useAndroidBack.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
 import { useFfbEngine } from "./hooks/useFfbEngine.js";
 import { invoke } from "@tauri-apps/api/core";
@@ -1354,6 +1355,16 @@ const btnStyle = (bg,color,border) => ({
 export default function BoxBoxApp({ onOpenCalibrator }) {
   // UI state
   const [tab,        setTab]        = useState("dashboard");
+  // The OUTERMOST Android back layer: with every modal closed, back walks out to
+  // the Dashboard before it is allowed to leave the app at all. Registered here,
+  // first, so it sits at the BOTTOM of the stack — modals mount later and are
+  // asked first. From the Dashboard it declines, and the activity finishes as
+  // any other app's would.
+  useAndroidBack(() => {
+    if (tab === "dashboard") return false;
+    setTab("dashboard");
+    return true;
+  });
   const [audioOn,    setAudioOn]    = useState(true);
   // Independent of the track audio cues: when on, the AI's per-lap "Next Lap
   // Focus" tip is read through the headset. Toggled from the focus panel itself.

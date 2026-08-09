@@ -15,6 +15,7 @@ import { formatLapTime } from "../../lib/format.js";
 import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { boardLabel } from "../../lib/leaderboard/boardKey.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
+import { useAndroidBack } from "../../hooks/useAndroidBack.js";
 
 const btn = (border, bg, color) => ({
   padding: "11px 22px", borderRadius: 9, border: `1px solid ${border}`, background: bg,
@@ -30,6 +31,13 @@ const Row = ({ label, children }) => (
 );
 
 export default function PublishLapModal({ lap, driver, busy, result, onConfirm, onClose }) {
+  // Back dismisses the dialog, exactly as the backdrop does — and like the
+  // backdrop it goes inert mid-upload. Note it still CONSUMES the press there:
+  // swallowing back during a publish is the point, since the alternative is the
+  // activity dying halfway through one. Called before the early return below,
+  // because a hook cannot be conditional.
+  useAndroidBack(() => { if (!busy) onClose(); }, !!lap);
+
   if (!lap) return null;
 
   const elig = eligibility(lap);

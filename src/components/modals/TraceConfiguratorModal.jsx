@@ -4,6 +4,7 @@
 // and an estimated bandwidth. Opened from the Settings "Trace Configurator" button.
 
 import { useEffect } from "react";
+import { useAndroidBack } from "../../hooks/useAndroidBack.js";
 import { C, FONT } from "../../lib/ui/tokens.js";
 
 const CHANNELS = [
@@ -20,6 +21,10 @@ const CHANNELS = [
 ];
 
 export default function TraceConfiguratorModal({ channels = {}, setChannels, onClose }) {
+  // Android's hardware back closes this the same way Escape does — without it
+  // a stray thumb destroys the activity, and the session with it.
+  useAndroidBack(onClose);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);

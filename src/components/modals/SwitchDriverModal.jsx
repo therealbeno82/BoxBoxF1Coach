@@ -4,6 +4,7 @@
 // the lap store on open). Footer jumps to the Settings roster to sign a new one.
 
 import { useEffect, useState } from "react";
+import { useAndroidBack } from "../../hooks/useAndroidBack.js";
 import { C, FONT } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
 import * as lapStore from "../../lib/lapStore.js";
@@ -11,6 +12,10 @@ import * as lapStore from "../../lib/lapStore.js";
 export default function SwitchDriverModal({ drivers = [], activeDriver, avatars = {}, onPick, onClose, onSignUp }) {
   // name → { best:number|null, laps:number }
   const [stats, setStats] = useState({});
+
+  // Android's hardware back closes this the same way Escape does — without it
+  // a stray thumb destroys the activity, and the session with it.
+  useAndroidBack(onClose);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };

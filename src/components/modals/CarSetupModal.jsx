@@ -6,6 +6,7 @@
 // scale reflecting where the real value sits in its plausible range.
 
 import { useEffect } from "react";
+import { useAndroidBack } from "../../hooks/useAndroidBack.js";
 import { C, FONT } from "../../lib/ui/tokens.js";
 import { formatSetup } from "../../lib/setupDisplay.js";
 
@@ -50,6 +51,10 @@ function barPct(label, value) {
 }
 
 export default function CarSetupModal({ pb, onClose }) {
+  // Android's hardware back closes this the same way Escape does — without it
+  // a stray thumb destroys the activity, and the session with it.
+  useAndroidBack(onClose);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
