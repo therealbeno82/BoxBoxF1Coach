@@ -24,6 +24,7 @@ import { C, FONT } from "../lib/ui/tokens.js";
 import { toSpeed, speedUnitLabel, toTemp, tempUnitLabel, clamp } from "../lib/format.js";
 import { ERS_MODES } from "../lib/coach/config.js";
 import { cornerLabel } from "../lib/cornerData.js";
+import { useViewport } from "../hooks/useViewport.jsx";
 
 const W = 1000, VH = 100;          // SVG coordinate system (stretched per panel)
 const SWEEP_SECONDS = 8;           // time for Play to sweep a full lap
@@ -243,7 +244,11 @@ function TracePanel({ panel, chPaths, dS, rS, hasRef, ctx, noData }) {
 // S1/S2/S3 zoom control. Rendered as a proper raised button (hover + active
 // states) rather than a flat text tag. Absolutely positioned over the trace
 // stack; `zoomed` = this sector is the active deep-dive (centred + highlighted).
-function SectorButton({ name, left, zoomed, onClick }) {
+// `slim` = the phone build: the button sits in its own strip above the traces
+// rather than on top of them, so it is sized for the least vertical space it can
+// take — including an inline min-height that overrides the coarse-pointer tap
+// floor in index.html, which would otherwise make this strip 44px tall.
+function SectorButton({ name, left, zoomed, onClick, slim = false }) {
   const [hover, setHover] = useState(false);
   return (
     <button
@@ -253,9 +258,10 @@ function SectorButton({ name, left, zoomed, onClick }) {
       onMouseLeave={() => setHover(false)}
       title={zoomed ? "Back to full lap" : `Zoom to ${name}`}
       style={{
-        position: "absolute", top: 6, left, transform: "translateX(-50%)", zIndex: 5,
+        position: "absolute", top: slim ? 0 : 6, left, transform: "translateX(-50%)", zIndex: 5,
         cursor: "pointer", appearance: "none", outline: "none",
-        fontFamily: FONT.mono, fontSize: 13, fontWeight: 800, letterSpacing: 1, lineHeight: 1,
+        ...(slim && { minHeight: 0, height: 18 }),
+        fontFamily: FONT.mono, fontSize: slim ? 10 : 13, fontWeight: 800, letterSpacing: 1, lineHeight: 1,
         color: zoomed ? "#fff" : hover ? C.textHi : C.textBody,
         background: zoomed
           ? "linear-gradient(180deg, #4885e0 0%, #3671C6 100%)"
@@ -263,7 +269,7 @@ function SectorButton({ name, left, zoomed, onClick }) {
             ? "linear-gradient(180deg, #232c3e 0%, #1a2130 100%)"
             : "linear-gradient(180deg, #1a2130 0%, #141922 100%)",
         border: `1px solid ${zoomed ? C.blue : hover ? "#3d4864" : C.borderStrong}`,
-        padding: "7px 15px", borderRadius: 7,
+        padding: slim ? "0 9px" : "7px 15px", borderRadius: slim ? 5 : 7,
         boxShadow: zoomed
           ? "0 2px 8px rgba(54,113,198,.5), inset 0 1px 0 rgba(255,255,255,.25)"
           : "0 2px 5px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06)",
@@ -289,6 +295,7 @@ export default function TelemetryStudio({
   const barRef = useRef(null);
   const stackRef = useRef(null);
   const rafRef = useRef(0);
+  const { phone } = useViewport();
 
   const controlled = typeof playhead === "number" && typeof onSeek === "function";
   const playing = controlled ? !!playingProp : playingInt;
@@ -344,6 +351,21 @@ export default function TelemetryStudio({
     }
     setZoomSector(next);
   };
+
+  // S1/S2/S3 double as the zoom control: click to deep-dive that sector, click
+  // the (highlighted, centered) active one to zoom out. Built here because they
+  // render in one of two places — their own strip on a phone, over the traces on
+  // desktop. stopPropagation lives in the button: on desktop they sit inside the
+  // stack's play/pause click target.
+  const sectorButtons = sectorLabels.map((s, i) => {
+    if (zoomSector != null && zoomSector !== i) return null;
+    const zoomed = zoomSector === i;
+    return (
+      <SectorButton key={s.name} name={s.name} zoomed={zoomed} slim={phone}
+        left={zoomed ? "50%" : `${s.f * 100}%`}
+        onClick={() => zoomTo(zoomed ? null : i)} />
+    );
+  });
 
   // Absent prop (or an id missing from it) means visible — the studio works
   // standalone and future registry ids default on.
@@ -508,25 +530,46 @@ export default function TelemetryStudio({
     <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16, fontFamily: FONT.ui }}>
 
       {/* ── Left: stacked traces + scrubber ── */}
-      <div style={{ flex: "1.62 1 460px", minWidth: 0, ...cardStyle, padding: "14px 18px", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: "1.62 1 460px", minWidth: 0, ...cardStyle, padding: phone ? "6px 10px 10px" : "14px 18px", display: "flex", flexDirection: "column" }}>
         {/* Trace chips — pick which panels this session shows. Outside the
             play/pause stack so a toggle never doubles as a play click. */}
-        <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {/* All six sit on ONE line on a phone — they are a row of related switches
+            and wrapping them into three ~44px-tall lines (the coarse-pointer tap
+            floor) costs more height than the trace panels they govern. Everything
+            horizontal shrinks: text, dot, gaps — and the pill itself is dropped,
+            since the outline is the widest part of a chip and the dot already
+            carries both the channel's colour and its on/off state. */}
+        <div style={{ flex: "none", display: "flex", alignItems: "center", gap: phone ? 3 : 6,
+          flexWrap: "wrap", marginBottom: phone ? 3 : 8 }}>
+          {/* The six live in their own row box so "Full lap" can still wrap below
+              them on a phone without breaking the chips' single line. */}
+          <div style={{ display: "flex", alignItems: "center", gap: phone ? 4 : 6,
+            ...(phone && { justifyContent: "space-between" }),
+            flexWrap: phone ? "nowrap" : "wrap", flex: "1 1 auto", minWidth: 0 }}>
           {PANELS.map((pn) => {
             const on = isVisible(pn.id);
             return (
               <button key={pn.id} onClick={() => onToggleTrace?.(pn.id)}
                 title={`${on ? "Hide" : "Show"} ${pn.chip.label}`}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999,
-                  background: C.inset, border: `1px solid ${on ? pn.chip.color + "55" : C.line}`,
-                  cursor: onToggleTrace ? "pointer" : "default", fontFamily: FONT.ui, fontSize: 9, fontWeight: 700,
-                  letterSpacing: 1, textTransform: "uppercase", color: on ? C.textBody : C.textDim, opacity: on ? 1 : 0.45 }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", flex: "none", background: on ? pn.chip.color : "#5a6478" }} />
+                style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                  gap: phone ? 3 : 5, padding: phone ? 0 : "3px 9px", borderRadius: 999,
+                  ...(phone
+                    // height + minHeight override index.html's 44px coarse-pointer
+                    // tap floor: with no pill around it the chip is a line of text,
+                    // and 44px of it is a third of a trace panel's worth of screen.
+                    ? { flex: "0 1 auto", minWidth: 0, background: "none", border: "none", minHeight: 0, height: 20 }
+                    : { background: C.inset, border: `1px solid ${on ? pn.chip.color + "55" : C.line}` }),
+                  cursor: onToggleTrace ? "pointer" : "default", fontFamily: FONT.ui,
+                  fontSize: 9, fontWeight: 700, whiteSpace: "nowrap",
+                  letterSpacing: phone ? 0.4 : 1, textTransform: "uppercase", color: on ? C.textBody : C.textDim, opacity: on ? 1 : 0.45 }}>
+                <span style={{ width: phone ? 6 : 7, height: phone ? 6 : 7, borderRadius: "50%", flex: "none",
+                  background: on ? pn.chip.color : "#5a6478" }} />
                 {pn.chip.label}
               </button>
             );
           })}
-          {zoomSector != null && (
+          </div>
+          {zoomSector != null && !phone && (
             <button onClick={() => zoomTo(null)} title="Zoom back out to the whole lap"
               style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999,
                 background: C.blue, border: `1px solid ${C.blue}`, cursor: "pointer", fontFamily: FONT.ui, fontSize: 9,
@@ -535,6 +578,28 @@ export default function TelemetryStudio({
             </button>
           )}
         </div>
+        {/* S1/S2/S3 zoom buttons. On a phone they get their own 18px strip ABOVE
+            the stack: a panel is only ~60px tall there, so a button parked on top
+            of the first one hides most of a trace. Still absolutely positioned by
+            the same sector fraction, and the strip is exactly as wide as the stack
+            below it, so each one still points at its sector. */}
+        {phone && (
+          <div style={{ flex: "none", position: "relative", height: 18, marginBottom: 2 }}>
+            {sectorButtons}
+            {/* Zoomed out shares the strip rather than adding a row of its own —
+                on the chip line above it wrapped, and a whole 44px tap-height row
+                to leave a zoom costs more than the zoom shows. */}
+            {zoomSector != null && (
+              <button onClick={() => zoomTo(null)} title="Zoom back out to the whole lap"
+                style={{ position: "absolute", top: 0, right: 0, height: 18, minHeight: 0, padding: "0 8px",
+                  borderRadius: 5, background: C.blue, border: `1px solid ${C.blue}`, cursor: "pointer",
+                  fontFamily: FONT.ui, fontSize: 9, fontWeight: 800, letterSpacing: 0.6,
+                  textTransform: "uppercase", color: "#fff", whiteSpace: "nowrap" }}>
+                Full lap
+              </button>
+            )}
+          </div>
+        )}
         {/* Trace stack — click anywhere to play/pause, hover to inspect */}
         <div ref={stackRef} onClick={() => setPlaying((pl) => !pl)}
           onMouseMove={onStackMove} onMouseLeave={() => setHoverF(null)}
@@ -551,18 +616,7 @@ export default function TelemetryStudio({
               <div key={`b-${i}`} style={{ position: "absolute", top: 0, bottom: 0, left: `${wf * 100}%`, width: 0, borderLeft: "1px dashed #4a5470", zIndex: 3, pointerEvents: "none" }} />
             );
           })}
-          {/* S1/S2/S3 labels double as the zoom control: click to deep-dive that
-              sector, click the (highlighted, centered) active one to zoom out.
-              stopPropagation — they sit inside the play/pause click target. */}
-          {sectorLabels.map((s, i) => {
-            if (zoomSector != null && zoomSector !== i) return null;
-            const zoomed = zoomSector === i;
-            return (
-              <SectorButton key={s.name} name={s.name} zoomed={zoomed}
-                left={zoomed ? "50%" : `${s.f * 100}%`}
-                onClick={() => zoomTo(zoomed ? null : i)} />
-            );
-          })}
+          {!phone && sectorButtons}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: cursorPct, width: 1, background: "#ffffff55", zIndex: 4, pointerEvents: "none" }} />
 
           {/* Hover guide + its position chip — cyan so it never reads as the

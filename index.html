@@ -5,7 +5,12 @@
     <!-- viewport-fit=cover lets the Android build draw under the status bar and
          gesture pill; the Shell then pays that back with env(safe-area-inset-*)
          padding. Without it the app is letterboxed by system bars on a phone. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- maximum-scale/user-scalable: this is an app shell, not a document. The
+         WebView's default double-tap-to-zoom and pinch-zoom fire on ordinary
+         taps and drags here — a tap on a pill, a drag of the scrubber or the 3D
+         orbit camera — and leave the layout scaled up with no obvious way back.
+         The UI already reflows for the viewport, so page zoom adds nothing. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>F1 Coach</title>
     <!-- UI fonts are SELF-HOSTED (public/fonts/, vendored by
          scripts/fetch-fonts.mjs). They used to come from fonts.googleapis.com,
@@ -123,7 +128,7 @@
              so the cell count and the column count stay in step — a grid with
              more children than columns spills into implicit ROWS rather than
              hiding anything, which would break the row apart. */
-          --grid-board-row:   30px 1fr 76px 58px 62px;
+          --grid-board-row:   24px 1fr 68px 52px 32px;
           --tap:              44px;
         }
         .lb-secondary { display: none; }
@@ -156,10 +161,18 @@
         padding: 0;
         height: 100%;
         background: var(--bg);
+        /* `manipulation` drops the double-tap-to-zoom gesture, which is what makes
+           a WebView hold every tap for ~300ms to see if a second one is coming —
+           so this also removes the tap delay on every button in the app. */
+        touch-action: manipulation;
       }
       body {
         font-family: "Archivo", system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
+        /* Stops Android enlarging text in tall blocks on its own, which changes
+           the sizes the phone layout was measured at. */
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
 
       /* ─── Animations (from the handoff) ─────────────────────────────────── */

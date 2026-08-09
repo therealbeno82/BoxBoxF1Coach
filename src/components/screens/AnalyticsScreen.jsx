@@ -13,17 +13,25 @@ import { useViewport } from "../../hooks/useViewport.jsx";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
 
-const selectStyle = (color) => ({
+// The `phone` variants are 30px tall rather than 42, and set minHeight
+// explicitly — index.html gives every button and select a 44px min-height on a
+// coarse pointer, which is taller than the control this row wants.
+const selectStyle = (color, phone = false) => ({
   width: "100%", appearance: "none", WebkitAppearance: "none", background: C.surface,
-  border: `1px solid ${C.borderStrong}`, borderRadius: 9, color, fontFamily: FONT.mono,
-  fontSize: 14, fontWeight: 700, padding: "11px 36px 11px 14px", cursor: "pointer", outline: "none",
+  border: `1px solid ${C.borderStrong}`, borderRadius: phone ? 7 : 9, color, fontFamily: FONT.mono,
+  fontSize: phone ? 12 : 14, fontWeight: 700,
+  padding: phone ? "0 26px 0 10px" : "11px 36px 11px 14px",
+  ...(phone && { minHeight: 0, height: 30 }),
+  cursor: "pointer", outline: "none",
 });
 
-const actionBtn = (border, color) => ({
-  flex: "none", display: "inline-flex", alignItems: "center", gap: 6, padding: "0 14px",
-  borderRadius: 9, border: `1px solid ${border}`, background: C.surface, color,
-  fontFamily: FONT.ui, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", fontWeight: 700,
-  cursor: "pointer", whiteSpace: "nowrap", height: 42,
+const actionBtn = (border, color, phone = false) => ({
+  flex: "none", display: "inline-flex", alignItems: "center", gap: 6,
+  padding: phone ? "0 9px" : "0 14px",
+  borderRadius: phone ? 7 : 9, border: `1px solid ${border}`, background: C.surface, color,
+  fontFamily: FONT.ui, fontSize: phone ? 10 : 11, letterSpacing: phone ? 0.5 : 1,
+  textTransform: "uppercase", fontWeight: 700,
+  cursor: "pointer", whiteSpace: "nowrap", height: phone ? 30 : 42, ...(phone && { minHeight: 0 }),
 });
 
 const WrenchBtn = ({ onClick, has }) => (
@@ -37,10 +45,10 @@ const WrenchBtn = ({ onClick, has }) => (
   </button>
 );
 
-const SetupBtn = ({ onClick }) => (
+const SetupBtn = ({ onClick, phone = false }) => (
   <button onClick={onClick} title="View car setup"
-    style={{ ...actionBtn(C.borderStrong, "#7ea6e6"), width: 42, padding: 0, justifyContent: "center", gap: 0 }}>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    style={{ ...actionBtn(C.borderStrong, "#7ea6e6", phone), width: phone ? 30 : 42, padding: 0, justifyContent: "center", gap: 0 }}>
+    <svg width={phone ? 13 : 16} height={phone ? 13 : 16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
     </svg>
   </button>
@@ -50,7 +58,7 @@ const SetupBtn = ({ onClick }) => (
 // when the lap isn't publishable, rather than hidden: a driver who has just set a
 // good race lap should find out WHY it can't go on a board, not be left guessing
 // where the button went.
-const PublishBtn = ({ lap, onPublish }) => {
+const PublishBtn = ({ lap, onPublish, phone = false }) => {
   const elig = eligibility(lap);
   return (
     <button
@@ -58,10 +66,10 @@ const PublishBtn = ({ lap, onPublish }) => {
       disabled={!elig.ok}
       title={elig.ok ? "Publish this lap to the leaderboard" : elig.reason}
       style={{
-        ...actionBtn(elig.ok ? "#2c2150" : C.line, elig.ok ? "#b98cff" : C.textFaintest),
+        ...actionBtn(elig.ok ? "#2c2150" : C.line, elig.ok ? "#b98cff" : C.textFaintest, phone),
         cursor: elig.ok ? "pointer" : "default",
         opacity: elig.ok ? 1 : 0.55,
-      }}>🏆 Publish</button>
+      }}>{phone ? "🏆" : "🏆 Publish"}</button>
   );
 };
 
@@ -134,42 +142,50 @@ export default function AnalyticsScreen({
       ...(phone && { flex: "none", minHeight: "auto" }) }}>
 
       {/* Top bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", flex: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-          <div style={{ width: 5, height: 42, borderRadius: 3, background: C.blue }} />
-          <div>
-            <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1 }}>{trackName || "Performance Center"}</div>
-            <div style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: 5 }}>Performance Center · {sessionLabel || "Analysis"}</div>
+      {/* Title and best lap share one line on a phone, at the same sizes the Live
+          screen's header uses — two headers on the same device that describe the
+          same session should not be two different sizes. */}
+      <div style={{ display: "flex", alignItems: "center", gap: phone ? 10 : 20, flexWrap: "wrap", flex: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: phone ? 9 : 13, minWidth: 0, ...(phone && { flex: "1 1 auto" }) }}>
+          <div style={{ width: 5, height: phone ? 34 : 42, borderRadius: 3, background: C.blue, flex: "none" }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: phone ? 15 : 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trackName || "Performance Center"}</div>
+            <div style={{ fontSize: phone ? 9 : 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: phone ? 4 : 5,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {phone ? (sessionLabel || "Analysis") : `Performance Center · ${sessionLabel || "Analysis"}`}
+            </div>
           </div>
         </div>
-        <div style={{ width: 1, height: 38, background: C.line }} />
-        <div>
-          <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Best Lap</div>
-          <div style={{ fontFamily: FONT.mono, fontSize: 30, fontWeight: 800, lineHeight: 1, marginTop: 3, color: C.purple }}>
+        {!phone && <div style={{ width: 1, height: 38, background: C.line }} />}
+        <div style={{ ...(phone && { flex: "none", textAlign: "right" }) }}>
+          <div style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase" }}>Best Lap</div>
+          <div style={{ fontFamily: FONT.mono, fontSize: phone ? 17 : 30, fontWeight: 800, lineHeight: 1, marginTop: 3, color: C.purple,
+            whiteSpace: "nowrap" }}>
             {stats.fastestOverall ? formatLapTime(stats.fastestOverall.lapTime, 3) : "—"}
           </div>
         </div>
       </div>
 
       {/* Lap selectors */}
-      <div style={{ display: "flex", gap: 18, padding: "2px", flex: "none", flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 5 }}>
-          <label style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Reference Lap</label>
-          <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: phone ? 7 : 18, padding: "2px", flex: "none", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: phone ? 2 : 5 }}>
+          <label style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Reference Lap</label>
+          <div style={{ display: "flex", gap: phone ? 5 : 8 }}>
             <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <select value={referenceId || ""} onChange={(e) => onSelectReference(e.target.value || null)} style={selectStyle("#ffffff")}>
+              <select value={referenceId || ""} onChange={(e) => onSelectReference(e.target.value || null)} style={selectStyle("#ffffff", phone)}>
                 <option value="">None — no reference</option>
                 {referenceSources.map((s) => <option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               </select>
-              <span style={caret}>▾</span>
+              <span style={phone ? caretPhone : caret}>▾</span>
             </div>
             <input ref={fileRef} type="file" accept=".json" multiple style={{ display: "none" }}
               onChange={(e) => { Array.from(e.target.files).forEach(onLoadTrace); e.target.value = ""; }} />
-            <button onClick={() => fileRef.current.click()} title="Load a trace JSON from the Calibrator" style={actionBtn(C.borderStrong, "#9aa3b8")}>↧ Load</button>
-            {selectedRef?.setup && <SetupBtn onClick={() => onOpenSetup(selectedRef)} />}
+            <button onClick={() => fileRef.current.click()} title="Load a trace JSON from the Calibrator" style={actionBtn(C.borderStrong, "#9aa3b8", phone)}>{phone ? "↧" : "↧ Load"}</button>
+            {selectedRef?.setup && <SetupBtn onClick={() => onOpenSetup(selectedRef)} phone={phone} />}
             {selectedRef && (
               <button onClick={() => (refIsLoaded ? onRemoveTrace(selectedRef.id) : onDeleteLap(selectedRef.id))}
-                title={refIsLoaded ? "Remove trace" : "Delete lap"} style={actionBtn("#3a2400", "#ff9100")}>✕</button>
+                title={refIsLoaded ? "Remove trace" : "Delete lap"} style={actionBtn("#3a2400", "#ff9100", phone)}>✕</button>
             )}
           </div>
         </div>
@@ -178,22 +194,22 @@ export default function AnalyticsScreen({
         {!phone && (
           <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 11, color: C.textFaint, fontSize: 11, letterSpacing: 1 }}>VS</div>
         )}
-        <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 5 }}>
-          <label style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Driven Lap</label>
-          <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: phone ? 2 : 5 }}>
+          <label style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Driven Lap</label>
+          <div style={{ display: "flex", gap: phone ? 5 : 8 }}>
             <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <select value={comparisonId} onChange={(e) => onSelectComparison(e.target.value)} style={selectStyle(C.cyan)}>
+              <select value={comparisonId} onChange={(e) => onSelectComparison(e.target.value)} style={selectStyle(C.cyan, phone)}>
                 <option value="live">Live lap</option>
                 {comparisonSources.map((s) => <option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               </select>
-              <span style={caret}>▾</span>
+              <span style={phone ? caretPhone : caret}>▾</span>
             </div>
             {selectedComparisonIsLap && (
               <>
-                {comparisonLap.setup && <SetupBtn onClick={() => onOpenSetup(comparisonLap)} />}
-                <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" style={actionBtn("#0c3a1c", "#00e676")}>⬇ Save</button>
-                {onPublishLap && <PublishBtn lap={comparisonLap} onPublish={onPublishLap} />}
-                <button onClick={() => onDeleteLap(comparisonLap.id)} title="Delete lap" style={actionBtn("#3a2400", "#ff9100")}>✕</button>
+                {comparisonLap.setup && <SetupBtn onClick={() => onOpenSetup(comparisonLap)} phone={phone} />}
+                <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" style={actionBtn("#0c3a1c", "#00e676", phone)}>{phone ? "⬇" : "⬇ Save"}</button>
+                {onPublishLap && <PublishBtn lap={comparisonLap} onPublish={onPublishLap} phone={phone} />}
+                <button onClick={() => onDeleteLap(comparisonLap.id)} title="Delete lap" style={actionBtn("#3a2400", "#ff9100", phone)}>✕</button>
               </>
             )}
           </div>
@@ -212,8 +228,11 @@ export default function AnalyticsScreen({
         ...(phone && { flexDirection: "column", flex: "none", minHeight: "auto" }) }}>
         <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", gap: 12,
           ...(phone && { flex: "none" }) }}>
-          <div style={{ flex: 1, minHeight: 0, ...card, padding: "14px 16px", display: "flex", flexDirection: "column",
-            ...(phone && { flex: "none", height: 340 }) }}>
+          {/* Taller on a phone than it looks like it needs: the driving-lines view
+              un-stacks its corner overlays into rows above and below the map there,
+              so ~250px of this panel is controls before the road gets any. */}
+          <div style={{ flex: 1, minHeight: 0, ...card, padding: phone ? "10px 10px" : "14px 16px", display: "flex", flexDirection: "column",
+            ...(phone && { flex: "none", height: 655 }) }}>
             {linesSlot}
           </div>
 
@@ -324,3 +343,4 @@ export default function AnalyticsScreen({
 }
 
 const caret = { position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: C.textFaint, fontSize: 11 };
+const caretPhone = { ...caret, right: 9, fontSize: 9 };

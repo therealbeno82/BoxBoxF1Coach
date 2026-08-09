@@ -25,6 +25,7 @@ import {
 } from "../../lib/leaderboard/boardKey.js";
 import { localBoardEntries, entryAsRefLike, secOf } from "../../lib/leaderboard/entries.js";
 import { useLeaderboard } from "../../hooks/useLeaderboard.js";
+import { useViewport } from "../../hooks/useViewport.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 
@@ -32,17 +33,25 @@ const eyebrow = {
   fontSize: 10, letterSpacing: 2, color: C.textMuted,
   textTransform: "uppercase", fontWeight: 600,
 };
+const eyebrowPhone = { ...eyebrow, fontSize: 8, letterSpacing: 1 };
 
-const selectStyle = (color) => ({
+// The phone variant sets min-height explicitly: index.html gives a select a 44px
+// min-height on a coarse pointer, which would keep the box tall however little
+// padding it carries.
+const selectStyle = (color, phone = false) => ({
   width: "100%", appearance: "none", WebkitAppearance: "none", background: C.surface,
-  border: `1px solid ${C.borderStrong}`, borderRadius: 9, color, fontFamily: FONT.mono,
-  fontSize: 14, fontWeight: 700, padding: "11px 36px 11px 14px", cursor: "pointer", outline: "none",
+  border: `1px solid ${C.borderStrong}`, borderRadius: phone ? 7 : 9, color, fontFamily: FONT.mono,
+  fontSize: phone ? 12 : 14, fontWeight: 700,
+  padding: phone ? "0 26px 0 10px" : "11px 36px 11px 14px",
+  ...(phone && { minHeight: 0, height: 32 }),
+  cursor: "pointer", outline: "none",
 });
 
 const caret = {
   position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
   pointerEvents: "none", color: C.textFaint, fontSize: 11,
 };
+const caretPhone = { ...caret, right: 9, fontSize: 9 };
 
 // Nine columns at ~760px minimum, which a phone cannot show. Rather than let the
 // far side get silently clipped (there is no horizontal scroller here, and adding
@@ -88,6 +97,7 @@ export default function LeaderboardScreen({
   enabled = true,
   onUseReference,
 }) {
+  const { phone } = useViewport();
   const [slug, setSlug] = useState(initialSlug && TRACK_SLUGS.includes(initialSlug) ? initialSlug : TRACK_SLUGS[0]);
   const [session, setSession] = useState(SESSION_TOKENS[0]);
   const [compoundFilter, setCompoundFilter] = useState("all");
@@ -143,26 +153,26 @@ export default function LeaderboardScreen({
       display: "flex", flexDirection: "column", gap: 16, fontFamily: FONT.ui,
     }}>
       {/* ── Board picker ── */}
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap", flex: "none" }}>
-        <div style={{ flex: "1 1 260px", minWidth: "min(200px, var(--col-min))", display: "flex", flexDirection: "column", gap: 5 }}>
-          <label style={eyebrow}>Circuit</label>
+      <div style={{ display: "flex", gap: phone ? 7 : 16, alignItems: "flex-end", flexWrap: "wrap", flex: "none" }}>
+        <div style={{ flex: "1 1 260px", minWidth: "min(200px, var(--col-min))", display: "flex", flexDirection: "column", gap: phone ? 2 : 5 }}>
+          <label style={phone ? eyebrowPhone : eyebrow}>Circuit</label>
           <div style={{ position: "relative" }}>
-            <select value={slug} onChange={(e) => setSlug(e.target.value)} style={selectStyle("#ffffff")}>
+            <select value={slug} onChange={(e) => setSlug(e.target.value)} style={selectStyle("#ffffff", phone)}>
               {/* In calendar order, not alphabetical — the driver is looking for
                   "the next one" far more often than for a name. */}
               {TRACK_SLUGS.map((s) => <option key={s} value={s}>{trackDisplayName(s)}</option>)}
             </select>
-            <span style={caret}>▾</span>
+            <span style={phone ? caretPhone : caret}>▾</span>
           </div>
         </div>
 
-        <div style={{ flex: "1 1 200px", minWidth: 180, display: "flex", flexDirection: "column", gap: 5 }}>
-          <label style={eyebrow}>Session</label>
+        <div style={{ flex: "1 1 200px", minWidth: phone ? 0 : 180, display: "flex", flexDirection: "column", gap: phone ? 2 : 5 }}>
+          <label style={phone ? eyebrowPhone : eyebrow}>Session</label>
           <div style={{ position: "relative" }}>
-            <select value={session} onChange={(e) => setSession(e.target.value)} style={selectStyle("#ffffff")}>
+            <select value={session} onChange={(e) => setSession(e.target.value)} style={selectStyle("#ffffff", phone)}>
               {SESSION_TOKENS.map((s) => <option key={s} value={s}>{SESSION_LABELS[s]}</option>)}
             </select>
-            <span style={caret}>▾</span>
+            <span style={phone ? caretPhone : caret}>▾</span>
           </div>
         </div>
 
@@ -188,32 +198,38 @@ export default function LeaderboardScreen({
 
       {/* ── Board ── */}
       <div style={{ flex: 1, minHeight: 0, ...card, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* On a phone the two selects directly above already name the circuit and
+            the session, so this header only has to confirm which board loaded —
+            one line at a smaller size, ellipsised rather than wrapped to two. */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 12, padding: "14px 18px",
+          display: "flex", alignItems: "center", gap: phone ? 8 : 12, padding: phone ? "8px 10px" : "14px 18px",
           borderBottom: `1px solid ${C.line}`,
         }}>
-          <div style={{ width: 5, height: 26, borderRadius: 3, background: C.accent, flex: "none" }} />
+          <div style={{ width: phone ? 4 : 5, height: phone ? 22 : 26, borderRadius: 3, background: C.accent, flex: "none" }} />
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: 0.4, color: C.textHi }}>
+            <div style={{ fontSize: phone ? 11 : 15, fontWeight: 800, letterSpacing: 0.4, color: C.textHi,
+              ...(phone && { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }) }}>
               {boardLabel(boardId)}
             </div>
-            <div style={{ fontSize: 10, letterSpacing: 1.4, color: statusTone(board.status), textTransform: "uppercase", marginTop: 3 }}>
+            <div style={{ fontSize: phone ? 8 : 10, letterSpacing: phone ? 1 : 1.4, color: statusTone(board.status), textTransform: "uppercase", marginTop: phone ? 2 : 3,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {statusLabel(board.status)}
             </div>
           </div>
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: phone ? 8 : 14, flex: "none" }}>
             {isLive && (
               <button onClick={board.reload} title="Refresh this board" style={{
-                width: 32, height: 32, borderRadius: 8, cursor: "pointer",
+                width: phone ? 26 : 32, height: phone ? 26 : 32, minHeight: phone ? 0 : undefined,
+                borderRadius: phone ? 7 : 8, cursor: "pointer",
                 border: `1px solid ${C.line}`, background: C.surface, color: C.textMuted,
-                fontSize: 13, lineHeight: 1,
+                fontSize: phone ? 11 : 13, lineHeight: 1,
               }}>⟳</button>
             )}
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
+              <div style={{ fontFamily: FONT.mono, fontSize: phone ? 14 : 20, fontWeight: 800, color: C.purple, lineHeight: 1, whiteSpace: "nowrap" }}>
                 {shown.length ? formatLapTime(secOf(shown[0].lapTimeMs), 3) : "—"}
               </div>
-              <div style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase", marginTop: 4 }}>
+              <div style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 1.5, color: C.textDim, textTransform: "uppercase", marginTop: phone ? 3 : 4, whiteSpace: "nowrap" }}>
                 {shown.length} {shown.length === 1 ? "lap" : "laps"}
               </div>
             </div>
@@ -222,10 +238,15 @@ export default function LeaderboardScreen({
 
         {/* Column headers */}
         <div style={{
-          display: "grid", gridTemplateColumns: GRID, gap: 10, padding: "10px 18px",
+          display: "grid", gridTemplateColumns: GRID, gap: phone ? 6 : 10, padding: phone ? "6px 10px" : "10px 18px",
           borderBottom: `1px solid ${C.line}`, flex: "none",
         }}>
-          {["", "Driver", "Lap Time", "Gap", "S1", "S2", "S3", "Tyre", ""].map((h, i) => (
+          {/* The four detail columns are dropped OUTRIGHT on a phone rather than
+              left to `.lb-secondary`'s display:none — the matching row cells carry
+              an inline `display`, which beats the stylesheet, so one of them stayed
+              visible and pushed the whole row onto a second grid line. */}
+          {["", "Driver", "Lap Time", "Gap", "S1", "S2", "S3", "Tyre", ""]
+            .map((h, i) => [h, i]).filter(([, i]) => !(phone && i >= 4 && i <= 7)).map(([h, i]) => (
             <div key={i} className={i >= 4 && i <= 7 ? "lb-secondary" : undefined} style={{
               fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
               textAlign: i >= 4 && i <= 6 ? "center" : i === 2 || i === 3 ? "right" : "left",
@@ -234,8 +255,8 @@ export default function LeaderboardScreen({
         </div>
 
         {/* Rows */}
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 18px 16px",
-          display: "flex", flexDirection: "column", gap: 7 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: phone ? "8px 10px 12px" : "10px 18px 16px",
+          display: "flex", flexDirection: "column", gap: phone ? 5 : 7 }}>
           {shown.length === 0 ? (
             <EmptyBoard boardId={boardId} filtered={compoundFilter !== "all"} status={board.status} />
           ) : shown.map((e) => {
@@ -243,21 +264,24 @@ export default function LeaderboardScreen({
             const blocked = verdict && !verdict.ok;
             return (
               <div key={e.entryId} style={{
-                display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center",
+                display: "grid", gridTemplateColumns: GRID, gap: phone ? 6 : 10, alignItems: "center",
                 background: e.isYou ? C.elevated : C.inset,
                 border: `1px solid ${e.isYou ? C.blue : C.line}`,
-                borderRadius: 9, padding: "10px 12px",
+                borderRadius: 9, padding: phone ? "7px 8px" : "10px 12px",
               }}>
                 <span style={{
-                  fontFamily: FONT.mono, fontSize: 16, fontWeight: 800, color: posColor(e.pos),
+                  fontFamily: FONT.mono, fontSize: phone ? 13 : 16, fontWeight: 800, color: posColor(e.pos),
                 }}>{e.pos}</span>
 
-                <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: phone ? 5 : 8 }}>
                   <span style={{
-                    fontSize: 13, fontWeight: 700, color: e.isYou ? "#fff" : C.textBody2,
+                    fontSize: phone ? 11 : 13, fontWeight: 700, color: e.isYou ? "#fff" : C.textBody2,
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}>{e.displayName}</span>
-                  {e.team && (
+                  {/* The team is dropped on a phone: it and the driver share one
+                      ~110px cell, and a nowrap team name wins that fight — which
+                      is how "R…" ended up standing in for a driver. */}
+                  {e.team && !phone && (
                     <span style={{ fontSize: 10, color: C.textFaint, whiteSpace: "nowrap" }}>{e.team}</span>
                   )}
                   {e.verdict === "flagged" && (
@@ -271,30 +295,33 @@ export default function LeaderboardScreen({
                 </span>
 
                 <span style={{
-                  fontFamily: FONT.mono, fontSize: 15, fontWeight: 800,
-                  textAlign: "right", color: "#fff",
+                  fontFamily: FONT.mono, fontSize: phone ? 13 : 15, fontWeight: 800,
+                  textAlign: "right", color: "#fff", whiteSpace: "nowrap",
                 }}>{formatLapTime(secOf(e.lapTimeMs), 3)}</span>
 
                 <span style={{
-                  fontFamily: FONT.mono, fontSize: 12, fontWeight: 700, textAlign: "right",
+                  fontFamily: FONT.mono, fontSize: phone ? 11 : 12, fontWeight: 700, textAlign: "right",
+                  whiteSpace: "nowrap",
                   color: e.gapMs === 0 ? C.green : C.textMid,
                 }}>{e.gapMs === 0 ? "—" : fmtDelta(e.gapMs / 1000)}</span>
 
-                {[0, 1, 2].map((i) => (
+                {!phone && [0, 1, 2].map((i) => (
                   <span key={i} className="lb-secondary" style={{
                     fontFamily: FONT.mono, fontSize: 12, fontWeight: 600,
                     textAlign: "center", color: C.textMuted,
                   }}>{fmtSectorMs(e.sectorMs?.[i])}</span>
                 ))}
 
-                <span className="lb-secondary" style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <TyreChip visual={e.tyreVisual} />
-                  <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono }}>
-                    {fmtDate(e.recordedAt)}
+                {!phone && (
+                  <span className="lb-secondary" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <TyreChip visual={e.tyreVisual} />
+                    <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono }}>
+                      {fmtDate(e.recordedAt)}
+                    </span>
                   </span>
-                </span>
+                )}
 
-                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} />
+                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} phone={phone} />
               </div>
             );
           })}
@@ -308,7 +335,7 @@ export default function LeaderboardScreen({
 // the coach wouldn't accept it, the button still works — the driver may well want
 // to look at the traces — but it says so first, naming the actual mismatch rather
 // than letting the coach go quiet later with no explanation.
-function UseButton({ entry, blocked, verdict, onUse }) {
+function UseButton({ entry, blocked, verdict, onUse, phone = false }) {
   const reason = blocked ? verdict.reasons[0] : null;
   return (
     <button
@@ -316,14 +343,17 @@ function UseButton({ entry, blocked, verdict, onUse }) {
       title={reason ? `${reason.title} — ${reason.detail}` : "Load this lap as your reference"}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
-        padding: "0 10px", height: 32, borderRadius: 8, cursor: "pointer",
-        fontFamily: FONT.ui, fontSize: 10, letterSpacing: 0.8, textTransform: "uppercase",
+        padding: phone ? 0 : "0 10px", height: phone ? 26 : 32, ...(phone && { minHeight: 0, width: 32 }),
+        borderRadius: 8, cursor: "pointer",
+        fontFamily: FONT.ui, fontSize: phone ? 12 : 10, letterSpacing: 0.8, textTransform: "uppercase",
         fontWeight: 700, whiteSpace: "nowrap",
         border: `1px solid ${blocked ? "#4a3a12" : C.borderStrong}`,
         background: blocked ? "rgba(255,145,0,0.08)" : C.surface,
         color: blocked ? C.orange : "#9aa3b8",
       }}>
-      {blocked ? "⚠ Use anyway" : "↧ Use as ref"}
+      {/* No room for the words in a 32px column — the tooltip carries them, and a
+          blocked entry still declares itself with the warning glyph + colour. */}
+      {phone ? (blocked ? "⚠" : "↧") : (blocked ? "⚠ Use anyway" : "↧ Use as ref")}
     </button>
   );
 }

@@ -30,6 +30,7 @@ import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRo
          buildEvenPath } from "../lib/racingLine.js";
 import TrackCamView from "./TrackCamView.jsx";
 import TrackOrbitView from "./TrackOrbitView.jsx";
+import { useViewport } from "../hooks/useViewport.jsx";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted on the map)
@@ -361,6 +362,7 @@ export default function DrivingLinesView({
   trackName, trackSlug = null, zones = [], corners: cornerDb = [], lapLength = 0,
   playhead = 0, playing = false, onSeek, onSetPlaying,
 }) {
+  const { phone } = useViewport();
   const [viewMode, setViewMode] = useState("segments"); // "segments" | "sectors"
   // "map" and "orbit" are the two views of the whole scene (flat / free camera);
   // "tcam" and "compare" are the onboard ones, which several overlays below key on.
@@ -725,9 +727,12 @@ export default function DrivingLinesView({
   useEffect(() => () => { cancelAnimationFrame(camRafRef.current); camRafRef.current = 0; }, []);
 
   // ── Mini-map: whole circuit scaled into the inset, current segment highlighted ──
+  // Not on a phone: the viewport there is a few hundred pixels of road, and a
+  // 150×104 inset parked in the corner of it covers the very thing it annotates.
+  // Null here rather than at the render, so its path build is skipped too.
   const mini = useMemo(() => {
     const line = compLine || refLine;
-    if (!line) return null;
+    if (!line || phone) return null;
     const MW = 150, MH = 104, PAD = 12;
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (const p of line.pts) {
@@ -745,7 +750,7 @@ export default function DrivingLinesView({
       d += (d ? " L " : "M ") + u.toFixed(1) + "," + v.toFixed(1);
     }
     return { map, path: d + " Z", line, MW, MH };
-  }, [compLine, refLine]);
+  }, [compLine, refLine, phone]);
 
   const miniSegPath = useMemo(() => {
     if (!mini || !seg) return "";
@@ -858,16 +863,269 @@ export default function DrivingLinesView({
       color: COMP_COLOR, dist: playhead * (compLine?.lapLen || 0), main: true },
   ].filter(Boolean);
 
+  // ── The four control clusters ──────────────────────────────────────────────
+  // On desktop they are absolutely-positioned overlays in the corners of the
+  // viewport, where there is room to spare. A phone viewport is ~355×420 and the
+  // same four boxes cover it end to end and each other — so there they become
+  // ordinary rows above and below the map. Built once here and placed twice, so
+  // there is one definition of each control rather than a phone copy to keep in
+  // step. `stacked` = the phone form: no absolute positioning, full width.
+  const stackedBox = { position: "relative", zIndex: 3, background: "rgba(8,11,18,0.85)",
+    border: `1px solid ${C.borderStrong}`, borderRadius: 10, flex: "none" };
+
+  const camPills = (
+    <div style={phone
+      ? { display:"flex",gap:3,background:"rgba(8,11,18,0.7)",border:`1px solid ${C.borderStrong}`,
+          borderRadius:8,padding:3,flex:"none" }
+      : { position:"absolute",left:"50%",transform:"translateX(-50%)",top:8,zIndex:3,
+          display:"flex",gap:3,background:"rgba(8,11,18,0.7)",border:`1px solid ${C.borderStrong}`,
+          borderRadius:8,padding:3,backdropFilter:"blur(3px)" }}>
+      {[["map","Map"],["orbit","3D"],["tcam","T-Cam"],["compare","Compare"]].map(([m,l])=>(
+        <button key={m} onClick={()=>setCamMode(m)}
+          disabled={m === "compare" && !canCompare}
+          title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
+          style={{...glassPill(camMode===m),padding: phone ? "4px 6px" : "3px 10px",
+            ...(phone && { flex:"1 1 0", minHeight:0, fontSize:10 }),
+            opacity: m === "compare" && !canCompare ? 0.35 : 1,
+            cursor: m === "compare" && !canCompare ? "not-allowed" : "pointer"}}>{l}</button>
+      ))}
+    </div>
+  );
+
+  // Lap distance at the playhead, as text. On a phone it moves off the transport
+  // line and onto the segment line in the panel, which is where the rest of the
+  // "where am I on the lap" wording already lives.
+  const distText = lapLen ? `${Math.round(playhead*lapLen)} m` : "—";
+
+  // The two live numbers. On a phone only the delta rides the transport line —
+  // "Delta:" shortens to Δ, and the distance goes to the segment line — because
+  // the row has to hold play, speed, sync and the clock beside it.
+  const deltaReadout = (
+    <>
+      <span style={{fontFamily:FONT.mono,fontSize:11,color:"#8b94a8",whiteSpace:"nowrap"}}>
+        {phone ? "Δ " : "Delta: "}<span style={{fontWeight:800,color:delta==null?"#8b94a8":delta<0?C.green:delta>0?C.red:"#e8edf5"}}>
+          {delta==null?"—":fmtd(delta)}</span>
+      </span>
+      {!phone && (
+        <span style={{fontFamily:FONT.mono,fontSize:11,color:"#8b94a8",whiteSpace:"nowrap"}}>⟷ {distText}</span>
+      )}
+    </>
+  );
+
+  // The line key. Its own overlay on desktop; on a phone one row of the single
+  // combined panel below.
+  const legend = (
+    <>
+      <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
+        <svg width="20" height="6">
+          <defs><linearGradient id="drivenLegend" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor={pedalColor(0)} />
+            <stop offset="50%" stopColor={pedalColor(0.5)} />
+            <stop offset="100%" stopColor={pedalColor(1)} />
+          </linearGradient></defs>
+          <line x1="0" y1="3" x2="20" y2="3" stroke="url(#drivenLegend)" strokeWidth="2.5"/>
+        </svg>Driven</span>
+      <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
+        <svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke={REF_COLOR} strokeWidth="2.5" strokeOpacity="0.7" strokeDasharray="4 8" strokeLinecap="round"/></svg>Reference</span>
+      <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
+        <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#ff2d2d" stroke="#0b0e14" strokeWidth="1"/></svg>Ref brake</span>
+    </>
+  );
+
+  const deltaBox = (
+    <div style={{...overlayBox,right:10,top:10,pointerEvents:"none",
+      display:"flex",alignItems:"center",gap:12,padding:"5px 10px"}}>
+      {deltaReadout}
+      <span style={{width:1,alignSelf:"stretch",background:C.borderStrong}} />
+      {legend}
+    </div>
+  );
+
+  const segInner = seg && (
+    <>
+      {/* Sync toggle — in the card on desktop so it costs no page height. On a
+          phone it rides the transport instead, stacked under the speed pills:
+          it is a playback mode like they are, and the card is a read-out. */}
+      {!phone && (
+        <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.04)",
+          border:`1px solid ${C.borderStrong}`,borderRadius:8,padding:3,marginBottom:5}}>
+          {[["pos","Pos-sync"],["pace","Pace-sync"]].map(([m,l])=>(
+            <button key={m} onClick={()=>setSyncMode(m)} style={{...glassPill(syncMode===m),flex:1,padding:"3px 6px"}}>{l}</button>
+          ))}
+        </div>
+      )}
+      {/* Segments-vs-sectors and the step buttons are DESKTOP ONLY. Both are ways
+          of moving the playhead somewhere other than where playback put it, and on
+          a phone the scrubber under the map already does that with a thumb — they
+          are two more rows of chrome for a convenience, not for a capability. The
+          card still names whichever segment the playhead is in. */}
+      {!phone && (
+        <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.04)",
+          border:`1px solid ${C.borderStrong}`,borderRadius:8,padding:3,marginBottom:7}}>
+          {[["segments","Segments"],["sectors","Sectors"]].map(([m,l])=>(
+            <button key={m} onClick={()=>setViewMode(m)} style={{...glassPill(viewMode===m),flex:1,padding:"3px 6px"}}>{l}</button>
+          ))}
+        </div>
+      )}
+      {/* Where you are. Desktop stacks name, corner and distance; a phone puts all
+          three on one line — they are one sentence, not three facts. */}
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        {!phone && <button style={navBtn} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
+        <div style={{flex:1,minWidth:0,textAlign:"center",display:"flex",alignItems:"baseline",justifyContent:"center",gap:phone?6:8}}>
+          <span style={{fontFamily:FONT.mono,fontSize:phone?11:13,fontWeight:800,color:"#e8edf5",whiteSpace:"nowrap"}}>{seg.name}</span>
+          {phone && seg.sub && (
+            <span style={{fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",
+              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{seg.sub}</span>
+          )}
+          {phone && (
+            <span style={{fontFamily:FONT.mono,fontSize:9,color:"#8b94a8",whiteSpace:"nowrap"}}>⟷ {distText}</span>
+          )}
+          {segDelta != null && (
+            <span style={{fontFamily:FONT.mono,fontSize:phone?11:12,fontWeight:800,whiteSpace:"nowrap",
+              color:segDelta < 0 ? C.green : segDelta > 0 ? C.red : C.textMid}}>{fmtd(segDelta)}</span>
+          )}
+        </div>
+        {!phone && <button style={navBtn} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
+      </div>
+      {!phone && seg.sub && (
+        <div style={{textAlign:"center",fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",marginTop:2}}>{seg.sub}</div>
+      )}
+      {/* The two laps' segment times: stacked on desktop, side by side on a phone
+          — two half-width cells cost one row instead of two, and the pair is read
+          as a comparison anyway. */}
+      <div style={{marginTop:phone?4:7,display:"flex",
+        ...(phone ? {flexDirection:"row",gap:8} : {flexDirection:"column",gap:4})}}>
+        {[[comparisonLabel, compSegT, COMP_COLOR], [referenceLabel, refSegT, REF_COLOR]].map(([label, t, color], i) => (
+          <div key={i} style={{display:"flex",alignItems:"center",gap:phone?5:7,...(phone&&{flex:"1 1 0",minWidth:0})}}>
+            <span style={{width:8,height:8,borderRadius:2,flex:"none",background:color}} />
+            <span style={{flex:1,minWidth:0,fontSize:10,color:"#aeb8cc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</span>
+            <span style={{fontFamily:FONT.mono,fontSize:phone?11:12,fontWeight:700,color:"#e8edf5",whiteSpace:"nowrap"}}>{fmtSeg(t)}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  const segCard = segInner && (
+    <div style={{...overlayBox,left:10,bottom:10,minWidth:200,maxWidth:250,padding:"8px 10px"}}>
+      {segInner}
+    </div>
+  );
+
+  // Zoom — the two whole-scene views only. A T-cam with a variable FOV is just
+  // disorienting and the control has no natural meaning from the seat; in 3D it's
+  // the camera's distance, and the mouse wheel drives the same state so the
+  // slider tracks a scroll.
+  const zoomControls = !onboard && (
+    <>
+      <button style={{...navBtn,border:"none",width:18,...(phone&&{height:18,minHeight:0})}} title="Zoom out"
+        onClick={()=>setZoom(z=>clamp(z/1.25,MIN_ZOOM,MAX_ZOOM))}>−</button>
+      <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom"
+        onChange={(e)=>setZoom(Number(e.target.value))}
+        style={{width:phone?"100%":110,
+          // 18px, not the 44px tap floor: the thumb is the target here and it is
+          // full size either way, while the track's height buys nothing.
+          ...(phone&&{flex:"1 1 0",minWidth:0,minHeight:0,height:18}),
+          accentColor:COMP_COLOR}} />
+      <button style={{...navBtn,border:"none",width:18,...(phone&&{height:18,minHeight:0})}} title="Zoom in"
+        onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
+    </>
+  );
+
+  const zoomBar = zoomControls && (
+    <div style={{...overlayBox,left:"50%",transform:"translateX(-50%)",bottom:10,borderRadius:999,
+      display:"flex",alignItems:"center",gap:8,padding:"5px 12px"}}>
+      {zoomControls}
+    </div>
+  );
+
+  // Phone: zoom, line key and the segment read-out are ONE box. Three separate
+  // ones cost three borders, three paddings and two gaps — ~40px of chrome for
+  // three rows of content that are all read together anyway.
+  const phonePanel = phone && (
+    <div style={{...stackedBox,padding:"6px 9px",display:"flex",flexDirection:"column",gap:6}}>
+      {zoomControls && (
+        <div style={{display:"flex",alignItems:"center",gap:8}}>{zoomControls}</div>
+      )}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>{legend}</div>
+      {segInner}
+    </div>
+  );
+
+  // Transport: play + speed + elapsed clock + the shared timeline scrubber. On a
+  // phone it sits directly under the map (a scrubber is only useful next to what
+  // it scrubs) and the bar takes a LINE OF ITS OWN — sharing one with the buttons
+  // and the clock left it ~120px to represent a whole lap, which is too coarse to
+  // seek a corner with a fingertip.
+  const transport = (
+    <div style={{flex:"none",display:"flex",alignItems:"center",gap:phone?8:14,
+      ...(phone ? {flexWrap:"wrap",rowGap:2} : {height:44})}}>
+      <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"}
+        style={{width:phone?30:38,height:phone?30:38,minHeight:0,borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
+          fontSize:phone?11:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {playing?"❚❚":"▶"}</button>
+      {/* Speed, and on a phone the sync mode beside it in the same pill size —
+          both are "how playback runs", so they belong with the play button rather
+          than in the read-out panel below. */}
+      <div style={{flex:"none",display:"flex",gap:3,background:"var(--line)",borderRadius:8,padding:phone?2:3}}>
+        {[0.5,1].map(s=>(
+          <button key={s} onClick={()=>setSpeed(s)} style={{...pill(speed===s),...(phone&&{padding:"2px 6px",minHeight:0,fontSize:9})}}>{s}×</button>
+        ))}
+      </div>
+      {phone && (
+        <div style={{flex:"none",display:"flex",gap:3,background:"var(--line)",borderRadius:8,padding:2}}>
+          {[["pos","Pos"],["pace","Pace"]].map(([m,l])=>(
+            <button key={m} onClick={()=>setSyncMode(m)} title={`${l}-sync`}
+              style={{...pill(syncMode===m),padding:"2px 6px",minHeight:0,fontSize:9}}>{l}</button>
+          ))}
+        </div>
+      )}
+      <span style={{flex:"none",fontFamily:FONT.mono,fontSize:phone?12:15,fontWeight:800,color:"#e8edf5",
+        minWidth:phone?64:82,...(phone&&{marginLeft:"auto",textAlign:"right"})}}>
+        {formatLapTime(elapsed, 3)}</span>
+      {phone && (
+        <div style={{display:"flex",alignItems:"center",gap:6,flex:"none"}}>
+          {deltaReadout}
+        </div>
+      )}
+      <div ref={barRef} onPointerDown={onBarDown} style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
+        ...(phone ? {flex:"1 1 100%",minWidth:0} : {flex:1})}}>
+        <div style={{position:"absolute",left:0,right:0,height:6,borderRadius:3,background:"#1c2230"}} />
+        <div style={{position:"absolute",left:0,height:6,borderRadius:3,background:COMP_COLOR,width:`${playhead*100}%`}} />
+        {/* Sector dividers */}
+        {sectors.slice(1).map((s,i)=>(
+          <div key={`sec-${i}`} style={{position:"absolute",left:`${s.start*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:1,height:16,background:"#2b3346"}} />
+        ))}
+        {/* Corner ticks */}
+        {corners.map((c,i)=>(
+          <div key={i} style={{position:"absolute",left:`${c.f*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:2,height:11,background:"#2b3346"}} />
+        ))}
+        {/* Reference car position (diverges from the knob in pace-sync) */}
+        {refLine && compLine && syncMode==="pace" && (
+          <div title="Reference car" style={{position:"absolute",left:`${refFrac*100}%`,top:"50%",
+            transform:"translate(-50%,-50%)",width:9,height:9,borderRadius:"50%",background:"transparent",border:`2px solid ${REF_COLOR}`}} />
+        )}
+        {/* Knob */}
+        <div style={{position:"absolute",left:`${playhead*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:16,height:16,borderRadius:"50%",
+          background:COMP_COLOR,border:"3px solid #0b0e14",boxShadow:`0 0 9px ${COMP_COLOR}aa`}} />
+      </div>
+    </div>
+  );
+
   return (
-    <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",gap:10,overflow:"hidden"}}>
+    <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",gap:phone?6:10,overflow:"hidden"}}>
       {hidden.length > 0 && (
         <div style={{fontSize:10,color:"var(--text-faintest)",textAlign:"center",lineHeight:1.5}}>
           {hidden.join(" · ")} — no position data, car hidden. Drive this lap live to capture its line.
         </div>
       )}
 
+      {phone && camPills}
+
       {/* The map viewport */}
-      <div style={{position:"relative",flex:"1 1 auto",minHeight:280,borderRadius:10,overflow:"hidden",
+      {/* basis 0 on a phone, so the map takes what the stacked rows leave rather
+          than its content height plus them — the panel is a fixed height there. */}
+      <div style={{position:"relative",...(phone?{flex:"1 1 0"}:{flex:"1 1 auto"}),minHeight:phone?180:280,borderRadius:10,overflow:"hidden",
         border:"1px solid var(--line)",background:"radial-gradient(120% 120% at 50% 0%, #131a26 0%, #0a0d14 70%)"}}>
         {/* Onboard camera. Swaps only the VIEWPORT — every overlay below is an
             absolutely-positioned sibling and carries straight over. */}
@@ -949,41 +1207,9 @@ export default function DrivingLinesView({
           {camMode !== "map" && trackModel?.seated > 2
             ? ` · road seated ±${trackModel.seated.toFixed(0)} m` : ""}
         </div>
-        {/* Camera mode (top-centre) */}
-        <div style={{position:"absolute",left:"50%",transform:"translateX(-50%)",top:8,zIndex:3,
-          display:"flex",gap:3,background:"rgba(8,11,18,0.7)",border:`1px solid ${C.borderStrong}`,
-          borderRadius:8,padding:3,backdropFilter:"blur(3px)"}}>
-          {[["map","Map"],["orbit","3D"],["tcam","T-Cam"],["compare","Compare"]].map(([m,l])=>(
-            <button key={m} onClick={()=>setCamMode(m)}
-              disabled={m === "compare" && !canCompare}
-              title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
-              style={{...glassPill(camMode===m),padding:"3px 10px",
-                opacity: m === "compare" && !canCompare ? 0.35 : 1,
-                cursor: m === "compare" && !canCompare ? "not-allowed" : "pointer"}}>{l}</button>
-          ))}
-        </div>
-        {/* Live delta + line legend (top-right) */}
-        <div style={{...overlayBox,right:10,top:10,pointerEvents:"none",display:"flex",alignItems:"center",gap:12,padding:"5px 10px"}}>
-          <span style={{fontFamily:FONT.mono,fontSize:11,color:"#8b94a8"}}>
-            Delta: <span style={{fontWeight:800,color:delta==null?"#8b94a8":delta<0?C.green:delta>0?C.red:"#e8edf5"}}>
-              {delta==null?"—":fmtd(delta)}</span>
-          </span>
-          <span style={{fontFamily:FONT.mono,fontSize:11,color:"#8b94a8"}}>⟷ {lapLen ? `${Math.round(playhead*lapLen)} m` : "—"}</span>
-          <span style={{width:1,alignSelf:"stretch",background:C.borderStrong}} />
-          <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
-            <svg width="20" height="6">
-              <defs><linearGradient id="drivenLegend" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor={pedalColor(0)} />
-                <stop offset="50%" stopColor={pedalColor(0.5)} />
-                <stop offset="100%" stopColor={pedalColor(1)} />
-              </linearGradient></defs>
-              <line x1="0" y1="3" x2="20" y2="3" stroke="url(#drivenLegend)" strokeWidth="2.5"/>
-            </svg>Driven</span>
-          <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
-            <svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke={REF_COLOR} strokeWidth="2.5" strokeOpacity="0.7" strokeDasharray="4 8" strokeLinecap="round"/></svg>Reference</span>
-          <span style={{display:"flex",alignItems:"center",gap:6,fontSize:9,color:"#8b94a8"}}>
-            <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#ff2d2d" stroke="#0b0e14" strokeWidth="1"/></svg>Ref brake</span>
-        </div>
+        {/* Camera mode (top-centre) + live delta / line legend (top-right) */}
+        {!phone && camPills}
+        {!phone && deltaBox}
 
         {trackModel === null && (
           <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",zIndex:2,
@@ -991,63 +1217,9 @@ export default function DrivingLinesView({
             color:"#5b6478",textTransform:"uppercase"}}>Aligning circuit…</div>
         )}
 
-        {/* Segment card (bottom-left): prev/next + per-lap segment times */}
-        {seg && (
-          <div style={{...overlayBox,left:10,bottom:10,minWidth:200,maxWidth:250,padding:"8px 10px"}}>
-            {/* Sync + Segments/Sectors toggles — in the card so they cost no page height */}
-            <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.04)",
-              border:`1px solid ${C.borderStrong}`,borderRadius:8,padding:3,marginBottom:5}}>
-              {[["pos","Pos-sync"],["pace","Pace-sync"]].map(([m,l])=>(
-                <button key={m} onClick={()=>setSyncMode(m)} style={{...glassPill(syncMode===m),flex:1,padding:"3px 6px"}}>{l}</button>
-              ))}
-            </div>
-            <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.04)",
-              border:`1px solid ${C.borderStrong}`,borderRadius:8,padding:3,marginBottom:7}}>
-              {[["segments","Segments"],["sectors","Sectors"]].map(([m,l])=>(
-                <button key={m} onClick={()=>setViewMode(m)} style={{...glassPill(viewMode===m),flex:1,padding:"3px 6px"}}>{l}</button>
-              ))}
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <button style={navBtn} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>
-              <div style={{flex:1,textAlign:"center",display:"flex",alignItems:"baseline",justifyContent:"center",gap:8}}>
-                <span style={{fontFamily:FONT.mono,fontSize:13,fontWeight:800,color:"#e8edf5"}}>{seg.name}</span>
-                {segDelta != null && (
-                  <span style={{fontFamily:FONT.mono,fontSize:12,fontWeight:800,
-                    color:segDelta < 0 ? C.green : segDelta > 0 ? C.red : C.textMid}}>{fmtd(segDelta)}</span>
-                )}
-              </div>
-              <button style={navBtn} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>
-            </div>
-            {seg.sub && (
-              <div style={{textAlign:"center",fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",marginTop:2}}>{seg.sub}</div>
-            )}
-            <div style={{marginTop:7,display:"flex",flexDirection:"column",gap:4}}>
-              {[[comparisonLabel, compSegT, COMP_COLOR], [referenceLabel, refSegT, REF_COLOR]].map(([label, t, color], i) => (
-                <div key={i} style={{display:"flex",alignItems:"center",gap:7}}>
-                  <span style={{width:8,height:8,borderRadius:2,flex:"none",background:color}} />
-                  <span style={{flex:1,fontSize:10,color:"#aeb8cc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</span>
-                  <span style={{fontFamily:FONT.mono,fontSize:12,fontWeight:700,color:"#e8edf5"}}>{fmtSeg(t)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Zoom (bottom-centre) — the two whole-scene views. A T-cam with a variable
-            FOV is just disorienting, and the control has no natural meaning from the
-            seat; in 3D it's the camera's distance, and the mouse wheel drives the
-            same state so the slider tracks a scroll. */}
-        {!onboard && (
-        <div style={{...overlayBox,left:"50%",transform:"translateX(-50%)",bottom:10,borderRadius:999,
-          display:"flex",alignItems:"center",gap:8,padding:"5px 12px"}}>
-          <button style={{...navBtn,border:"none",width:18}} title="Zoom out"
-            onClick={()=>setZoom(z=>clamp(z/1.25,MIN_ZOOM,MAX_ZOOM))}>−</button>
-          <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom"
-            onChange={(e)=>setZoom(Number(e.target.value))} style={{width:110,accentColor:COMP_COLOR}} />
-          <button style={{...navBtn,border:"none",width:18}} title="Zoom in"
-            onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
-        </div>
-        )}
+        {/* Segment card (bottom-left) + zoom (bottom-centre) */}
+        {!phone && segCard}
+        {!phone && zoomBar}
 
         {/* Mini-map (bottom-right): whole circuit + current segment. Kept in the
             camera modes, where it earns its space — an onboard view strips away
@@ -1064,41 +1236,18 @@ export default function DrivingLinesView({
         )}
       </div>
 
-      {/* Transport: play + elapsed time + shared timeline scrubber */}
-      <div style={{flex:"none",height:44,display:"flex",alignItems:"center",gap:14}}>
-        <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"}
-          style={{width:38,height:38,borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
-            fontSize:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          {playing?"❚❚":"▶"}</button>
-        <div style={{flex:"none",display:"flex",gap:3,background:"var(--line)",borderRadius:8,padding:3}}>
-          {[0.5,1].map(s=>(
-            <button key={s} onClick={()=>setSpeed(s)} style={pill(speed===s)}>{s}×</button>
-          ))}
-        </div>
-        <span style={{flex:"none",fontFamily:FONT.mono,fontSize:15,fontWeight:800,color:"#e8edf5",minWidth:82}}>
-          {formatLapTime(elapsed, 3)}</span>
-        <div ref={barRef} onPointerDown={onBarDown} style={{flex:1,position:"relative",height:34,display:"flex",alignItems:"center",cursor:"pointer"}}>
-          <div style={{position:"absolute",left:0,right:0,height:6,borderRadius:3,background:"#1c2230"}} />
-          <div style={{position:"absolute",left:0,height:6,borderRadius:3,background:COMP_COLOR,width:`${playhead*100}%`}} />
-          {/* Sector dividers */}
-          {sectors.slice(1).map((s,i)=>(
-            <div key={`sec-${i}`} style={{position:"absolute",left:`${s.start*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:1,height:16,background:"#2b3346"}} />
-          ))}
-          {/* Corner ticks */}
-          {corners.map((c,i)=>(
-            <div key={i} style={{position:"absolute",left:`${c.f*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:2,height:11,background:"#2b3346"}} />
-          ))}
-          {/* Reference car position (diverges from the knob in pace-sync) */}
-          {refLine && compLine && syncMode==="pace" && (
-            <div title="Reference car" style={{position:"absolute",left:`${refFrac*100}%`,top:"50%",
-              transform:"translate(-50%,-50%)",width:9,height:9,borderRadius:"50%",background:"transparent",border:`2px solid ${REF_COLOR}`}} />
-          )}
-          {/* Knob */}
-          <div style={{position:"absolute",left:`${playhead*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:16,height:16,borderRadius:"50%",
-            background:COMP_COLOR,border:"3px solid #0b0e14",boxShadow:`0 0 9px ${COMP_COLOR}aa`}} />
-        </div>
-      </div>
+      {/* Everything the desktop parks in the viewport's corners, as rows under it —
+          the scrubber first, since it belongs beside the map it drives. */}
+      {phone && (
+        <>
+          {transport}
+          {phonePanel}
+        </>
+      )}
+
+      {!phone && transport}
 
     </div>
   );
 }
+

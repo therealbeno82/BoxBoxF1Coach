@@ -453,6 +453,16 @@ export default function LiveScreen({
   const focus = lastAdvice && !lastAdvice.info ? lastAdvice : null;
   const { phone } = useViewport();
 
+  // Shared shape of the session-panel's Save / Load / Reset buttons — three equal
+  // cells of one wrapping row. Colours and disabled state stay per button.
+  const sessionBtn = {
+    flex: "1 1 0", minWidth: 0, height: 34,
+    display: "flex", alignItems: "center", justifyContent: "center", gap: phone ? 5 : 7,
+    borderRadius: 8, fontFamily: FONT.ui, fontSize: 10, letterSpacing: phone ? 1 : 1.4,
+    textTransform: "uppercase", fontWeight: 700, whiteSpace: "nowrap",
+    transition: "all .15s ease",
+  };
+
   // Call lead — how far ahead of the reference's own mark the cues are spoken.
   // What it moves is the FIRST moment of sound: at 0.00 the leading edge of the
   // beep lands on the mark itself (brake as you hear the "br"), and winding it up
@@ -487,16 +497,23 @@ export default function LiveScreen({
       ...(phone && { flex: "none", minHeight: "auto" }) }}>
 
       {/* ── Top bar ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", flex: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-          <div style={{ width: 5, height: 42, borderRadius: 3, background: C.blue }} />
-          <div>
-            <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1 }}>{trackName || "Awaiting telemetry"}</div>
-            <div style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: 5 }}>{sessionLabel || "Live Session"}</div>
+      {/* On a phone this bar is three wrapped lines of its own. The reference is
+          pulled up beside the track title (see the `order`/basis below) — it is a
+          one-line caption, and giving it a row to itself cost more height than the
+          lap clock it pushed down the screen. */}
+      <div style={{ display: "flex", alignItems: "center", gap: phone ? 10 : 20, flexWrap: "wrap", flex: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: phone ? 9 : 13, minWidth: 0, ...(phone && { flex: "1 1 auto" }) }}>
+          <div style={{ width: 5, height: phone ? 34 : 42, borderRadius: 3, background: C.blue, flex: "none" }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: phone ? 15 : 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trackName || "Awaiting telemetry"}</div>
+            <div style={{ fontSize: phone ? 9 : 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: phone ? 4 : 5,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sessionLabel || "Live Session"}</div>
           </div>
         </div>
-        <div style={{ width: 1, height: 38, background: C.line }} />
-        <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+        {!phone && <div style={{ width: 1, height: 38, background: C.line }} />}
+        {/* basis 100% = its own line, order 2 = below the title/reference line. */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 14, ...(phone && { order: 2, flex: "1 1 100%" }) }}>
           <div>
             <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Lap {liveLapNumber ?? "—"}</div>
             <div style={{ fontFamily: FONT.mono, fontSize: 36, fontWeight: 800, lineHeight: 1, marginTop: 3 }}>{formatLapTime(tel.lapTime, 3)}</div>
@@ -509,10 +526,11 @@ export default function LiveScreen({
             </div>
           </div>
         </div>
-        <div style={{ flex: 1 }} />
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Reference</div>
-          <div style={{ fontSize: 13, color: C.textMid, marginTop: 3, fontFamily: FONT.mono }}>{refLabel}</div>
+        {!phone && <div style={{ flex: 1 }} />}
+        <div style={{ textAlign: "right", minWidth: 0, ...(phone && { order: 1, flex: "0 1 auto" }) }}>
+          <div style={{ fontSize: phone ? 8 : 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Reference</div>
+          <div style={{ fontSize: phone ? 10 : 13, color: C.textMid, marginTop: 3, fontFamily: FONT.mono,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{refLabel}</div>
         </div>
       </div>
 
@@ -675,12 +693,14 @@ export default function LiveScreen({
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{mapSlot}</div>
             <div onClick={onToggleAudio} title="Toggle track audio cues" style={{
-              position: "absolute", right: 8, bottom: 8, zIndex: 5, display: "flex", alignItems: "center", gap: 9,
+              position: "absolute", right: 8, bottom: 8, zIndex: 5, display: "flex", alignItems: "center",
+              gap: phone ? 5 : 9,
               background: audioOn ? C.elevated : C.inset, border: `1px solid ${audioOn ? C.blue : C.line}`,
-              borderRadius: 10, padding: "9px 13px", cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,.4)" }}>
-              <span style={{ fontSize: 14 }}>{audioOn ? "🔊" : "🔇"}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: audioOn ? C.textBody2 : C.textDim }}>
-                {audioOn ? "AUDIO CUES ON" : "AUDIO CUES OFF"}
+              borderRadius: phone ? 8 : 10, padding: phone ? "5px 8px" : "9px 13px",
+              cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,.4)" }}>
+              <span style={{ fontSize: phone ? 11 : 14 }}>{audioOn ? "🔊" : "🔇"}</span>
+              <span style={{ fontSize: phone ? 9 : 11, fontWeight: 700, letterSpacing: 1, color: audioOn ? C.textBody2 : C.textDim }}>
+                {phone ? (audioOn ? "CUES ON" : "CUES OFF") : (audioOn ? "AUDIO CUES ON" : "AUDIO CUES OFF")}
               </span>
             </div>
           </div>
@@ -719,65 +739,69 @@ export default function LiveScreen({
             {/* Save / load a whole session of laps to a file, for reviewing a full
                 race later. Save is disabled with nothing to save; Load is always
                 available. The hidden input backs the Load button. */}
-            {(onSaveSession || onLoadSession) && (
-              <div style={{ display: "flex", gap: 8, marginTop: 11, flex: "none" }}>
+            {/* All three share one wrapping row: on a phone they fit across it (with
+                one-word labels), and on desktop Reset takes a 100% basis so it still
+                wraps onto its own full-width line under Save/Load. */}
+            <div style={{ display: "flex", flexWrap: "wrap", columnGap: phone ? 6 : 8, rowGap: 11,
+              marginTop: 11, flex: "none" }}>
+              {(onSaveSession || onLoadSession) && (
                 <input ref={fileInputRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) onLoadSession?.(f);
                     e.target.value = ""; // allow re-picking the same file
                   }} />
+              )}
+              {(onSaveSession || onLoadSession) && (
                 <button
                   onClick={() => onSaveSession?.()}
                   disabled={sessionLaps.length === 0}
                   title="Save every lap in this panel to a file you can reload later"
                   style={{
-                    flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-                    borderRadius: 8, border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
-                    fontFamily: FONT.ui, fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase", fontWeight: 700,
+                    ...sessionBtn,
+                    border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
                     cursor: sessionLaps.length === 0 ? "default" : "pointer",
-                    opacity: sessionLaps.length === 0 ? 0.45 : 1, transition: "all .15s ease",
+                    opacity: sessionLaps.length === 0 ? 0.45 : 1,
                   }}
                 >
-                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.blue, flex: "none" }} /> Save Session
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.blue, flex: "none" }} />
+                  {phone ? "Save" : "Save Session"}
                 </button>
+              )}
+              {(onSaveSession || onLoadSession) && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   title="Load a previously saved session of laps into this panel"
                   style={{
-                    flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-                    borderRadius: 8, border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
-                    fontFamily: FONT.ui, fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase", fontWeight: 700,
-                    cursor: "pointer", transition: "all .15s ease",
+                    ...sessionBtn,
+                    border: `1px solid ${C.line}`, background: C.surface, color: C.textDim,
+                    cursor: "pointer",
                   }}
                 >
-                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.teal, flex: "none" }} /> Load Session
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.teal, flex: "none" }} />
+                  {phone ? "Load" : "Load Session"}
                 </button>
-              </div>
-            )}
-            <button
-              onClick={() => {
-                if (confirmReset) { onResetSessionLaps?.(); setConfirmReset(false); }
-                else setConfirmReset(true);
-              }}
-              disabled={sessionLaps.length === 0}
-              title="Start a fresh session — clears this panel; your lap history and PBs are kept"
-              style={{
-                flex: "none", marginTop: 11, width: "100%", height: 34,
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-                borderRadius: 8,
-                border: `1px solid ${confirmReset ? C.red : C.line}`,
-                background: confirmReset ? "#2a0d12" : C.surface,
-                color: confirmReset ? C.red : C.textDim,
-                fontFamily: FONT.ui, fontSize: 10, letterSpacing: 1.4,
-                textTransform: "uppercase", fontWeight: 700,
-                cursor: sessionLaps.length === 0 ? "default" : "pointer",
-                opacity: sessionLaps.length === 0 ? 0.45 : 1,
-                transition: "all .15s ease",
-              }}
-            >
-              {confirmReset ? "Confirm reset?" : "Reset Session Laps"}
-            </button>
+              )}
+              <button
+                onClick={() => {
+                  if (confirmReset) { onResetSessionLaps?.(); setConfirmReset(false); }
+                  else setConfirmReset(true);
+                }}
+                disabled={sessionLaps.length === 0}
+                title="Start a fresh session — clears this panel; your lap history and PBs are kept"
+                style={{
+                  ...sessionBtn,
+                  ...(phone ? null : { flex: "1 1 100%" }),
+                  border: `1px solid ${confirmReset ? C.red : C.line}`,
+                  background: confirmReset ? "#2a0d12" : C.surface,
+                  color: confirmReset ? C.red : C.textDim,
+                  cursor: sessionLaps.length === 0 ? "default" : "pointer",
+                  opacity: sessionLaps.length === 0 ? 0.45 : 1,
+                }}
+              >
+                {confirmReset ? (phone ? "Confirm?" : "Confirm reset?") : (phone ? "Reset" : "Reset Session Laps")}
+              </button>
+            </div>
           </div>
 
           {/* AI next-lap focus */}
