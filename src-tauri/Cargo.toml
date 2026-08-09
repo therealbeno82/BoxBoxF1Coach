@@ -52,3 +52,11 @@ local-ip-address = "0.6"
 # has never heard of them. Code gating uses `#[cfg(desktop)]`; deps can't.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 sdl2 = { version = "0.36", features = ["bundled", "static-link"] }
+
+# The Android bridge — platform TTS (Kokoro and the ONNX runtime are stripped from
+# that bundle), FLAG_KEEP_SCREEN_ON, and the Wi-Fi multicast lock. It carries a
+# Kotlin Gradle library project; declaring it here is also what publishes that
+# project into `gen/android/tauri.settings.gradle`, which is generated from the
+# dependency graph rather than edited.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-f1android = { path = "../tauri-plugin-f1android" }

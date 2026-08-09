@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "port": 1420,
       "autoPort": true
+    },
+    {
+      "name": "box-box-dev-android",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:android"],
+      "port": 1431,
+      "autoPort": true
     }
   ]
 }

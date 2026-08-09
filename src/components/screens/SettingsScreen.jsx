@@ -33,7 +33,7 @@ export default function SettingsScreen({
   units, setUnits,
   tempUnits, setTempUnits,
   activeSkin, setActiveSkin,
-  voicePrefs, setVoicePrefs, kokoro, onTestVoice,
+  voicePrefs, setVoicePrefs, kokoro, nativeTts = { ready: false, error: null, voices: [] }, onTestVoice,
   drivers = [], activeDriver, onSignDriver, avatars = {}, onDeleteDriver, onEditDriver,
   onExportProfile, onImportProfile,
   onOpenTrace, onOpenCalibrator,
@@ -393,6 +393,31 @@ export default function SettingsScreen({
               <span style={eyebrow}>Coach Voice</span>
               {activeDriver && <span style={perDriverNote}>Saved for {activeDriver}</span>}
             </div>
+            {/* Android has exactly ONE engine — the platform's — so there is no
+                choice to offer, only a state to report. The two conditions worth
+                distinguishing are "still starting" (normal, a second or two) and
+                "no voice data", which the driver fixes in Android's own settings
+                and which would otherwise present as silence with no explanation. */}
+            {isAndroid ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <label style={label}>Voice Engine</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8,
+                  background: C.inset, border: `1px solid ${C.borderInput}` }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%",
+                    background: nativeTts.error ? C.yellow : nativeTts.ready ? C.green : C.textDim }} />
+                  <span style={{ fontSize: 12, fontWeight: 800 }}>Device Voice</span>
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10, color: C.textDim, fontFamily: FONT.mono }}>
+                    {nativeTts.error ? nativeTts.error : nativeTts.ready ? `${nativeTts.voices.length || "no"} voices` : "starting…"}
+                  </span>
+                </div>
+                {nativeTts.error && (
+                  <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
+                    Install a voice in Android ▸ Settings ▸ Accessibility ▸ Text-to-speech output, then restart F1 Coach.
+                  </div>
+                )}
+              </div>
+            ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               <label style={label}>Voice Engine</label>
               <div style={{ display: "flex", gap: 8 }}>
@@ -418,6 +443,7 @@ export default function SettingsScreen({
                 })}
               </div>
             </div>
+            )}
 
             {engine === "kokoro" && kokoro.status !== "ready" && (
               <div>
@@ -438,7 +464,17 @@ export default function SettingsScreen({
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               <label style={label}>Voice</label>
               <div style={{ display: "flex", gap: 9 }}>
-                {engine === "kokoro" ? (
+                {/* The device's own voices. Names are engine-internal ids
+                    ("en-gb-x-gba-local"), so the locale leads — that is the part
+                    a driver is actually choosing between. Voices needing a network
+                    round trip are filtered out plugin-side: this app is built to
+                    work with no connection at a race weekend. */}
+                {isAndroid ? (
+                  <select value={voicePrefs.nativeVoice || ""} onChange={e => setVoicePrefs(p => ({ ...p, nativeVoice: e.target.value }))} style={{ ...input, fontFamily: FONT.ui, flex: 1 }}>
+                    <option value="">Default (device)</option>
+                    {nativeTts.voices.map(v => <option key={v.name} value={v.name}>{v.locale} · {v.name}</option>)}
+                  </select>
+                ) : engine === "kokoro" ? (
                   <select value={voicePrefs.kokoroVoice || DEFAULT_KOKORO_VOICE} onChange={e => setVoicePrefs(p => ({ ...p, kokoroVoice: e.target.value }))} style={{ ...input, fontFamily: FONT.ui, flex: 1 }}>
                     {["British", "American"].map(g => (
                       <optgroup key={g} label={g}>{KOKORO_VOICES.filter(v => v.accent === g).map(v => <option key={v.id} value={v.id}>{v.label}</option>)}</optgroup>

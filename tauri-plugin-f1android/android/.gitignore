@@ -1,0 +1,5 @@
+# Gradle output for the plugin's library project. Written into the crate's own
+# directory by the app's Android build, not by anything here.
+/build
+/.gradle
+/.tauri

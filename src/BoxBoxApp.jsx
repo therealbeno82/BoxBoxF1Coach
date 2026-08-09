@@ -29,7 +29,10 @@ import DrivingLinesView from "./components/DrivingLinesView.jsx";
 import { getTrack, sameTrack } from "./lib/trackData.js";
 import { cornerLabel } from "./lib/cornerData.js";
 import { useTrackCorners } from "./hooks/useTrackCorners.js";
-import { synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE } from "./lib/tts/index.js";
+import {
+  synthesize, loadKokoro, isKokoroLoaded, DEFAULT_KOKORO_VOICE, HAS_KOKORO,
+  HAS_NATIVE_TTS, isNativeTtsReady, loadNativeTts, speakNative, stopNative,
+} from "./lib/tts/index.js";
 import { buildCoachLog } from "./lib/coach/coachLog.js";
 import { matchReference, profileLabel } from "./lib/coach/refMatch.js";
 import { buildDebriefPrompt } from "./lib/coach/prompts.js";
@@ -48,6 +51,7 @@ import { LS_ENABLED } from "./lib/leaderboard/config.js";
 import { inTauri, isAndroid } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
+import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
 import { useFfbEngine } from "./hooks/useFfbEngine.js";
 import { invoke } from "@tauri-apps/api/core";
@@ -360,13 +364,20 @@ const SPEAK_PRIO = { low: 1, normal: 2, urgent: 3 };
 const CALL_LEAD = { min: 0, max: 1.5, step: 0.05, default: 0.7 };
 const LS_CALL_LEAD = "f1coach.callLead";
 
-// Two interchangeable speech engines behind one `speak()` API + priority arbiter:
+// Three interchangeable speech engines behind one `speak()` API + priority arbiter:
 //   • "browser" — Web Speech API (instant, but robotic / OS-dependent voices)
 //   • "kokoro"  — neural Kokoro model run locally (natural, but must SYNTHESISE
 //                 audio first). To keep on-the-mark corner calls instant we
 //                 pre-synthesise the known call phrases (see `prewarm`) and cache
 //                 the decoded AudioBuffers; only novel text (AI tips, chat) is
 //                 synthesised on demand.
+//   • native    — Android's own TextToSpeech, through the f1android plugin. It is
+//                 the ONLY engine in that build (Kokoro is stripped from the
+//                 bundle, and the System WebView's speechSynthesis may exist and
+//                 never make a sound), so it is chosen by availability rather than
+//                 by preference and takes priority over both branches below.
+// All three settle the same way — one `onDone` per phrase — which is what keeps
+// the arbiter's queue engine-agnostic.
 function useAudio(voicePrefs = {}) {
   const lastCue  = useRef({ text:"", time:0 });
   // Single-voice arbiter: `current` is the item being spoken, `queue` holds at
@@ -380,6 +391,10 @@ function useAudio(voicePrefs = {}) {
   // Kokoro engine state surfaced to the UI (download progress / readiness).
   const [kokoroStatus,   setKokoroStatus]   = useState(isKokoroLoaded() ? "ready" : "idle");
   const [kokoroProgress, setKokoroProgress] = useState(isKokoroLoaded() ? 100 : 0);
+  // Platform-engine state, for the Android voice panel. `error` is a recoverable
+  // condition ("no English voice data installed"), not a crash — the driver fixes
+  // it in Android's own TTS settings, so it has to be shown rather than swallowed.
+  const [nativeTts, setNativeTts] = useState({ ready: isNativeTtsReady(), error: null, voices: [] });
   // Decoded-AudioBuffer cache, keyed by `${voice}|${speed}|${text}`.
   const bufCache = useRef(new Map());
 
@@ -451,6 +466,21 @@ function useAudio(voicePrefs = {}) {
       if (next && Date.now() - next.time < 4000) play(next);
     };
 
+    // ── Native path (Android): the platform engine owns its own audio session,
+    // so this sidesteps Web Audio and its user-gesture requirement entirely.
+    // Availability wins over preference — there is no second engine there. ──
+    if (HAS_NATIVE_TTS && isNativeTtsReady()) {
+      speakNative(speakable(item.text), {
+        rate:  prefs.rate ?? 1.1,
+        pitch: item.prio >= SPEAK_PRIO.urgent ? 1.15 : 1.0,
+        voice: prefs.nativeVoice || null,
+        // Preempt: the arbiter has already decided this phrase is the one that
+        // matters, and anything still sounding is by definition lower priority.
+        flush: true,
+      }).then(onDone, onDone);
+      return;
+    }
+
     // ── Kokoro path: synth (or cache hit) → play through Web Audio ──
     if (prefs.engine === "kokoro" && isKokoroLoaded()) {
       getBuffer(item.text).then(buf => {
@@ -476,8 +506,9 @@ function useAudio(voicePrefs = {}) {
     window.speechSynthesis.speak(u);
   }, [getBuffer]);
 
-  // Stop whatever is currently speaking, on either engine.
+  // Stop whatever is currently speaking, on any engine.
   const stopCurrent = () => {
+    if (HAS_NATIVE_TTS) stopNative();
     try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
     const s = stateRef.current.source;
     if (s) { try { s.onended = null; s.stop(); } catch {} stateRef.current.source = null; }
@@ -526,10 +557,35 @@ function useAudio(voicePrefs = {}) {
   // offline once the weights are cached) — otherwise speak() falls back to the browser
   // voice until the user manually hits Test. Also fires when the user switches to Kokoro.
   useEffect(() => {
-    if (voicePrefs.engine === "kokoro" && !isKokoroLoaded()) {
+    // HAS_KOKORO guards a persisted preference outliving its build: a profile
+    // carried over from desktop still says "kokoro", and on Android that import
+    // rejects by design. Without this the voice panel would show a download error
+    // for a model the build never intended to have.
+    if (HAS_KOKORO && voicePrefs.engine === "kokoro" && !isKokoroLoaded()) {
       loadKokoroEngine();
     }
   }, [voicePrefs.engine, loadKokoroEngine]);
+
+  // Bring up the platform engine once per session and read its voice list. It
+  // initialises asynchronously on Android's side, so this is a wait, not a
+  // download — nothing to surface as progress.
+  useEffect(() => {
+    if (!HAS_NATIVE_TTS) return;
+    let live = true;
+    loadNativeTts().then(st => { if (live) setNativeTts(st); });
+    return () => { live = false; };
+  }, []);
+
+  // Web Audio needs a real user gesture before it will make a sound, and on
+  // Android the AudioContext created inside an effect starts suspended and stays
+  // that way. Speech is unaffected there (the platform engine has its own audio
+  // session), but `beep()` shares this context — so unlock it on the first touch
+  // anywhere, once.
+  useEffect(() => {
+    const unlock = () => { audioCtx(); };
+    document.addEventListener("pointerdown", unlock, { once: true, capture: true });
+    return () => document.removeEventListener("pointerdown", unlock, { capture: true });
+  }, []);
 
   // Pre-synthesise (and cache) a set of phrases so they play instantly later.
   // Sequential to avoid hammering the model. No-op unless Kokoro is the engine.
@@ -545,6 +601,12 @@ function useAudio(voicePrefs = {}) {
   // arbiter and works on whichever engine is selected.
   const preview = useCallback(async (text) => {
     const prefs = voicePrefsRef.current;
+    if (HAS_NATIVE_TTS && isNativeTtsReady()) {
+      // Same preempt as a real call, so hitting Test twice replaces rather than
+      // queues — that is what the button appears to promise.
+      speakNative(speakable(text), { rate: prefs.rate ?? 1.1, voice: prefs.nativeVoice || null, flush: true });
+      return;
+    }
     if (prefs.engine === "kokoro") {
       if (!isKokoroLoaded()) await loadKokoroEngine();
       try {
@@ -579,6 +641,7 @@ function useAudio(voicePrefs = {}) {
   return {
     speak, beep, preview,
     kokoro: { status: kokoroStatus, progress: kokoroProgress, load: loadKokoroEngine, prewarm },
+    native: nativeTts,
   };
 }
 
@@ -1803,7 +1866,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // accumulating effect below) is what re-renders it when a new bin lands.
   const trackPathRef = useRef({ bins: new Map(), lastX: null, lastZ: null });
 
-  const { speak, beep, preview, kokoro } = useAudio(voicePrefs);
+  const { speak, beep, preview, kokoro, native: nativeTts } = useAudio(voicePrefs);
+
+  // Android only (folded away elsewhere): hold the screen on while telemetry is
+  // arriving, and take the Wi-Fi multicast lock while the app is in front.
+  useAndroidDevice(wsConnected);
 
   // When Kokoro is the engine, pre-synthesise the known corner-call phrases so
   // they fire instantly on the mark. Re-runs when the voice/speed or the set of
@@ -2557,7 +2624,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           units={units} setUnits={setUnits}
           tempUnits={tempUnits} setTempUnits={setTempUnits}
           activeSkin={activeSkin} setActiveSkin={setActiveSkin}
-          voicePrefs={voicePrefs} setVoicePrefs={setVoicePrefs} kokoro={kokoro} onTestVoice={preview}
+          voicePrefs={voicePrefs} setVoicePrefs={setVoicePrefs} kokoro={kokoro} nativeTts={nativeTts} onTestVoice={preview}
           drivers={drivers} activeDriver={activeDriver} onSignDriver={signDriver}
           avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
           onExportProfile={exportProfile} onImportProfile={importProfile}

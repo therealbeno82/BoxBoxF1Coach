@@ -1,0 +1,19 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Speech, keep-awake and the Wi-Fi multicast lock for the Android build.
+
+None of these reach outside the app: no network, no storage, no user data. They
+are split into separate commands only because they settle at different times —
+`speak` resolves when the phrase finishes.
+"""
+permissions = [
+  "allow-speak",
+  "allow-stop",
+  "allow-voices",
+  "allow-is-ready",
+  "allow-set-keep-awake",
+  "allow-acquire-multicast-lock",
+  "allow-release-multicast-lock",
+]

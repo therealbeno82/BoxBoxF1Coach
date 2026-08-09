@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-release-multicast-lock"
+description = "Enables the release_multicast_lock command without any pre-configured scope."
+commands.allow = ["release_multicast_lock"]
+
+[[permission]]
+identifier = "deny-release-multicast-lock"
+description = "Denies the release_multicast_lock command without any pre-configured scope."
+commands.deny = ["release_multicast_lock"]

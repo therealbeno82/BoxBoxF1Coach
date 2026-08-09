@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plugin manifests are MERGED into the app's by AGP, so permissions declared
+     here survive a re-run of `tauri android init` (which regenerates
+     src-tauri/gen/android). The app's own manifest declares the same two today;
+     stating them here as well is what makes this plugin self-contained. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Android 11+ package visibility: without this the TTS engine (a separate
+         app, usually Google's) is invisible to us and TextToSpeech initialises
+         with no voices at all. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+</manifest>

@@ -8,6 +8,7 @@
     "copy-ort": "node scripts/copy-ort.mjs",
     "predev": "node scripts/copy-ort.mjs",
     "dev": "vite",
+    "dev:android": "node scripts/dev-android.mjs",
     "prebuild": "node scripts/copy-ort.mjs",
     "build": "vite build",
     "preview": "vite preview",

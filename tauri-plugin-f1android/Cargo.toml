@@ -1,0 +1,21 @@
+[package]
+name = "tauri-plugin-f1android"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "F1 Coach's Android-only bridge: platform text-to-speech, keep-awake and the Wi-Fi multicast lock."
+authors = ["F1 Coach"]
+license = ""
+# REQUIRED, and it must match the crate name: `tauri_plugin::Builder` reads
+# CARGO_MANIFEST_LINKS to publish this crate's `android/` Gradle project to the
+# app's build (that's how `tauri.settings.gradle` learns to include it).
+links = "tauri-plugin-f1android"
+build = "build.rs"
+
+[dependencies]
+tauri = { version = "2.11.3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

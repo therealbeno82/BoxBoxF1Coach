@@ -18,6 +18,15 @@
 
 export { KOKORO_VOICES, DEFAULT_KOKORO_VOICE } from "./voices.js";
 
+// The platform engine (Android only). It is a handful of `invoke` calls with no
+// worker and no model, so unlike Kokoro it costs nothing to have in the graph —
+// on desktop `HAS_NATIVE_TTS` folds to false and the calls fold away with it.
+// Re-exported here so the app still has ONE import point for speech.
+export {
+  HAS_NATIVE_TTS, isNativeTtsReady, nativeTtsError, nativeVoices,
+  loadNativeTts, speakNative, stopNative,
+} from "./native.js";
+
 /** True when this build ships Kokoro at all (false on Android). */
 export const HAS_KOKORO = __HAS_KOKORO__;
 

@@ -321,14 +321,18 @@ pub fn run() {
             write_text_file,
         ]);
 
+    // Android's own bridge: platform text-to-speech (the desktop build's Kokoro
+    // model is stripped there), keep-screen-on, and the Wi-Fi multicast lock.
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        set_udp_port,
-        get_local_ips,
-        set_fake_mode,
-        get_fake_mode,
-        write_text_file,
-    ]);
+    let builder = builder
+        .plugin(tauri_plugin_f1android::init())
+        .invoke_handler(tauri::generate_handler![
+            set_udp_port,
+            get_local_ips,
+            set_fake_mode,
+            get_fake_mode,
+            write_text_file,
+        ]);
 
     builder
         .setup(|app| {

@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/android-schema.json",
+  "identifier": "android",
+  "description": "The Android-only f1android bridge: platform speech, keep-awake and the Wi-Fi multicast lock.",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["f1android:default"]
+}
