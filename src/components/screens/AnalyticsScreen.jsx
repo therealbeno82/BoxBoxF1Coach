@@ -10,6 +10,7 @@ import { useMemo, useRef, useState } from "react";
 import { C, FONT, fmtDelta } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import Hint from "../Hint.jsx";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
 
@@ -290,7 +291,7 @@ export default function AnalyticsScreen({
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
                         <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, textAlign: "right", color: invalid ? C.textDim : C.textBody2, textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(lap.lapTime, 3)}</span>
                         {invalid && (
-                          <span title="Lap time deleted by the game (track limits / corner cut)" style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>Invalidated</span>
+                          <Hint text="Lap time deleted by the game (track limits / corner cut)" style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>Invalidated</Hint>
                         )}
                       </div>
                       <WrenchBtn onClick={() => onOpenSetup(lap)} has={!!lap.setup} />

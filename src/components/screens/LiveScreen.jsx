@@ -13,6 +13,7 @@ import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from
 import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import Hint from "../Hint.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 const SECTOR_GREY = C.textFaint; // F1 "no time set yet" — neutral grey sector bar
@@ -54,10 +55,10 @@ function Kpi({ label, short, value, unit, color, compact }) {
 // per-lap energy budget) that sits under the main KPI strip.
 function StatusChip({ label, value, color, hint }) {
   return (
-    <div title={hint || ""} style={{ ...card, padding: "8px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 130 }}>
+    <Hint as="div" text={hint || ""} style={{ ...card, padding: "8px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 130 }}>
       <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: 16, lineHeight: 1, color, whiteSpace: "nowrap" }}>{value}</div>
-    </div>
+    </Hint>
   );
 }
 
@@ -118,12 +119,12 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
       background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${invalid ? C.red : isPB ? C.purple : C.line}`, borderRadius: 8, padding: "8px 12px" }}>
       <span style={{ flex: "none", fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {l.lapNumber ?? "?"}</span>
       {invalid && (
-        <span title="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</span>
+        <Hint text="Lap time deleted by the game (track limits / corner cut)" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 5, padding: "1px 5px" }}>Invalidated</Hint>
       )}
       {/* Replayed by Demo Mode, not driven — say so on the row, since the time is a
           real one and would otherwise be indistinguishable from the driver's own. */}
       {isDemoLap(l) && (
-        <span title="Replayed by Demo Mode — never counts toward personal bests, records or stats" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.yellow, textTransform: "uppercase", border: `1px solid ${C.yellow}`, borderRadius: 5, padding: "1px 5px" }}>Demo</span>
+        <Hint text="Replayed by Demo Mode — never counts toward personal bests, records or stats" style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: 0.8, color: C.yellow, textTransform: "uppercase", border: `1px solid ${C.yellow}`, borderRadius: 5, padding: "1px 5px" }}>Demo</Hint>
       )}
       <span style={{ flex: "none", fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: invalid ? C.textDim : isPB ? C.purple : "#fff", textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(l.lapTime, 3)}</span>
       {/* Sector splits, tinted purple / green / orange vs the all-time and session bests. Muted on invalidated laps (they set no records). */}
@@ -144,7 +145,7 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
           and a front- vs rear-limited car is obvious. Compound colours carry data
           meaning, so they stay fixed (lib/tyres.js). */}
       {tyre && (
-        <span title={`${tyre}${l.tyre?.age ? ` · ${l.tyre.age} laps old` : ""}${wear != null ? ` · worst wheel ${wear.toFixed(1)}%` : ""}`}
+        <Hint text={`${tyre}${l.tyre?.age ? ` · ${l.tyre.age} laps old` : ""}${wear != null ? ` · worst wheel ${wear.toFixed(1)}%` : ""}`}
           style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
           <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: tCol, boxShadow: `0 0 6px ${tCol}66` }} />
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: C.textMid }}>{tyre}</span>
@@ -163,21 +164,21 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
               })}
             </span>
           )}
-        </span>
+        </Hint>
       )}
       {/* Fuel, read the same way: kg the lap burned, and the laps in hand the game's own
           MFD showed at the flag (negative = short, so the next laps have to save). Sits
           beside the wear so the two things a stint is limited by read together. The units
           live in the tooltip — spelling them out on every row wraps it onto two lines. */}
       {fuel && (
-        <span title={fuelTip} style={{ flex: "none", display: "grid", gridTemplateColumns: "auto auto", columnGap: 5, rowGap: 1 }}>
+        <Hint text={fuelTip} style={{ flex: "none", display: "grid", gridTemplateColumns: "auto auto", columnGap: 5, rowGap: 1 }}>
           <span style={microLabel}>USED</span>
           <span style={{ ...microValue, color: C.textDim }}>{fuel.used == null ? "—" : fuel.used.toFixed(2)}</span>
           <span style={microLabel}>DELTA</span>
           <span style={{ ...microValue, color: fuel.delta == null ? C.textFaint : fuelColor(fuel.delta) }}>
             {fuel.delta == null ? "—" : fuelDeltaLabel(fuel.delta)}
           </span>
-        </span>
+        </Hint>
       )}
       {/* Gap-to-best + the setup button ride together at the right end, so when the
           row wraps they move as one block instead of stranding the button alone. */}
@@ -476,8 +477,9 @@ export default function LiveScreen({
       marginBottom: phone ? 0 : 10, flexWrap: phone ? "nowrap" : "wrap",
       ...(phone && { flex: "1 1 0", minWidth: 0 }),
       opacity: audioOn ? 1 : 0.5, transition: "opacity .12s" }}>
-      <span style={{ flex: "none", fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 1.5, textTransform: "uppercase",
-        fontWeight: 700, color: C.textDim, fontFamily: FONT.ui }}>Call lead</span>
+      <Hint text="How far ahead of the reference's mark every cue is spoken. 0 = the call starts on the mark."
+        style={{ flex: "none", fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 1.5, textTransform: "uppercase",
+        fontWeight: 700, color: C.textDim, fontFamily: FONT.ui }}>Call lead</Hint>
       <input type="range" min={leadRange.min} max={leadRange.max} step={leadRange.step}
         value={leadSeconds} onChange={(e) => onLeadSeconds(+e.target.value)}
         title="How far ahead of the reference's mark every cue is spoken. 0 = the call starts on the mark."
