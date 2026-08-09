@@ -421,16 +421,56 @@ export default function TelemetryStudio({
     window.addEventListener("pointerup", up);
   };
 
-  // ── Hover inspection: while paused, moving the mouse across the trace stack
-  // reads out both laps at the mouse instead of at the playback cursor. Ignored
+  // ── Hover inspection: while paused, moving the pointer across the trace stack
+  // reads out both laps at that point instead of at the playback cursor. Ignored
   // while playing — the numbers must keep following the sweeping cursor there,
-  // and the mouse is parked over the stack anyway (it's the play/pause target). ──
+  // and the pointer is parked over the stack anyway (it's the play/pause target).
+  //
+  // Pointer, not mouse, events: on a phone this IS the screen's purpose, and a
+  // finger produces no hover at all — it scrubs. Which means one gesture has to
+  // serve two jobs, and the stack's tap target is the whole stack, so the two are
+  // told apart by DISTANCE AND TIME below rather than by which handler fired. ──
   const hoverActive = hoverF != null && !playing;
-  const onStackMove = (e) => {
-    const el = stackRef.current; if (!el) return;
+  const fracAt = (clientX) => {
+    const el = stackRef.current; if (!el) return null;
     const r = el.getBoundingClientRect();
-    if (!r.width) return;
-    setHoverF(clamp((e.clientX - r.left) / r.width, 0, 1));
+    if (!r.width) return null;
+    return clamp((clientX - r.left) / r.width, 0, 1);
+  };
+  const onStackMove = (e) => {
+    const f = fracAt(e.clientX);
+    if (f != null) setHoverF(f);
+  };
+
+  // A tap is a press that neither moved nor lingered; anything else was a scrub
+  // and must NOT also toggle playback. 8px covers the wobble of a finger leaving
+  // the glass, and 250ms is short enough that a deliberate hold reads as a scrub.
+  const tapRef = useRef(null);
+  const TAP_SLOP = 8, TAP_MS = 250;
+  const onStackDown = (e) => {
+    // The sector buttons and "Full lap" sit INSIDE the stack, and their onClick
+    // stopPropagation can't stop a pointerup that has already bubbled — so the
+    // press that hits one is never a candidate tap in the first place.
+    if (e.target?.closest?.("button")) return;
+    tapRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };
+    // Place the read-out on the press, so a tap-and-hold reads out immediately
+    // rather than waiting for a move a finger may never make.
+    onStackMove(e);
+  };
+  const onStackUp = (e) => {
+    const t = tapRef.current;
+    tapRef.current = null;
+    if (!t || t.id !== e.pointerId) return;
+    const moved = Math.hypot(e.clientX - t.x, e.clientY - t.y);
+    if (moved <= TAP_SLOP && Date.now() - t.t <= TAP_MS) setPlaying((pl) => !pl);
+  };
+  const onStackLeave = (e) => {
+    // Only a mouse leaving means "done reading". A finger lifting is the moment
+    // the driver looks at the number they just scrubbed to, so the chip stays;
+    // the next press moves it.
+    if (e.pointerType === "touch") return;
+    tapRef.current = null;
+    setHoverF(null);
   };
 
   // The position everything reads from: the mouse when hovering, else the cursor.
@@ -600,11 +640,18 @@ export default function TelemetryStudio({
             )}
           </div>
         )}
-        {/* Trace stack — click anywhere to play/pause, hover to inspect */}
-        <div ref={stackRef} onClick={() => setPlaying((pl) => !pl)}
-          onMouseMove={onStackMove} onMouseLeave={() => setHoverF(null)}
+        {/* Trace stack — tap/click to play/pause, drag or hover to inspect.
+            `touch-action: pan-y` is the deliberate half-measure: a HORIZONTAL
+            drag is ours to scrub with, while a vertical one still scrolls the
+            page under it. `none` would have trapped the whole Analytics screen
+            behind a panel that fills most of a phone. */}
+        <div ref={stackRef}
+          onPointerDown={onStackDown} onPointerMove={onStackMove}
+          onPointerUp={onStackUp} onPointerCancel={() => { tapRef.current = null; }}
+          onPointerLeave={onStackLeave}
           title="Click to play / pause · hover to read both laps"
-          style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column", gap: 6, cursor: "pointer" }}>
+          style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column", gap: 6,
+            cursor: "pointer", touchAction: "pan-y" }}>
 
           {/* Sector boundary lines + labels + the white playback cursor.
               Boundaries live in lap-fractions → remap into the zoom window;

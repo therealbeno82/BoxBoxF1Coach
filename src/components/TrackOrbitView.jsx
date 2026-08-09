@@ -202,15 +202,59 @@ export default function TrackOrbitView({
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   const dragRef = useRef(null);
+  // Every pointer currently down, so two fingers can be told from one. A mouse
+  // only ever puts one entry in here, and the pinch branch never runs.
+  const ptsRef = useRef(new Map());
+  const pinchRef = useRef(null);
+  const lastTapRef = useRef(0);
+
+  const pinchGap = () => {
+    const [a, b] = [...ptsRef.current.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  const resetPose = () => {
+    poseRef.current = { az: null, el: EL0 };
+    keyRef.current = null;
+    start();
+  };
+
   const onPointerDown = (e) => {
-    if (e.button !== 0) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    ptsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptsRef.current.size === 2) {
+      // Second finger down: this is a pinch, not an orbit. Drop the drag so the
+      // camera doesn't swing while the gap is being measured.
+      dragRef.current = null;
+      pinchRef.current = pinchGap();
+      return;
+    }
+    if (ptsRef.current.size > 2) return;
     dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
     // Capture keeps the orbit alive when the cursor leaves the panel mid-drag, which
     // is most drags — but it is an optimisation, not the mechanism, so a browser that
     // refuses it must not take the drag down with it.
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* drag still works */ }
   };
+
   const onPointerMove = (e) => {
+    const pt = ptsRef.current.get(e.pointerId);
+    if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
+
+    // Pinch: the SAME zoom the wheel drives, so the slider that tracks a scroll
+    // tracks a pinch too — one camera distance, three ways to change it.
+    if (ptsRef.current.size === 2) {
+      const gap = pinchGap();
+      const prev = pinchRef.current;
+      pinchRef.current = gap;
+      if (prev > 0 && gap > 0) {
+        zoomByRef.current?.(gap / prev);
+        keyRef.current = null;
+        start();
+      }
+      return;
+    }
+
     const d = dragRef.current;
     if (!d || d.id !== e.pointerId) return;
     const pose = poseRef.current;
@@ -219,17 +263,37 @@ export default function TrackOrbitView({
     d.x = e.clientX; d.y = e.clientY;
     start();
   };
+
   const endDrag = (e) => {
-    if (dragRef.current?.id !== e.pointerId) return;
-    dragRef.current = null;
-    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* never captured */ }
+    ptsRef.current.delete(e.pointerId);
+    if (ptsRef.current.size < 2) pinchRef.current = null;
+    // A finger lifted out of a pinch leaves the other one still down: re-seat the
+    // orbit on THAT pointer, or the next move jumps by the gap between them.
+    if (ptsRef.current.size === 1) {
+      const [id] = [...ptsRef.current.keys()];
+      const p = ptsRef.current.get(id);
+      dragRef.current = { id, x: p.x, y: p.y };
+    }
+
+    if (dragRef.current?.id === e.pointerId) {
+      dragRef.current = null;
+      try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* never captured */ }
+    }
+
+    // Double-TAP to reset, mirroring double-click. `touch-action: none` means the
+    // browser synthesises no dblclick here, so it has to be counted by hand.
+    if (e.type === "pointerup" && e.pointerType === "touch") {
+      const now = Date.now();
+      if (now - lastTapRef.current < 300) { resetPose(); lastTapRef.current = 0; }
+      else lastTapRef.current = now;
+    }
   };
 
   return (
     <div ref={wrapRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={endDrag} onPointerCancel={endDrag}
-      onDoubleClick={() => { poseRef.current = { az: null, el: EL0 }; keyRef.current = null; start(); }}
+      onDoubleClick={resetPose}
       title="Drag to orbit · scroll to zoom · double-click to reset"
       style={{ position: "absolute", inset: 0, overflow: "hidden", touchAction: "none",
         cursor: failed ? "default" : "grab" }}>

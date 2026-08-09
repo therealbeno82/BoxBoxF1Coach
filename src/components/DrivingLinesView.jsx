@@ -799,6 +799,33 @@ export default function DrivingLinesView({
     const r = el.getBoundingClientRect();
     onSeek?.(clamp((clientX - r.left) / r.width, 0, 1));
   };
+  // ── Pinch to zoom the MAP. The 3D view does its own (it owns a camera, not a
+  // viewBox) and the T-cam has no zoom at all, so this is map-only. Same `zoom`
+  // state either way, so the slider tracks a pinch exactly as it tracks a scroll.
+  const pinchPts = useRef(new Map());
+  const pinchGap = useRef(0);
+  const gapNow = () => {
+    const [a, b] = [...pinchPts.current.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+  const onMapDown = (e) => {
+    pinchPts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinchPts.current.size === 2) pinchGap.current = gapNow();
+  };
+  const onMapMove = (e) => {
+    const p = pinchPts.current.get(e.pointerId);
+    if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    if (pinchPts.current.size !== 2) return;
+    const g = gapNow(), prev = pinchGap.current;
+    pinchGap.current = g;
+    if (prev > 0 && g > 0) setZoom((z) => clamp(z * (g / prev), MIN_ZOOM, MAX_ZOOM));
+  };
+  const onMapUp = (e) => {
+    pinchPts.current.delete(e.pointerId);
+    if (pinchPts.current.size < 2) pinchGap.current = 0;
+  };
+
   const onBarDown = (e) => { onSetPlaying?.(false); scrubFrom(e.clientX);
     const move = ev => scrubFrom(ev.clientX);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); scrubEnd.current = null; };
@@ -1088,7 +1115,12 @@ export default function DrivingLinesView({
           {deltaReadout}
         </div>
       )}
+      {/* `touch-action: none` HERE, unlike the map: this strip is 28px tall and
+          scrubbing is the only thing it does, so a drag that started on it can
+          only have meant the playhead. Without it the browser claims the gesture
+          as a page scroll and cancels the drag mid-lap. */}
       <div ref={barRef} onPointerDown={onBarDown} style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
+        touchAction:"none",
         ...(phone ? {flex:"1 1 100%",minWidth:0} : {flex:1})}}>
         <div style={{position:"absolute",left:0,right:0,height:6,borderRadius:3,background:"#1c2230"}} />
         <div style={{position:"absolute",left:0,height:6,borderRadius:3,background:COMP_COLOR,width:`${playhead*100}%`}} />
@@ -1125,7 +1157,17 @@ export default function DrivingLinesView({
       {/* The map viewport */}
       {/* basis 0 on a phone, so the map takes what the stacked rows leave rather
           than its content height plus them — the panel is a fixed height there. */}
-      <div style={{position:"relative",...(phone?{flex:"1 1 0"}:{flex:"1 1 auto"}),minHeight:phone?180:280,borderRadius:10,overflow:"hidden",
+      {/* `touch-action: pan-y` on the map, not `none`: a two-finger pinch is ours
+          to zoom with, while a one-finger vertical drag still scrolls the screen
+          this panel sits in — on a phone the map is most of the viewport, so
+          trapping the scroll would strand the page. */}
+      <div
+        {...(camMode === "map" ? {
+          onPointerDown: onMapDown, onPointerMove: onMapMove,
+          onPointerUp: onMapUp, onPointerCancel: onMapUp,
+        } : null)}
+        style={{position:"relative",...(phone?{flex:"1 1 0"}:{flex:"1 1 auto"}),minHeight:phone?180:280,borderRadius:10,overflow:"hidden",
+        ...(camMode === "map" && {touchAction:"pan-y"}),
         border:"1px solid var(--line)",background:"radial-gradient(120% 120% at 50% 0%, #131a26 0%, #0a0d14 70%)"}}>
         {/* Onboard camera. Swaps only the VIEWPORT — every overlay below is an
             absolutely-positioned sibling and carries straight over. */}
