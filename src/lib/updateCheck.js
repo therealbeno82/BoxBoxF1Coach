@@ -7,6 +7,8 @@
 // no releases yet → 404, API rate-limited → 403, malformed tag) resolves to
 // null so the UI simply shows nothing.
 
+import { isAndroid } from "./env.js";
+
 const REPO = "therealbeno82/BoxBoxF1Coach";
 const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
@@ -31,6 +33,13 @@ export function compareVersions(a, b) {
 
 // Resolves to { latestVersion, url, notes } when a newer, published (non-draft,
 // non-prerelease) release exists; otherwise null. Never throws.
+//
+// On Android the release must also SHIP AN APK. Every release so far carries one
+// asset — a Windows NSIS installer — and announcing "4.1.0 is out" to a phone
+// that can do nothing with a .exe is worse than staying quiet: the banner can't
+// be dismissed by acting on it. So the Android build reads the asset list and
+// links straight at the .apk, which is the whole install path for a sideloaded
+// app. Until APKs are published there, the check simply finds nothing.
 export async function checkForUpdate(current = APP_VERSION) {
   try {
     const res = await fetch(LATEST_URL, { headers: { Accept: "application/vnd.github+json" } });
@@ -39,9 +48,19 @@ export async function checkForUpdate(current = APP_VERSION) {
     const tag = rel?.tag_name;
     if (!tag || rel.draft || rel.prerelease) return null;
     if (compareVersions(tag, current) <= 0) return null;
+
+    let url = rel.html_url || `https://github.com/${REPO}/releases/latest`;
+    if (isAndroid) {
+      const apk = (rel.assets || []).find(
+        (a) => typeof a?.name === "string" && a.name.toLowerCase().endsWith(".apk")
+      );
+      if (!apk) return null;
+      url = apk.browser_download_url || url;
+    }
+
     return {
       latestVersion: String(tag).replace(/^v/i, ""),
-      url: rel.html_url || `https://github.com/${REPO}/releases/latest`,
+      url,
       notes: typeof rel.body === "string" ? rel.body.trim() : "",
     };
   } catch {

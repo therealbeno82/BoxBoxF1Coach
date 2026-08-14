@@ -15,7 +15,17 @@
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!-- Auto-backup is OFF, deliberately. It defaults to on, and would try to copy
+         the WebView data directory — which is where the whole lap history lives, in
+         IndexedDB — to Google Drive under a 25 MB per-app quota. A driver with a few
+         hundred recorded laps blows past that, and the backup then fails silently:
+         noise, and a false sense of safety. Restoring a WebView data dir onto a
+         different device or WebView version is its own hazard. The app already has a
+         real backup path that the driver controls — Settings ▸ Driver Profile ▸
+         Export Profile — so the honest position is "your history lives on this
+         device, export it if you care about it". -->
     <application
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.app"
