@@ -12,10 +12,8 @@ import { computeDriverStats } from "../../lib/driverStats.js";
 import LeaderboardCard from "../LeaderboardCard.jsx";
 import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { getTrackByName } from "../../lib/trackData.js";
-import { inTauri } from "../../lib/env.js";
+import { openExternal, KOFI_URL } from "../../lib/env.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
-
-const KOFI_URL = "https://ko-fi.com/rapidbeno";
 
 // The swap arrows on the Switch Driver control, drawn at whatever size the
 // placement wants — a 19px glyph in the desktop card's tile, 17px inline in the
@@ -39,16 +37,6 @@ const SKIN_LOGOS = {
   // Square poster art rather than a wordmark — sized taller so it stays legible, and
   // `r` rounds its opaque edges (the other marks are transparent cut-outs, so no radius).
   shitkickers: { src: "/shitkickers-logo.png", alt: "Shit Kickers", h: 104, r: 12 },
-};
-
-// Opens an external URL in the OS browser when running inside the Tauri shell
-// (webview links don't otherwise escape the app window); falls back to letting
-// the anchor open a normal new tab in `npm run dev`.
-const openExternal = (url) => async (e) => {
-  if (!inTauri) return;
-  e.preventDefault();
-  const { openUrl } = await import("@tauri-apps/plugin-opener");
-  openUrl(url);
 };
 
 // Boot-time "new version available" banner. `update` is null unless the GitHub
@@ -356,7 +344,11 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             onOpenBoard={onOpenBoard}
           />
 
-          {/* Donate */}
+          {/* Donate. Desktop only — on a phone and in landscape it has moved to
+              the end of the nav, where it costs no row of the Dashboard at all.
+              The full sentence goes with the card; the nav entry is the icon and
+              the word, which is as much as a 62px tab cell can hold. */}
+          {!tight && (
           <a href={KOFI_URL} target="_blank" rel="noreferrer" onClick={openExternal(KOFI_URL)} style={{ marginTop: "auto",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 9, textDecoration: "none",
             background: "#1a1024", border: "1px solid #3a2550", borderRadius: 14, padding: "13px 15px",
@@ -366,6 +358,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               Donate — support continued development
             </span>
           </a>
+          )}
         </div>
 
         {/* ── Right: stats ── */}
