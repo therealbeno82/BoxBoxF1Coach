@@ -186,13 +186,24 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
         <span style={{ fontFamily: FONT.mono, fontSize: 11, fontWeight: 700, textAlign: "right", color: invalid ? C.red : isPB ? C.purple : C.yellow }}>
           {invalid ? "INVALID" : isPB ? "BEST" : delta != null ? "+ " + delta.toFixed(3) : ""}
         </span>
+        {/* 28px of chrome inside a 44px target, the overhang pulled back over the
+            gap text with a negative margin — the same trick, and for the same
+            reason, as the consistency matrix's copy of this button in
+            AnalyticsScreen. A lap row is a plain div, so nothing under the
+            overhang is clickable and the wider hit area costs no other control
+            its taps. Keeping the button 28px WIDE instead would leave a target
+            barely half a fingertip across. */}
         <button onClick={() => onOpenSetup?.(l)} title="View car setup" disabled={!l.setup} style={{
-          flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
-          borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
-          cursor: l.setup ? "pointer" : "default", opacity: l.setup ? 1 : 0.5 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-          </svg>
+          flex: "none", display: "flex", alignItems: "center", justifyContent: "flex-end",
+          width: 44, marginLeft: -16, height: 44, padding: 0, border: "none", background: "transparent",
+          cursor: l.setup ? "pointer" : "default" }}>
+          <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
+            borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
+            opacity: l.setup ? 1 : 0.5 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+            </svg>
+          </span>
         </button>
       </span>
     </div>

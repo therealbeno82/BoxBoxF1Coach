@@ -35,15 +35,18 @@ const eyebrow = {
 };
 const eyebrowPhone = { ...eyebrow, fontSize: 8, letterSpacing: 1 };
 
-// The phone variant sets min-height explicitly: index.html gives a select a 44px
-// min-height on a coarse pointer, which would keep the box tall however little
-// padding it carries.
+// The phone variant is 32px rather than 42 to save vertical space, but it no
+// longer sets `minHeight: 0` to get there. These two selects ARE the board —
+// picking a circuit and a session is the only way to reach any other page of
+// it — and at 32px they were the last controls on the screen under the
+// coarse-pointer floor. Keeping `height: 32` means a fine pointer at the same
+// width still gets the compact box; only a finger gets the taller one.
 const selectStyle = (color, phone = false) => ({
   width: "100%", appearance: "none", WebkitAppearance: "none", background: C.surface,
   border: `1px solid ${C.borderStrong}`, borderRadius: phone ? 7 : 9, color, fontFamily: FONT.mono,
   fontSize: phone ? 12 : 14, fontWeight: 700,
   padding: phone ? "0 26px 0 10px" : "11px 36px 11px 14px",
-  ...(phone && { minHeight: 0, height: 32 }),
+  ...(phone && { height: 32 }),
   cursor: "pointer", outline: "none",
 });
 
@@ -97,7 +100,10 @@ export default function LeaderboardScreen({
   enabled = true,
   onUseReference,
 }) {
-  const { phone } = useViewport();
+  // `phone` for layout, `coarse` for tap size — a landscape phone clears the
+  // 639px breakpoint and takes the desktop controls, so width floors have to key
+  // on the pointer or they never reach it.
+  const { phone, coarse } = useViewport();
   const [slug, setSlug] = useState(initialSlug && TRACK_SLUGS.includes(initialSlug) ? initialSlug : TRACK_SLUGS[0]);
   const [session, setSession] = useState(SESSION_TOKENS[0]);
   const [compoundFilter, setCompoundFilter] = useState("all");
@@ -217,9 +223,15 @@ export default function LeaderboardScreen({
             </div>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: phone ? 8 : 14, flex: "none" }}>
+            {/* 44 wide on any TOUCH screen — `coarse`, not `phone`, because a
+                landscape phone is 873px wide and takes the desktop 32px path —
+                and no `minHeight: 0` opt-out, so the coarse-pointer floor in
+                index.html can lift the height to match. This measured 26×26
+                before, the smallest target on the screen, and it is the only way
+                to re-read a stale board. A mouse still gets the compact box. */}
             {isLive && (
               <button onClick={board.reload} title="Refresh this board" style={{
-                width: phone ? 26 : 32, height: phone ? 26 : 32, minHeight: phone ? 0 : undefined,
+                width: coarse ? 44 : 32, height: phone ? 26 : 32,
                 borderRadius: phone ? 7 : 8, cursor: "pointer",
                 border: `1px solid ${C.line}`, background: C.surface, color: C.textMuted,
                 fontSize: phone ? 11 : 13, lineHeight: 1,

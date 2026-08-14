@@ -362,7 +362,15 @@ export default function DrivingLinesView({
   trackName, trackSlug = null, zones = [], corners: cornerDb = [], lapLength = 0,
   playhead = 0, playing = false, onSeek, onSetPlaying,
 }) {
-  const { phone } = useViewport();
+  // `phone` decides LAYOUT (overlays becoming stacked rows); `coarse` decides TAP
+  // SIZE. They are not the same question and a landscape phone is exactly where
+  // they diverge: at 873×393 it is above the 639px `phone` breakpoint, so it
+  // takes every desktop control here — and index.html's coarse-pointer floor
+  // lifts their HEIGHT but never their WIDTH, which left the zoom buttons 18px
+  // and the segment steppers 24px across on a device driven by a thumb.
+  const { phone, coarse } = useViewport();
+  // Square, thumb-sized, and only when there is a thumb.
+  const tapSquare = coarse ? { width: 44, height: 44, minHeight: 44 } : null;
   const [viewMode, setViewMode] = useState("segments"); // "segments" | "sectors"
   // "map" and "orbit" are the two views of the whole scene (flat / free camera);
   // "tcam" and "compare" are the onboard ones, which several overlays below key on.
@@ -911,8 +919,16 @@ export default function DrivingLinesView({
         <button key={m} onClick={()=>setCamMode(m)}
           disabled={m === "compare" && !canCompare}
           title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
+          // No `minHeight: 0` on the phone variant: these four ARE the view
+          // switch, and at 79×21 they were a fifth of a fingertip tall. They
+          // already span the width via `flex: 1 1 0`, so the coarse-pointer
+          // floor only has to supply the height.
           style={{...glassPill(camMode===m),padding: phone ? "4px 6px" : "3px 10px",
-            ...(phone && { flex:"1 1 0", minHeight:0, fontSize:10 }),
+            ...(phone && { flex:"1 1 0", fontSize:10 }),
+            // Width floor for the short labels — "3D" came out 37px on a
+            // landscape phone, where the pills size to their text instead of
+            // sharing the row. Height is the stylesheet's to grant; width isn't.
+            ...(coarse && { minWidth: 44 }),
             opacity: m === "compare" && !canCompare ? 0.35 : 1,
             cursor: m === "compare" && !canCompare ? "not-allowed" : "pointer"}}>{l}</button>
       ))}
@@ -997,7 +1013,7 @@ export default function DrivingLinesView({
       {/* Where you are. Desktop stacks name, corner and distance; a phone puts all
           three on one line — they are one sentence, not three facts. */}
       <div style={{display:"flex",alignItems:"center",gap:8}}>
-        {!phone && <button style={navBtn} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
         <div style={{flex:1,minWidth:0,textAlign:"center",display:"flex",alignItems:"baseline",justifyContent:"center",gap:phone?6:8}}>
           <span style={{fontFamily:FONT.mono,fontSize:phone?11:13,fontWeight:800,color:"#e8edf5",whiteSpace:"nowrap"}}>{seg.name}</span>
           {phone && seg.sub && (
@@ -1012,7 +1028,7 @@ export default function DrivingLinesView({
               color:segDelta < 0 ? C.green : segDelta > 0 ? C.red : C.textMid}}>{fmtd(segDelta)}</span>
           )}
         </div>
-        {!phone && <button style={navBtn} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
       </div>
       {!phone && seg.sub && (
         <div style={{textAlign:"center",fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",marginTop:2}}>{seg.sub}</div>
@@ -1045,7 +1061,10 @@ export default function DrivingLinesView({
   // slider tracks a scroll.
   const zoomControls = !onboard && (
     <>
-      <button style={{...navBtn,border:"none",width:18,...(phone&&{height:18,minHeight:0})}} title="Zoom out"
+      {/* 44 square on any touch screen, against 18×18 before — the smallest
+          targets in the app, and sitting either side of a slider that swallows a
+          stray drag. The slider itself stays 18 (below). */}
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom out"
         onClick={()=>setZoom(z=>clamp(z/1.25,MIN_ZOOM,MAX_ZOOM))}>−</button>
       <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom"
         onChange={(e)=>setZoom(Number(e.target.value))}
@@ -1054,7 +1073,7 @@ export default function DrivingLinesView({
           // full size either way, while the track's height buys nothing.
           ...(phone&&{flex:"1 1 0",minWidth:0,minHeight:0,height:18}),
           accentColor:COMP_COLOR}} />
-      <button style={{...navBtn,border:"none",width:18,...(phone&&{height:18,minHeight:0})}} title="Zoom in"
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom in"
         onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
     </>
   );
@@ -1087,23 +1106,32 @@ export default function DrivingLinesView({
   const transport = (
     <div style={{flex:"none",display:"flex",alignItems:"center",gap:phone?8:14,
       ...(phone ? {flexWrap:"wrap",rowGap:2} : {height:44})}}>
+      {/* 44 square on any touch screen rather than 30: this is the transport's
+          primary control and it is ROUND, so its corners give a thumb even less
+          than the box suggests. The `minHeight: 0` opt-out survives only where
+          there is a mouse — keyed on the pointer, because a landscape phone
+          takes the desktop 38px path and would otherwise keep the opt-out with
+          it, immune to the floor. */}
       <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"}
-        style={{width:phone?30:38,height:phone?30:38,minHeight:0,borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
-          fontSize:phone?11:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        style={{width:38,height:38,...(coarse?tapSquare:{minHeight:0}),borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
+          fontSize:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
         {playing?"❚❚":"▶"}</button>
       {/* Speed, and on a phone the sync mode beside it in the same pill size —
           both are "how playback runs", so they belong with the play button rather
-          than in the read-out panel below. */}
+          than in the read-out panel below.
+          These four were 16px tall and 27-42 wide. They are toggles a driver
+          reaches for mid-review, not labels, so they take the floor in both
+          axes; the row already wraps, which is where the height comes from. */}
       <div style={{flex:"none",display:"flex",gap:3,background:"var(--line)",borderRadius:8,padding:phone?2:3}}>
         {[0.5,1].map(s=>(
-          <button key={s} onClick={()=>setSpeed(s)} style={{...pill(speed===s),...(phone&&{padding:"2px 6px",minHeight:0,fontSize:9})}}>{s}×</button>
+          <button key={s} onClick={()=>setSpeed(s)} style={{...pill(speed===s),...(phone&&{padding:"2px 6px",fontSize:10}),...(coarse&&{minWidth:44})}}>{s}×</button>
         ))}
       </div>
       {phone && (
         <div style={{flex:"none",display:"flex",gap:3,background:"var(--line)",borderRadius:8,padding:2}}>
           {[["pos","Pos"],["pace","Pace"]].map(([m,l])=>(
             <button key={m} onClick={()=>setSyncMode(m)} title={`${l}-sync`}
-              style={{...pill(syncMode===m),padding:"2px 6px",minHeight:0,fontSize:9}}>{l}</button>
+              style={{...pill(syncMode===m),padding:"2px 6px",minWidth:44,fontSize:10}}>{l}</button>
           ))}
         </div>
       )}
