@@ -379,10 +379,22 @@
           "markdownDescription": "Denies the voices command without any pre-configured scope."
         },
         {
-          "description": "Speech, keep-awake and the Wi-Fi multicast lock for the Android build.\n\nNone of these reach outside the app: no network, no storage, no user data. They\nare split into separate commands only because they settle at different times —\n`speak` resolves when the phrase finishes.\n\n#### This default permission set includes:\n\n- `allow-speak`\n- `allow-stop`\n- `allow-voices`\n- `allow-is-ready`\n- `allow-set-keep-awake`\n- `allow-acquire-multicast-lock`\n- `allow-release-multicast-lock`",
+          "description": "Enables the write_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-document",
+          "markdownDescription": "Enables the write_document command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_document command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-document",
+          "markdownDescription": "Denies the write_document command without any pre-configured scope."
+        },
+        {
+          "description": "Speech, keep-awake and the Wi-Fi multicast lock for the Android build.\n\nNone of these reach outside the app: no network, no storage, no user data. They\nare split into separate commands only because they settle at different times —\n`speak` resolves when the phrase finishes.\n\n#### This default permission set includes:\n\n- `allow-speak`\n- `allow-stop`\n- `allow-voices`\n- `allow-is-ready`\n- `allow-write-document`\n- `allow-set-keep-awake`\n- `allow-acquire-multicast-lock`\n- `allow-release-multicast-lock`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Speech, keep-awake and the Wi-Fi multicast lock for the Android build.\n\nNone of these reach outside the app: no network, no storage, no user data. They\nare split into separate commands only because they settle at different times —\n`speak` resolves when the phrase finishes.\n\n#### This default permission set includes:\n\n- `allow-speak`\n- `allow-stop`\n- `allow-voices`\n- `allow-is-ready`\n- `allow-set-keep-awake`\n- `allow-acquire-multicast-lock`\n- `allow-release-multicast-lock`"
+          "markdownDescription": "Speech, keep-awake and the Wi-Fi multicast lock for the Android build.\n\nNone of these reach outside the app: no network, no storage, no user data. They\nare split into separate commands only because they settle at different times —\n`speak` resolves when the phrase finishes.\n\n#### This default permission set includes:\n\n- `allow-speak`\n- `allow-stop`\n- `allow-voices`\n- `allow-is-ready`\n- `allow-write-document`\n- `allow-set-keep-awake`\n- `allow-acquire-multicast-lock`\n- `allow-release-multicast-lock`"
         }
       ]
     }

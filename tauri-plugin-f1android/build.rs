@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "stop",
     "voices",
     "is_ready",
+    "write_document",
     "set_keep_awake",
     "acquire_multicast_lock",
     "release_multicast_lock",

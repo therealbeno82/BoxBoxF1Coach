@@ -15,7 +15,7 @@ import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.j
 import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
 import TelemetryStudio from "./components/TelemetryStudio.jsx";
-import { exportLapToFile, exportSessionToFile, parseSessionLaps } from "./lib/lapExport.js";
+import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
 import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
 import { buildLapEvidence } from "./lib/lapEvidence.js";
@@ -1219,14 +1219,12 @@ function exportMapImage({ segs, outline, filters, legend, name, format = "png", 
   const jpg = format === "jpg" || format === "jpeg";
   canvas.toBlob((blob) => {
     if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
     const safe = (name || "live").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-    a.href = url; a.download = `f1-trackmap-${safe}.${jpg ? "jpg" : "png"}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    const ext = jpg ? "jpg" : "png";
+    // saveBlob keeps the anchor download on desktop and takes the native Save
+    // dialog on Android, where an anchor download is inert (no download manager
+    // is wired to the WebView) and the picker hands back a content:// URI.
+    saveBlob(blob, `f1-trackmap-${safe}.${ext}`, { mime: jpg ? "image/jpeg" : "image/png", ext });
   }, jpg ? "image/jpeg" : "image/png", 0.92);
 }
 

@@ -12,6 +12,7 @@ are split into separate commands only because they settle at different times —
 - `allow-stop`
 - `allow-voices`
 - `allow-is-ready`
+- `allow-write-document`
 - `allow-set-keep-awake`
 - `allow-acquire-multicast-lock`
 - `allow-release-multicast-lock`
@@ -203,6 +204,32 @@ Enables the voices command without any pre-configured scope.
 <td>
 
 Denies the voices command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`f1android:allow-write-document`
+
+</td>
+<td>
+
+Enables the write_document command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`f1android:deny-write-document`
+
+</td>
+<td>
+
+Denies the write_document command without any pre-configured scope.
 
 </td>
 </tr>

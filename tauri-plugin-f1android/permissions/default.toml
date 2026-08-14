@@ -13,6 +13,7 @@ permissions = [
   "allow-stop",
   "allow-voices",
   "allow-is-ready",
+  "allow-write-document",
   "allow-set-keep-awake",
   "allow-acquire-multicast-lock",
   "allow-release-multicast-lock",

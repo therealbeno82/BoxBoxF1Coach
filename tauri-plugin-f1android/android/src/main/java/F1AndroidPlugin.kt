@@ -2,7 +2,9 @@ package com.boxbox.plugin.f1android
 
 import android.app.Activity
 import android.content.Context
+import android.net.Uri
 import android.net.wifi.WifiManager
+import android.util.Base64
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -32,6 +34,15 @@ class SpeakArgs {
 @InvokeArg
 class KeepAwakeArgs {
     var enabled: Boolean = false
+}
+
+@InvokeArg
+class WriteDocumentArgs {
+    lateinit var uri: String
+    lateinit var contents: String
+    // The track-map export is a PNG. JSON exports send text; images arrive
+    // base64-encoded, because the IPC bridge carries strings.
+    var base64: Boolean = false
 }
 
 /**
@@ -176,6 +187,35 @@ class F1AndroidPlugin(private val activity: Activity) : Plugin(activity) {
         v.quality >= Voice.QUALITY_HIGH -> "high"
         v.quality >= Voice.QUALITY_NORMAL -> "normal"
         else -> "low"
+    }
+
+    /**
+     * Write text to a `content://` URI handed back by the system's Save dialog.
+     *
+     * Android's document picker returns a SAF URI, not a filesystem path, so the
+     * app's own `write_text_file` command (a plain `std::fs::write`) cannot open
+     * it — nothing outside the ContentResolver can. This is the same "our own
+     * command writes the file the driver chose" arrangement the desktop build
+     * has; only the handle type differs.
+     */
+    @Command
+    fun writeDocument(invoke: Invoke) {
+        val args = invoke.parseArgs(WriteDocumentArgs::class.java)
+        try {
+            val uri = Uri.parse(args.uri)
+            // "wt" truncates: picking an existing file must overwrite it, not
+            // leave the tail of whatever was longer.
+            val bytes = if (args.base64) Base64.decode(args.contents, Base64.DEFAULT)
+                        else args.contents.toByteArray(Charsets.UTF_8)
+            activity.contentResolver.openOutputStream(uri, "wt").use { out ->
+                if (out == null) { invoke.reject("could not open ${args.uri} for writing"); return }
+                out.write(bytes)
+                out.flush()
+            }
+            invoke.resolve()
+        } catch (e: Exception) {
+            invoke.reject("could not write the file", e)
+        }
     }
 
     @Command

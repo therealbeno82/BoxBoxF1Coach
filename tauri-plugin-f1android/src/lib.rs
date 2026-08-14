@@ -109,6 +109,26 @@ async fn is_ready<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
     call(&app, "isReady", json!({})).await
 }
 
+/// Write `contents` to a `content://` URI returned by the system Save dialog.
+///
+/// Android's picker hands back a SAF URI, not a path, so the app's own
+/// `write_text_file` (a `std::fs::write`) cannot open it — only the
+/// ContentResolver can. Same arrangement as on desktop, different handle.
+#[tauri::command]
+async fn write_document<R: Runtime>(
+    app: AppHandle<R>,
+    uri: String,
+    contents: String,
+    base64: Option<bool>,
+) -> Result<Value, String> {
+    call(
+        &app,
+        "writeDocument",
+        json!({ "uri": uri, "contents": contents, "base64": base64.unwrap_or(false) }),
+    )
+    .await
+}
+
 /// Hold the screen on (`FLAG_KEEP_SCREEN_ON`) while telemetry is arriving.
 #[tauri::command]
 async fn set_keep_awake<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<Value, String> {
@@ -134,6 +154,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             stop,
             voices,
             is_ready,
+            write_document,
             set_keep_awake,
             acquire_multicast_lock,
             release_multicast_lock,

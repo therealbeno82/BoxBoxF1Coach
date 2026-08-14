@@ -12,7 +12,7 @@
 // same sector colours, Compare traces and coaching as it did live.
 
 import { tyreCondition } from "./tyres.js";
-import { inTauri } from "./env.js";
+import { inTauri, isAndroid } from "./env.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 
@@ -89,7 +89,15 @@ export async function saveJson(payload, name) {
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (!path) return false; // dialog cancelled
-      await invoke("write_text_file", { path, contents: text });
+      // Android's picker hands back a SAF `content://` URI rather than a
+      // filesystem path, and `write_text_file` is a plain `std::fs::write` that
+      // cannot open one — only the ContentResolver can, so that handle goes to
+      // the f1android plugin instead. The desktop path is untouched.
+      if (typeof path === "string" && path.startsWith("content://")) {
+        await invoke("plugin:f1android|write_document", { uri: path, contents: text });
+      } else {
+        await invoke("write_text_file", { path, contents: text });
+      }
       return true;
     } catch (e) {
       console.error("Save failed:", e);
@@ -97,6 +105,43 @@ export async function saveJson(payload, name) {
     }
   }
   downloadJson(text, name);
+  return true;
+}
+
+// Save raw bytes — currently the track-map PNG, the app's only non-text export.
+//
+// Android needs its own path for two reasons: an anchor download is inert in a
+// Tauri WebView (there is no download manager wired to it, so the button would
+// silently do nothing), and the picker returns a `content://` URI. The bytes go
+// over the IPC bridge base64-encoded, since it carries strings. Desktop keeps the
+// anchor, which WebView2 does handle.
+// Resolves true if a file was written, false if the dialog was cancelled.
+export async function saveBlob(blob, name, { mime = "image/png", ext = "png" } = {}) {
+  if (inTauri && isAndroid) {
+    try {
+      const path = await save({ defaultPath: name, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+      if (!path) return false;
+      const b64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onerror = () => reject(r.error);
+        // readAsDataURL gives "data:<mime>;base64,<payload>" — keep the payload.
+        r.onload = () => resolve(String(r.result).split(",")[1] || "");
+        r.readAsDataURL(blob);
+      });
+      await invoke("plugin:f1android|write_document", { uri: path, contents: b64, base64: true });
+      return true;
+    } catch (e) {
+      console.error("Save failed:", e);
+      return false;
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
   return true;
 }
 
