@@ -13,6 +13,7 @@ import LeaderboardCard from "../LeaderboardCard.jsx";
 import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { getTrackByName } from "../../lib/trackData.js";
 import { inTauri } from "../../lib/env.js";
+import { useViewport } from "../../hooks/useViewport.jsx";
 
 const KOFI_URL = "https://ko-fi.com/rapidbeno";
 
@@ -132,6 +133,7 @@ const TrashBtn = ({ onClick }) => (
 export default function DashboardScreen({ driver, avatar, update, laps = [], driverCount = 1, units,
   activeSkin = "default", onEnterCockpit, onSwitchDriver, onSelectLap, onOpenSetup, onDeleteLap,
   liveTrackSlug = null, leaderboardEnabled = true, onOpenBoard }) {
+  const { phone } = useViewport();
   const stats = useMemo(() => computeDriverStats(laps), [laps]);
 
   // Permanently drop a lap off the boards. Guarded by a confirm because deletion
@@ -167,6 +169,21 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
   const teamSwatch = skinned ? `var(--team-swatch, ${C.accent})` : color;
   const numItalic  = "var(--num-italic, normal)";
 
+  // The hero's team mark, in whichever form the width allows. Phone: an in-flow
+  // flex item, capped at 64 so the avatar and the identity text keep a usable
+  // share of ~315px of content. Desktop: the original absolute overlay at the
+  // mark's own authored height.
+  const skin = SKIN_LOGOS[activeSkin];
+  const skinMark = skin && (
+    <img src={skin.src} alt={skin.alt} style={{
+      width: "auto", objectFit: "contain", pointerEvents: "none",
+      borderRadius: skin.r || 0,
+      ...(phone
+        ? { height: 64, flex: "none", alignSelf: "flex-start", marginTop: 2 }
+        : { height: skin.h || 80, position: "absolute", top: 14, right: 16 }),
+    }} />
+  );
+
   return (
     <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px 28px 26px",
       display: "flex", flexDirection: "column", fontFamily: FONT.ui }}>
@@ -183,38 +200,47 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: heroAccent }} />
             <div style={{ position: "absolute", top: -30, right: -30, width: 220, height: 220, borderRadius: "50%",
               background: heroAccent, opacity: .10, filter: "blur(8px)" }} />
-            {/* Team mark (top-right of the hero — team skins only) */}
-            {SKIN_LOGOS[activeSkin] && (
-              <img src={SKIN_LOGOS[activeSkin].src} alt={SKIN_LOGOS[activeSkin].alt} style={{ position: "absolute", top: 14, right: 16,
-                height: SKIN_LOGOS[activeSkin].h || 80, width: "auto", objectFit: "contain", pointerEvents: "none",
-                borderRadius: SKIN_LOGOS[activeSkin].r || 0 }} />
-            )}
+            {/* Team mark — team skins only. Defined once, placed two ways.
+                On desktop the hero is 440-520px wide and the mark sits as an
+                absolute overlay in the empty space to the RIGHT of the identity
+                text. A phone hero is ~355px and has no such space: the mark
+                landed on top of "Active Driver" and the driver's name, covering
+                99px of a 143px-wide text column and making both unreadable. So
+                on a phone it stops being an overlay and becomes an ordinary flex
+                sibling in the row below, where the layout cannot put it on top
+                of anything, at a size the row can actually spare. */}
+            {!phone && skinMark}
 
-            <div style={{ display: "flex", gap: 18, alignItems: "flex-start", position: "relative" }}>
+            <div style={{ display: "flex", gap: phone ? 12 : 18, alignItems: "flex-start", position: "relative" }}>
               {/* Avatar + number badge */}
               <div style={{ position: "relative", flex: "none" }}>
-                <div style={{ width: 116, height: 138, borderRadius: "var(--r-md, 14px)", overflow: "hidden",
+                {/* Smaller on a phone: at 116 the avatar, the mark and the text
+                    cannot all have a share of 315px of content width. */}
+                <div style={{ width: phone ? 88 : 116, height: phone ? 106 : 138, borderRadius: "var(--r-md, 14px)", overflow: "hidden",
                   background: tileBg,
                   border: `1px solid ${tileBorder}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   {avatar
                     ? <img src={avatar} alt={name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    : <span style={{ fontFamily: FONT.cond, fontWeight: 700, fontSize: 46, color: heroAccent, letterSpacing: 1, fontStyle: numItalic }}>
+                    : <span style={{ fontFamily: FONT.cond, fontWeight: 700, fontSize: phone ? 34 : 46, color: heroAccent, letterSpacing: 1, fontStyle: numItalic }}>
                         {name.slice(0, 2).toUpperCase()}
                       </span>}
                 </div>
                 <div style={{ position: "absolute", bottom: -10, left: "50%", transform: "translateX(-50%)",
-                  background: badgeBg, color: badgeFg, fontFamily: FONT.cond, fontWeight: 700, fontSize: 24, lineHeight: 1,
-                  padding: "4px 12px", borderRadius: 8, border: `3px solid ${C.inset}`, fontStyle: numItalic }}>{number}</div>
+                  background: badgeBg, color: badgeFg, fontFamily: FONT.cond, fontWeight: 700, fontSize: phone ? 19 : 24, lineHeight: 1,
+                  padding: phone ? "3px 9px" : "4px 12px", borderRadius: 8, border: `3px solid ${C.inset}`, fontStyle: numItalic }}>{number}</div>
               </div>
               {/* Identity */}
               <div style={{ flex: 1, minWidth: 0, paddingTop: 4 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: C.textDim, textTransform: "uppercase" }}>Active Driver</div>
-                <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: -.5, lineHeight: 1.05, marginTop: 6, wordBreak: "break-word" }}>{name}</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                <div style={{ fontSize: phone ? 9 : 10, letterSpacing: phone ? 1.5 : 3, color: C.textDim, textTransform: "uppercase",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Active Driver</div>
+                <div style={{ fontSize: phone ? 23 : 30, fontWeight: 900, letterSpacing: -.5, lineHeight: 1.05, marginTop: phone ? 4 : 6, wordBreak: "break-word" }}>{name}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: phone ? 8 : 10, minWidth: 0 }}>
                   <span style={{ width: 14, height: 14, borderRadius: 4, background: teamSwatch, flex: "none" }} />
-                  <span style={{ fontSize: 13, color: C.textMid, fontWeight: 600 }}>{team}</span>
+                  <span style={{ fontSize: phone ? 12 : 13, color: C.textMid, fontWeight: 600, minWidth: 0,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{team}</span>
                 </div>
               </div>
+              {phone && skinMark}
             </div>
             <button onClick={onEnterCockpit} style={{ width: "100%", marginTop: 18,
               background: `var(--cta-bg, ${C.accent})`, color: `var(--cta-fg, ${C.onAccent})`,
