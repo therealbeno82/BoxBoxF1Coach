@@ -15,7 +15,7 @@ import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.j
 import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
 import TelemetryStudio from "./components/TelemetryStudio.jsx";
-import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob } from "./lib/lapExport.js";
+import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob, readPickedText } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
 import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
 import { buildLapEvidence } from "./lib/lapEvidence.js";
@@ -2223,21 +2223,23 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const ffb = useFfbEngine();
 
   // ── Load trace JSON ─────────────────────────────────────────────────────
-  const loadTrace = (file) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const json = JSON.parse(e.target.result);
-        if (!json.meta || !json.samples) { alert("Invalid trace JSON — use the Trace Calibrator to export."); return; }
-        json.samples = sanitizeTraceSamples(json.samples); // clamp/round any out-of-range readings (gear 5.5, throttle -1)
-        const id = crypto.randomUUID(); // UUID, not Date.now(): importing several traces at once would collide on ms
-        setRefTraces(prev => [...prev, { ...json, id }]);
-        setActiveTraceId(id);
-        const zoneCount = deriveZonesFromTrace(json).length;
-        addCue(`📂 Loaded ${json.meta.driver} @ ${json.meta.track} — ${zoneCount} strategy zones generated`, "info");
-      } catch { alert("Could not parse JSON file."); }
-    };
-    reader.readAsText(file);
+  const loadTrace = async (file) => {
+    let text;
+    // Reads through readPickedText so a file Android reports as 0 bytes gets the
+    // message that actually fixes it rather than "could not parse".
+    try { text = await readPickedText(file); }
+    catch (err) { alert(err.message); return; }
+
+    try {
+      const json = JSON.parse(text);
+      if (!json.meta || !json.samples) { alert("Invalid trace JSON — use the Trace Calibrator to export."); return; }
+      json.samples = sanitizeTraceSamples(json.samples); // clamp/round any out-of-range readings (gear 5.5, throttle -1)
+      const id = crypto.randomUUID(); // UUID, not Date.now(): importing several traces at once would collide on ms
+      setRefTraces(prev => [...prev, { ...json, id }]);
+      setActiveTraceId(id);
+      const zoneCount = deriveZonesFromTrace(json).length;
+      addCue(`📂 Loaded ${json.meta.driver} @ ${json.meta.track} — ${zoneCount} strategy zones generated`, "info");
+    } catch { alert("Could not parse JSON file."); }
   };
 
   const removeTrace = id => {
@@ -2262,25 +2264,25 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     });
     if (ok) addCue(`💾 Saved ${sessionLaps.length} laps to file`, "info");
   };
-  const loadSession = (file) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      let laps;
-      try { laps = parseSessionLaps(e.target.result); }
-      catch (err) { alert(err.message || "Could not load the session file."); return; }
-      const newSid = `loaded-${Date.now()}`;
-      const retagged = laps.map(l => ({
-        ...l,
-        id: `lap-${crypto.randomUUID()}`,
-        archived: false,
-        meta: { ...(l.meta || {}), driver: activeDriver || "You", sessionId: newSid },
-      }));
-      loadSessionLaps(retagged);
-      setSessionId(newSid);       // scope the panel to the loaded session
-      setActiveTraceId(null);     // the old reference belonged to a different drive
-      addCue(`📂 Loaded ${retagged.length} laps from file`, "info");
-    };
-    reader.readAsText(file);
+  const loadSession = async (file) => {
+    let text;
+    try { text = await readPickedText(file); }
+    catch (err) { alert(err.message); return; }
+
+    let laps;
+    try { laps = parseSessionLaps(text); }
+    catch (err) { alert(err.message || "Could not load the session file."); return; }
+    const newSid = `loaded-${Date.now()}`;
+    const retagged = laps.map(l => ({
+      ...l,
+      id: `lap-${crypto.randomUUID()}`,
+      archived: false,
+      meta: { ...(l.meta || {}), driver: activeDriver || "You", sessionId: newSid },
+    }));
+    loadSessionLaps(retagged);
+    setSessionId(newSid);       // scope the panel to the loaded session
+    setActiveTraceId(null);     // the old reference belonged to a different drive
+    addCue(`📂 Loaded ${retagged.length} laps from file`, "info");
   };
 
   // Append a line to the pit-wall cue feed (kept to the last 60 entries).

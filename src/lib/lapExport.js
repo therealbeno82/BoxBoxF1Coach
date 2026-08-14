@@ -145,6 +145,35 @@ export async function saveBlob(blob, name, { mime = "image/png", ext = "png" } =
   return true;
 }
 
+// Read a file the user picked, as text.
+//
+// It exists for one Android trap that is otherwise indistinguishable from data
+// loss. The Save picker CREATES the document empty and our write fills it
+// afterwards, so DocumentsUI's "Recent" list keeps the length it saw at creation:
+// zero. Pick that entry and the WebView hands over a 0-byte File, FileReader
+// returns "", and the import fails on a file that is perfectly intact on disk —
+// measured: 167,206 bytes and valid JSON, while the picker reported 0. Opening
+// the same file from ☰ ▸ Downloads reads it correctly.
+//
+// Nothing can be done about the stale entry from in here, so the least we owe the
+// driver is a message that names the fix instead of "could not parse", which
+// reads like their lap is gone.
+export function readPickedText(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) { reject(new Error("No file selected.")); return; }
+    if (file.size === 0) {
+      reject(new Error(isAndroid
+        ? "Android reported this file as empty, which usually means it was picked from “Recent” just after being saved. Open it from ☰ ▸ Downloads in the picker instead — the file itself is fine."
+        : "That file is empty."));
+      return;
+    }
+    const r = new FileReader();
+    r.onerror = () => reject(new Error("Could not read that file."));
+    r.onload = () => resolve(String(r.result));
+    r.readAsText(file);
+  });
+}
+
 // Trigger a browser anchor-download of `text` as a file named `name`. The web-only
 // fallback for saveJson; the packaged app uses the native Save dialog instead.
 function downloadJson(text, name) {

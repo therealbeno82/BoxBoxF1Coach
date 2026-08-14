@@ -18,6 +18,7 @@ import { APP_VERSION } from "../../lib/updateCheck.js";
 // running; there's nothing to launch. In plain browser dev there is no native
 // core at all, so the hint copy adapts to context (inTauri).
 import { inTauri, isAndroid } from "../../lib/env.js";
+import { readPickedText } from "../../lib/lapExport.js";
 import LeaderboardSettings from "../LeaderboardSettings.jsx";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -147,7 +148,7 @@ export default function SettingsScreen({
     if (!file) return;
     setBackupMsg(null); setPendingImport(null);
     try {
-      const payload = parseProfileFile(await file.text());
+      const payload = parseProfileFile(await readPickedText(file));
       const incoming = payload.driver.name;
       if (drivers.some(d => d.name === incoming)) setPendingImport({ payload, name: incoming });
       else await runImport(payload, { name: incoming, overwrite: false });
