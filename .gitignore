@@ -42,3 +42,12 @@ supabase/.temp/
 # Claude Code local config — contains secrets (API keys); never commit
 .claude/settings.json
 .claude/settings.local.json
+
+# Android release signing — the keystore IS the app's identity, and the
+# properties file holds its passwords in plain text. Neither ever goes in the
+# repo; see the comment in src-tauri/gen/android/app/build.gradle.kts for how to
+# create them. A clone without them still builds (the release APK comes out
+# unsigned) and debug builds are unaffected.
+src-tauri/gen/android/app/keystore.properties
+*.jks
+*.keystore

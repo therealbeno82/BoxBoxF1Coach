@@ -1,6 +1,17 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+    <!-- Base application theme.
+
+         `windowBackground` is the load-bearing line. The theme's default is the
+         platform's, which on a light-mode phone is WHITE — and it is what fills
+         the window from the moment the activity is created until the WebView has
+         parsed and painted the app. On a phone that is a white flash before a
+         near-black cockpit, every launch. Painting it in the app's own background
+         colour makes the gap invisible instead.
+
+         The app has no light mode — it is a dark cockpit UI whose colours are
+         driven by team skins, not by the system — so values-night carries the
+         same value rather than a light one. -->
     <style name="Theme.app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

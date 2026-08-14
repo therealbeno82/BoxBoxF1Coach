@@ -1,6 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+    <!-- Same as the day theme on purpose: the app is a dark cockpit UI in both
+         system modes, so a "night" variant that differed would only make the
+         launch window disagree with what the WebView paints a moment later. -->
     <style name="Theme.app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

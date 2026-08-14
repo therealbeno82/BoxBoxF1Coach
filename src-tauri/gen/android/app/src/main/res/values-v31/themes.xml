@@ -1,0 +1,13 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Android 12+ draws its own splash screen before the activity, and its
+         default background is the system's, not the app's — so without this the
+         launch goes light-splash → dark app on a light-mode phone, which is the
+         same flash `windowBackground` exists to remove, one step earlier.
+
+         The icon on it is the launcher icon; there is no separate splash asset to
+         keep in step. -->
+    <style name="Theme.app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:windowSplashScreenBackground">@color/app_background</item>
+    </style>
+</resources>
