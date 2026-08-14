@@ -22,7 +22,9 @@ const PHONE_MAX = 639;
 const TABLET_MAX = 1023;
 // A phone held in landscape reads as "tablet" by width (e.g. 904×407 CSS px) but
 // has no vertical room for a header plus a bottom tab bar plus content. Height,
-// not width, is the constraint there.
+// not width, is the constraint there. The native window's `minHeight: 720` puts
+// this out of the desktop build's reach entirely — but a browser can still be
+// sized into it, which is how the branch gets verified without a device.
 const SHORT_MAX = 500;
 
 const ViewportCtx = createContext(null);
@@ -70,6 +72,8 @@ export function ViewportProvider({ children }) {
   const value = useMemo(() => {
     const phone = vp.w <= PHONE_MAX;
     const tablet = vp.w > PHONE_MAX && vp.w <= TABLET_MAX;
+    const landscape = vp.w > vp.h;
+    const shortViewport = vp.h <= SHORT_MAX;
     return {
       w: vp.w,
       h: vp.h,
@@ -79,8 +83,15 @@ export function ViewportProvider({ children }) {
       /** Phone OR tablet — i.e. "not the layout this app was designed for". */
       compact: vp.w <= TABLET_MAX,
       coarse: vp.coarse,
-      landscape: vp.w > vp.h,
-      shortViewport: vp.h <= SHORT_MAX,
+      landscape,
+      shortViewport,
+      /** Nav belongs down the SIDE, not across the top or bottom. Named as a
+       *  layout mode rather than left to each caller to re-derive, because the
+       *  Shell draws it and the screens have to agree there is no header above
+       *  them. Both halves are load-bearing: `shortViewport` alone would put a
+       *  rail down a 375×400 window, where 72px of a 375px width is far dearer
+       *  than the row of tabs it replaced. */
+      rail: shortViewport && landscape,
     };
   }, [vp]);
 
@@ -101,6 +112,7 @@ export function useViewport() {
       coarse: false,
       landscape: true,
       shortViewport: false,
+      rail: false,
     }
   );
 }

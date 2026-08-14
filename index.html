@@ -97,7 +97,10 @@
         --grid-live-sectors: repeat(3, 1fr); /* Live's three sector cards */
         /* Leaderboard row: pos · driver · lap · gap · S1 S2 S3 · tyre · use */
         --grid-board-row:   48px 1fr 108px 92px repeat(3, 70px) 96px 128px;
-        --tap:              32px;   /* minimum interactive height */
+        /* Minimum interactive height. Read ONLY inside the `pointer: coarse`
+           block below, so this value is what a mouse-driven build would use if
+           it ever asked — which it never does. */
+        --tap:              32px;
       }
 
       /* Tablet — the layout still works, it just needs fewer columns. */
@@ -129,7 +132,6 @@
              more children than columns spills into implicit ROWS rather than
              hiding anything, which would break the row apart. */
           --grid-board-row:   24px 1fr 68px 52px 32px;
-          --tap:              44px;
         }
         .lb-secondary { display: none; }
       }
@@ -137,8 +139,14 @@
       /* Nothing on a touch screen should be smaller than a fingertip. This works
          because the buttons carry inline `padding` but no inline `min-height`, so
          the stylesheet rule wins uncontested. Keyed on pointer type, not width —
-         a touch laptop is wide AND coarse. */
+         a touch laptop is wide AND coarse.
+         The VALUE has to be pointer-keyed too, and once wasn't: `--tap: 44px`
+         lived in the max-width:639px block, so rotating a phone to landscape
+         (873 CSS px wide) dropped every control back to the 32px desktop floor —
+         measured at 30px on the nav buttons. A fingertip does not get smaller
+         when the screen turns sideways. */
       @media (pointer: coarse) {
+        :root { --tap: 44px; }
         button, [role="button"], select, input[type="checkbox"], input[type="radio"] {
           min-height: var(--tap);
         }

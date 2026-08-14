@@ -7,12 +7,21 @@
 // Screen ids map the handoff's D/A/B/C/S onto the app's internal tab values:
 //   Dashboard→"dashboard"  Live→"live"  Analytics→"compare"  Coach→"coach"  ⚙→"setup"
 //
-// TWO LAYOUTS, not one that stretches. On desktop/tablet the nav is a floating
+// THREE LAYOUTS, not one that stretches. On desktop/tablet the nav is a floating
 // pill centred in the top chrome. On a PHONE that row cannot fit — six buttons
 // plus three status pills plus a gear, all `whiteSpace: nowrap` — so the nav
 // moves to a fixed bottom tab bar and the header collapses to ~52px. That is a
 // structural change, which is why it keys off `useViewport()` rather than a
 // media query (inline style objects can't carry one).
+//
+// The third is LANDSCAPE, and it exists because a rotated phone is 873×393 CSS
+// px — wide enough to clear the 639px phone breakpoint, so it used to get the
+// desktop chrome. Two things were wrong with that. The header's contents measure
+// 903px, so the driver chip ran 17px off the right edge and was clipped; and the
+// 93px brand block ate 24% of the screen's height, which in landscape is the
+// scarce axis. So the nav turns ninety degrees with the phone: a side RAIL costs
+// no vertical space at all, carries the same five labels, and gives the content
+// the full height. Nothing else about the screens changes.
 
 import { C, FONT } from "../lib/ui/tokens.js";
 import { isAndroid } from "../lib/env.js";
@@ -70,6 +79,32 @@ const tabBtn = (active) => ({
   whiteSpace: "nowrap",
 });
 
+// Rail tab. The bottom bar's cell turned on its side: the accent moves from the
+// top edge to the LEFT edge, so the lit edge is the one nearest the screen it
+// opens. 78px is set by the longest label — "Leaderboard" at 10px needs 62px of
+// the 66px inside the padding — and keeping the labels identical across all
+// three navs is worth those few pixels.
+const railBtn = (active) => ({
+  flex: "none",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: 44,
+  padding: "8px 6px",
+  border: "none",
+  borderLeft: `2px solid ${active ? C.blue : "transparent"}`,
+  background: active ? "rgba(54,113,198,.10)" : "transparent",
+  color: active ? "#fff" : "#8b94a8",
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: 0.2,
+  fontFamily: FONT.ui,
+  cursor: "pointer",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+});
+
 function StatusPill({ on, label, blink }) {
   const color = on ? C.green : C.red;
   return (
@@ -99,9 +134,32 @@ export default function Shell({
   activeDriver, driverColor = "#3671C6", driverCount = 1, onDriverChip,
   children,
 }) {
-  const { phone } = useViewport();
+  const { phone, rail } = useViewport();
   const settingsActive = tab === "setup";
   const initials = (activeDriver || "?").slice(0, 2).toUpperCase();
+
+  // The telemetry dot and the driver chip, shared by the phone header and the
+  // landscape rail. Defined once and placed twice rather than forked, the way
+  // Driving Lines' overlay clusters are.
+  const udpDot = (size) => (
+    <span title={`Telemetry ${wsConnected ? "connected" : "offline"}`} style={{
+      width: size, height: size, borderRadius: "50%", flex: "none",
+      background: wsConnected ? C.green : C.red,
+      boxShadow: `0 0 8px ${wsConnected ? C.green : C.red}`,
+      animation: wsConnected ? "blink 1.6s infinite" : "none",
+    }} />
+  );
+  // No inline minHeight: the coarse-pointer rule lifts this to a full 44px tap
+  // target on a touch screen, which is what it should be. Width is a parameter
+  // only because the rail has 78px to spend and the 52px header has not.
+  const driverChip = (w) => (
+    <button onClick={onDriverChip} title="Switch driver" aria-label="Switch driver" style={{
+      width: w, height: 30, borderRadius: 8, flex: "none",
+      background: driverColor + "1f", border: `1px solid ${driverColor}`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: FONT.cond, fontWeight: 700, fontSize: 13, color: driverColor, cursor: "pointer",
+    }}>{initials}</button>
+  );
 
   const gearBtn = (size) => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -138,21 +196,16 @@ export default function Shell({
 
           {/* Just the dot on a phone — the "UDP" caption is redundant beside a
               Settings screen that spells the state out in words. */}
-          <span title={`Telemetry ${wsConnected ? "connected" : "offline"}`} style={{
-            width: 9, height: 9, borderRadius: "50%", flex: "none",
-            background: wsConnected ? C.green : C.red,
-            boxShadow: `0 0 8px ${wsConnected ? C.green : C.red}`,
-            animation: wsConnected ? "blink 1.6s infinite" : "none",
-          }} />
+          {udpDot(9)}
 
-          <button onClick={onDriverChip} title="Switch driver" aria-label="Switch driver" style={{
-            width: 30, height: 30, borderRadius: 8, flex: "none",
-            background: driverColor + "1f", border: `1px solid ${driverColor}`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: FONT.cond, fontWeight: 700, fontSize: 13, color: driverColor, cursor: "pointer",
-          }}>{initials}</button>
+          {/* Both 44 wide, as they already are 44 tall via the coarse-pointer
+              floor. They were 30 and 33, which is a tall thin sliver rather than
+              a target, and the header has the width to spare — the title beside
+              them flexes. */}
+          {driverChip(44)}
 
-          <button onClick={onSettings} title="Settings" aria-label="Settings" style={gearBtn("7px 8px")}>
+          <button onClick={onSettings} title="Settings" aria-label="Settings"
+            style={{ ...gearBtn("7px 8px"), width: 44 }}>
             <GearIcon />
           </button>
         </div>
@@ -171,6 +224,70 @@ export default function Shell({
             <button key={id} onClick={() => onTab(id)} style={tabBtn(tab === id)}>{label}</button>
           ))}
         </nav>
+      </div>
+    );
+  }
+
+  // ── Landscape: nav down the left edge, content gets the full height ────────
+  if (rail) {
+    return (
+      <div style={{
+        height: "100dvh", overflow: "hidden", background: C.bg, color: "#fff",
+        fontFamily: FONT.ui, display: "flex", flexDirection: "row",
+      }}>
+        <nav style={{
+          flex: "none", width: 78, display: "flex", flexDirection: "column",
+          alignItems: "stretch", gap: 6,
+          background: "rgba(7,9,14,.96)", borderRight: `1px solid ${C.borderModal}`,
+          // Rotating a phone moves the notch to one of the SIDES and the gesture
+          // pill to the bottom of a now-short screen, but the activity draws
+          // edge-to-edge either way, so the status bar can still own the top.
+          // The rail touches all three of those edges and pays for all three;
+          // whichever insets are 0 on a given device cost nothing.
+          padding: "8px 0",
+          paddingTop: "calc(8px + env(safe-area-inset-top))",
+          paddingLeft: "env(safe-area-inset-left)",
+          paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
+        }}>
+          <div style={{
+            width: 28, height: 28, borderRadius: 8, background: C.blue, flex: "none",
+            alignSelf: "center", overflow: "hidden",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <img src="/brand-logo.png" alt="F1 Coach"
+              style={{ width: "100%", height: "100%", objectFit: "contain", padding: 2, boxSizing: "border-box" }} />
+          </div>
+
+          {/* The tab column SCROLLS rather than squashing. Five 44px tabs plus
+              the brand and the footer cluster need ~362px, which fits a 393px
+              landscape phone — but not a 350px one, and a clipped fifth tab is
+              a screen you cannot reach. */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+            {NAV.map(([id, label]) => (
+              <button key={id} onClick={() => onTab(id)} style={railBtn(tab === id)}>{label}</button>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, flex: "none" }}>
+            {udpDot(9)}
+            {driverChip(44)}
+            <button onClick={onSettings} title="Settings" aria-label="Settings"
+              style={{ ...gearBtn("7px 8px"), width: 44, justifyContent: "center" }}>
+              <GearIcon />
+            </button>
+          </div>
+        </nav>
+
+        <div style={{
+          flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto",
+          display: "flex", flexDirection: "column",
+          // The other half of the notch: whichever way round the phone is
+          // turned, one of these two insets is the cutout and the other is 0.
+          paddingRight: "env(safe-area-inset-right)",
+          paddingTop: "env(safe-area-inset-top)",
+        }}>
+          {children}
+        </div>
       </div>
     );
   }
