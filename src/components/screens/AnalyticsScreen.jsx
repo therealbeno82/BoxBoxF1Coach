@@ -14,41 +14,67 @@ import Hint from "../Hint.jsx";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
 
-// The `phone` variants are 30px tall rather than 42, and set minHeight
-// explicitly — index.html gives every button and select a 44px min-height on a
-// coarse pointer, which is taller than the control this row wants.
+// The `phone` variants are 30px tall rather than 42, because vertical space is
+// the scarce axis there. They keep the `height: 30` but NO LONGER set
+// `minHeight: 0` — that opt-out was the reason the load button measured 25×30 on
+// a phone, well under anything a thumb can hit, and the icon-only variants are
+// the smallest targets in the app.
+//
+// Dropping it hands the row back to index.html's `(pointer: coarse)` floor,
+// which is the honest arbiter: `min-height` beats `height` in the cascade, so a
+// TOUCH screen gets a full 44px control while a fine pointer at the same width —
+// a narrow desktop window — still gets the compact 30px this row was designed
+// around. The controls of one row have to agree, so the select opted back in
+// alongside the buttons rather than leaving 30px selects in a 44px row.
 const selectStyle = (color, phone = false) => ({
   width: "100%", appearance: "none", WebkitAppearance: "none", background: C.surface,
   border: `1px solid ${C.borderStrong}`, borderRadius: phone ? 7 : 9, color, fontFamily: FONT.mono,
   fontSize: phone ? 12 : 14, fontWeight: 700,
   padding: phone ? "0 26px 0 10px" : "11px 36px 11px 14px",
-  ...(phone && { minHeight: 0, height: 30 }),
+  ...(phone && { height: 30 }),
   cursor: "pointer", outline: "none",
 });
 
 const actionBtn = (border, color, phone = false) => ({
-  flex: "none", display: "inline-flex", alignItems: "center", gap: 6,
+  flex: "none", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
   padding: phone ? "0 9px" : "0 14px",
   borderRadius: phone ? 7 : 9, border: `1px solid ${border}`, background: C.surface, color,
   fontFamily: FONT.ui, fontSize: phone ? 10 : 11, letterSpacing: phone ? 0.5 : 1,
   textTransform: "uppercase", fontWeight: 700,
-  cursor: "pointer", whiteSpace: "nowrap", height: phone ? 30 : 42, ...(phone && { minHeight: 0 }),
+  cursor: "pointer", whiteSpace: "nowrap", height: phone ? 30 : 42,
+  // A thumb needs width as well as height, and the coarse-pointer rule only
+  // grants the latter. 44 on the icon-only phone variants; the label-bearing
+  // desktop ones are already wider than this.
+  ...(phone && { minWidth: 44 }),
 });
 
+// The matrix's setup button. Its column is 28px wide and cannot be widened —
+// the lap-time track beside it needs 62px of its 66.5 for "1:38.311", so the 16
+// a 44px column would cost comes straight out of the data. So the BUTTON grows
+// instead of the track: 44 wide, hanging 16px back over the lap time with a
+// negative margin, and only its right-hand 28px carries the visible chrome
+// (`justifyContent: flex-end`). That space is safe to take because a matrix row
+// is a plain div — nothing under the overhang is clickable, so a wider hit area
+// here steals no other control's taps.
 const WrenchBtn = ({ onClick, has }) => (
   <button onClick={onClick} title="View car setup" disabled={!has} style={{
-    justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
-    width: 28, height: 28, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface,
-    color: has ? "#7ea6e6" : C.textFaintest, cursor: has ? "pointer" : "default", opacity: has ? 1 : 0.5 }}>
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-    </svg>
+    justifySelf: "end", flex: "none", display: "flex", alignItems: "center", justifyContent: "flex-end",
+    width: 44, marginLeft: -16, height: 44, padding: 0, border: "none", background: "transparent",
+    cursor: has ? "pointer" : "default" }}>
+    <span style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      width: 28, height: 28, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface,
+      color: has ? "#7ea6e6" : C.textFaintest, opacity: has ? 1 : 0.5 }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+      </svg>
+    </span>
   </button>
 );
 
 const SetupBtn = ({ onClick, phone = false }) => (
   <button onClick={onClick} title="View car setup"
-    style={{ ...actionBtn(C.borderStrong, "#7ea6e6", phone), width: phone ? 30 : 42, padding: 0, justifyContent: "center", gap: 0 }}>
+    style={{ ...actionBtn(C.borderStrong, "#7ea6e6", phone), width: phone ? 44 : 42, padding: 0, justifyContent: "center", gap: 0 }}>
     <svg width={phone ? 13 : 16} height={phone ? 13 : 16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
     </svg>
@@ -78,6 +104,32 @@ const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadiu
 
 const fmtSec = (s) => (typeof s === "number" && s > 0 ? s.toFixed(3) : "—");
 
+// ─── Consistency-matrix column template ─────────────────────────────────────
+// The header row and every lap row MUST resolve to identical tracks, or the
+// S1/S2/S3 labels stop describing the columns beneath them. Defined once here
+// and read by both, so they cannot drift.
+//
+// Every flexible track is `minmax(0, …)` rather than a bare `1fr`, and that is
+// the whole fix. A bare `1fr` means `minmax(auto, 1fr)`, and the `auto` floor is
+// a track's MIN-CONTENT width — which differs between the two grids using this
+// one template: a header cell holds "S1" (~12px) while a data cell holds
+// "32.461 +4.881" (~88px). So on a phone the header's sector tracks resolved to
+// ~40px and a row's to ~90px, the row overflowed the strip (534px of content in
+// a 353px box), and because the scroll container sets overflowY — which makes
+// the other axis `auto` too — the row scrolled sideways out from under a header
+// that could not follow. Rows disagreed with EACH OTHER for the same reason: a
+// session-best sector carries no delta, so that one track came out 50px, not 90.
+// `minmax(0, …)` lets a track go narrower than its content, so a row can never
+// be wider than the box it sits in and the two grids are identical by
+// construction. Desktop always had room and so never showed any of it.
+//
+// The compact column set is narrower everywhere it can afford to be — the lap
+// number needs two digits, not four — and gives the lap time a larger share,
+// since "1:38.311" is the widest single value in the row.
+const matrixCols = (compact) => (compact
+  ? "32px repeat(3, minmax(0, 1fr)) minmax(0, 1.4fr) 28px"
+  : "60px repeat(3, minmax(0, 1fr)) minmax(0, 1.15fr) 34px");
+
 export default function AnalyticsScreen({
   trackName, sessionLabel, laps = [],
   comparisonLap,
@@ -90,7 +142,13 @@ export default function AnalyticsScreen({
   demoMode = false,
 }) {
   // Is the consistency strip along the bottom expanded?
-  const { phone } = useViewport();
+  // `compact` (≤1023px), not `phone`, drives the consistency matrix below. Above
+  // phone width this screen is TWO columns, so the strip only ever gets about
+  // half the viewport: ~615px at a 1280 desktop, but ~372px on a landscape phone
+  // once the nav rail has taken its 78, and ~486px at the 1023px tablet ceiling
+  // against the ~492px the roomy layout needs. Keying its density on `phone`
+  // would hand the widest treatment to the two cases with the least room.
+  const { phone, compact } = useViewport();
   const [stripOpen, setStripOpen] = useState(true);
   const fileRef = useRef(null);
 
@@ -231,43 +289,80 @@ export default function AnalyticsScreen({
           ...(phone && { flex: "none" }) }}>
           {/* Taller on a phone than it looks like it needs: the driving-lines view
               un-stacks its corner overlays into rows above and below the map there,
-              so ~250px of this panel is controls before the road gets any. */}
+              so ~280px of this panel is controls before the road gets any.
+              710, up from 655, because those controls grew when they were lifted to
+              the 44px tap floor — the camera pills, the transport and the zoom row
+              took ~55px between them. The map viewport is `flex: 1 1 0`, so without
+              this it silently paid for all of it and dropped to 351px. This screen
+              scrolls on a phone, so the height is cheap; the map is the content. */}
           <div style={{ flex: 1, minHeight: 0, ...card, padding: phone ? "10px 10px" : "14px 16px", display: "flex", flexDirection: "column",
-            ...(phone && { flex: "none", height: 655 }) }}>
+            ...(phone && { flex: "none", height: 710 }) }}>
             {linesSlot}
           </div>
 
         {/* Collapsible lap-consistency strip, under the map */}
         <div style={{ flex: "none", ...card, overflow: "hidden" }}>
+          {/* The strip's own header carried 534px of content in the 353px box a
+              phone gives it, which pushed the ▾ chevron clean off the screen at
+              x536 — the button still toggled, but the only sign of whether the
+              strip was open or shut was invisible. So when compact the title
+              drops its explanatory half (the S1/S2/S3 column headers below say
+              the same thing) and the three per-sector bests go with it: each
+              sector's best is already the benchmark every row's delta is
+              measured against, so it is stated three times over. The
+              theoretical best LAP is the one number that appears nowhere else. */}
           <button onClick={() => setStripOpen((o) => !o)} title={stripOpen ? "Collapse" : "Expand"}
-            style={{ width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "11px 16px",
+            style={{ width: "100%", display: "flex", alignItems: "center", gap: compact ? 10 : 14,
+              padding: compact ? "11px 12px" : "11px 16px",
               background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT.ui, textAlign: "left" }}>
-            <span style={{ fontSize: 10, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 }}>
-              Lap Consistency · Sector Times vs Best</span>
-            <span style={{ marginLeft: "auto", display: "flex", alignItems: "baseline", gap: 7 }}>
-              <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase" }}>Theoretical Best</span>
-              <span style={{ fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
+            {/* 0.5 rather than the desktop 2: at 1 the tracking alone added 15px
+                across "LAP CONSISTENCY" and tipped it 1px past its share, so the
+                title ellipsised to "LAP CONSISTEN…". Tightening the letters is
+                cheaper than dropping a word. */}
+            <span style={{ fontSize: 10, letterSpacing: compact ? 0.5 : 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 600,
+              minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {compact ? "Lap Consistency" : "Lap Consistency · Sector Times vs Best"}</span>
+            <span style={{ marginLeft: "auto", display: "flex", alignItems: "baseline", gap: 7, flex: "none" }}>
+              <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, textTransform: "uppercase", whiteSpace: "nowrap" }}>Theoretical Best</span>
+              <span style={{ fontFamily: FONT.mono, fontSize: compact ? 15 : 17, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
                 {matrix.best.every((s) => typeof s === "number" && s > 0)
                   ? formatLapTime(matrix.best.reduce((a, b) => a + b, 0), 3) : "—"}
               </span>
-              {[0, 1, 2].map((i) => (
+              {!compact && [0, 1, 2].map((i) => (
                 <span key={i} style={{ display: "flex", alignItems: "baseline", gap: 4, marginLeft: i === 0 ? 6 : 0 }}>
                   <span style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>S{i + 1}</span>
                   <span style={{ fontFamily: FONT.mono, fontSize: 13, fontWeight: 700, color: C.textBody2 }}>{fmtSec(matrix.best[i])}</span>
                 </span>
               ))}
             </span>
-            <span style={{ color: C.textDim, fontSize: 11 }}>{stripOpen ? "▾" : "▸"}</span>
+            <span style={{ color: C.textDim, fontSize: 11, flex: "none" }}>{stripOpen ? "▾" : "▸"}</span>
           </button>
           {stripOpen && (
             <div style={{ padding: "0 16px 14px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, marginBottom: 8, padding: "0 10px" }}>
-                {["Lap", "S1", "S2", "S3", "Lap Time", ""].map((h, i) => (
-                  <div key={i} style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
-                    textAlign: i === 0 ? "left" : i === 4 ? "right" : "center" }}>{h}</div>
-                ))}
-              </div>
+              {/* The header lives INSIDE the scrolling box with the rows, stuck
+                  to its top, rather than sitting above it. Outside it, the two
+                  were in different boxes: a classic desktop scrollbar takes
+                  layout width from the rows and none from the header, which put
+                  the columns 10px out of step — invisible on Android, where
+                  WebView scrollbars are overlays, and so exactly the kind of
+                  thing that ships. Sticky puts both grids in one box at one
+                  width, so there is nothing left to keep in sync by hand. */}
               <div style={{ maxHeight: 230, overflowY: "auto", display: "flex", flexDirection: "column", gap: 7 }}>
+                {/* 11px, not the rows' 10px: a row also carries a 1px border, so
+                    matching the padding alone leaves the header 2px wider in
+                    content and every shared `fr` track lands ~0.5px off. */}
+                <div style={{ display: "grid", gridTemplateColumns: matrixCols(compact), gap: compact ? 6 : 8,
+                  // Opaque and above the rows: they scroll underneath it now.
+                  padding: "0 11px 8px", position: "sticky", top: 0, zIndex: 1, background: C.surface }}>
+                  {["Lap", "S1", "S2", "S3", "Lap Time", ""].map((h, i) => (
+                    <div key={i} style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, textTransform: "uppercase",
+                      // Clipped rather than allowed to widen its track: a header
+                      // that outgrows its column is how the two grids drifted
+                      // apart in the first place.
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      textAlign: i === 0 ? "left" : i === 4 ? "right" : "center" }}>{h}</div>
+                  ))}
+                </div>
                 {matrix.rows.length === 0 && (
                   <div style={{ margin: "auto", textAlign: "center", color: C.textFaint, fontSize: 12, lineHeight: 1.6, padding: 20 }}>
                     No laps with sector splits yet. Drive laps with sector timing to build the matrix.
@@ -277,19 +372,27 @@ export default function AnalyticsScreen({
                   const cur = lap.id === comparisonId;
                   const invalid = !!lap.invalid;
                   return (
-                    <div key={lap.id} style={{ display: "grid", gridTemplateColumns: "60px repeat(3,1fr) 1.15fr 34px", gap: 8, alignItems: "center",
+                    <div key={lap.id} style={{ display: "grid", gridTemplateColumns: matrixCols(compact), gap: compact ? 6 : 8, alignItems: "center",
                       background: cur ? C.elevated : C.inset, border: `1px solid ${cur ? C.blue : invalid ? C.red : C.line}`, borderRadius: 8, padding: "9px 10px" }}>
-                      <div style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, color: invalid ? C.textDim : cur ? "#fff" : C.textMuted }}>{lap.lapNumber ?? "?"}</div>
+                      <div style={{ fontFamily: FONT.mono, fontSize: compact ? 13 : 15, fontWeight: 700, color: invalid ? C.textDim : cur ? "#fff" : C.textMuted }}>{lap.lapNumber ?? "?"}</div>
                       {cells.map((c, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
-                          <span style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 700, color: c.color }}>{c.time}</span>
+                        // Side by side on desktop; on a compact the delta drops
+                        // UNDER its sector time. Both readings still fit a ~50px
+                        // column that way, where the side-by-side pair needs ~88
+                        // and would simply be cut off at the cell edge now that
+                        // the track can no longer grow to hold it.
+                        <div key={i} style={{ display: "flex", justifyContent: "center", minWidth: 0,
+                          ...(compact
+                            ? { flexDirection: "column", alignItems: "center", gap: 0, lineHeight: 1.15 }
+                            : { alignItems: "baseline", gap: 4 }) }}>
+                          <span style={{ fontFamily: FONT.mono, fontSize: compact ? 12.5 : 14, fontWeight: 700, color: c.color }}>{c.time}</span>
                           {c.delta && (
-                            <span style={{ fontFamily: FONT.mono, fontSize: 10, fontWeight: 600, color: C.red }}>{c.delta}</span>
+                            <span style={{ fontFamily: FONT.mono, fontSize: compact ? 9 : 10, fontWeight: 600, color: C.red }}>{c.delta}</span>
                           )}
                         </div>
                       ))}
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                        <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 700, textAlign: "right", color: invalid ? C.textDim : C.textBody2, textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(lap.lapTime, 3)}</span>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, minWidth: 0 }}>
+                        <span style={{ fontFamily: FONT.mono, fontSize: compact ? 13 : 15, fontWeight: 700, textAlign: "right", color: invalid ? C.textDim : C.textBody2, textDecoration: invalid ? "line-through" : "none" }}>{formatLapTime(lap.lapTime, 3)}</span>
                         {invalid && (
                           <Hint text="Lap time deleted by the game (track limits / corner cut)" style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.red, textTransform: "uppercase", border: `1px solid ${C.red}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>Invalidated</Hint>
                         )}
