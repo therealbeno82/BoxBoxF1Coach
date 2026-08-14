@@ -17,6 +17,17 @@ import { useViewport } from "../../hooks/useViewport.jsx";
 
 const KOFI_URL = "https://ko-fi.com/rapidbeno";
 
+// The swap arrows on the Switch Driver control, drawn at whatever size the
+// placement wants — a 19px glyph in the desktop card's tile, 17px inline in the
+// phone's compact button beside ENTER COCKPIT.
+const switchIcon = (size) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17 1l4 4-4 4"></path><path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+    <path d="M7 23l-4-4 4-4"></path><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+  </svg>
+);
+
 // Team-skin hero mark: skin id → logo in public/. Only these skins get a badge in
 // the driver hero's top-right; the Default skin (and any unmapped skin) shows none.
 const SKIN_LOGOS = {
@@ -102,16 +113,41 @@ const TyreChip = ({ lap }) => {
   );
 };
 
+// A PB row's two buttons sit at its right end, 26px of chrome each. On a touch
+// screen the coarse-pointer floor lifts them to 44 TALL but never wider, and the
+// row is 275px with 2px to spare — two 44px targets side by side need 36 more
+// than it has. So each grows its hit area only into space no other control owns:
+// the wrench LEFT, over the (non-interactive) lap time; the delete RIGHT, into
+// the row's own padding. They meet at a hard boundary rather than overlapping,
+// which matters more here than anywhere else in the app — the right-hand button
+// destroys a lap, and an overlapping hit area would let a tap aimed at the
+// wrench land on it. `pad` is the outward growth; the margin gives it back to
+// the layout so the row is unchanged.
+const hitPad = (side, pad) => ({
+  width: 26 + pad,
+  [side === "left" ? "marginLeft" : "marginRight"]: -pad,
+  justifyContent: side === "left" ? "flex-end" : "flex-start",
+  padding: 0, border: "none", background: "transparent",
+});
+
+const chrome = (extra) => ({
+  display: "flex", alignItems: "center", justifyContent: "center",
+  width: 26, height: 26, borderRadius: 7, ...extra,
+});
+
 // Wrench button matching the Live / Analytics setup buttons — opens the Car Setup
 // modal for the lap, disabled (and dimmed) when no setup was captured with it.
 const WrenchBtn = ({ onClick, has }) => (
   <button onClick={onClick} title="View car setup" disabled={!has} style={{
-    flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
-    width: 26, height: 26, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface,
-    color: has ? "#7ea6e6" : C.textFaintest, cursor: has ? "pointer" : "default", opacity: has ? 1 : 0.5 }}>
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-    </svg>
+    flex: "none", display: "flex", alignItems: "center", height: 26,
+    ...hitPad("left", 18),
+    cursor: has ? "pointer" : "default", opacity: has ? 1 : 0.5 }}>
+    <span style={chrome({ border: `1px solid ${C.line}`, background: C.surface,
+      color: has ? "#7ea6e6" : C.textFaintest })}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+      </svg>
+    </span>
   </button>
 );
 
@@ -120,20 +156,29 @@ const WrenchBtn = ({ onClick, has }) => (
 // as destructive; the caller confirms before actually deleting.
 const TrashBtn = ({ onClick }) => (
   <button onClick={onClick} title="Delete this lap from the boards" style={{
-    flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
-    width: 26, height: 26, borderRadius: 7, border: "1px solid #4a2130", background: "rgba(255,71,87,0.08)",
-    color: "#ff6b7d", cursor: "pointer" }}>
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M10 11v6" /><path d="M14 11v6" />
-    </svg>
+    flex: "none", display: "flex", alignItems: "center", height: 26,
+    ...hitPad("right", 11),
+    cursor: "pointer" }}>
+    <span style={chrome({ border: "1px solid #4a2130", background: "rgba(255,71,87,0.08)", color: "#ff6b7d" })}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M10 11v6" /><path d="M14 11v6" />
+      </svg>
+    </span>
   </button>
 );
 
 export default function DashboardScreen({ driver, avatar, update, laps = [], driverCount = 1, units,
   activeSkin = "default", onEnterCockpit, onSwitchDriver, onSelectLap, onOpenSetup, onDeleteLap,
   liveTrackSlug = null, leaderboardEnabled = true, onOpenBoard }) {
-  const { phone } = useViewport();
+  const { phone, rail } = useViewport();
+  // The layouts where a control cannot afford a row of its own, and where the
+  // two columns are guaranteed to WRAP onto separate flex lines: a portrait
+  // phone (375 can never hold a 440 + 260 pair) and a landscape one, which has
+  // the least vertical room of anything and so gains the most. Deliberately not
+  // `compact`: at the 1023px tablet ceiling the columns still fit side by side
+  // on ONE line, where packing to flex-start would stop them filling the height.
+  const tight = phone || rail;
   const stats = useMemo(() => computeDriverStats(laps), [laps]);
 
   // Permanently drop a lap off the boards. Guarded by a confirm because deletion
@@ -188,7 +233,15 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
     <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px 28px 26px",
       display: "flex", flexDirection: "column", fontFamily: FONT.ui }}>
       <UpdateBanner update={update} />
-      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 18, alignItems: "stretch", flexWrap: "wrap" }}>
+      {/* `alignContent: flex-start` on a phone. The two columns WRAP onto
+          separate flex lines there, and the default `align-content: stretch`
+          then shares the container's spare height BETWEEN those lines — which
+          reads as dead space under each card rather than as a taller card. It
+          was invisible while the Switch Driver card was padding the left column
+          out; removing it left a 69px hole. Desktop keeps stretch, where the two
+          columns sit on ONE line and stretching is what makes them equal height. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 18, alignItems: "stretch", flexWrap: "wrap",
+        ...(tight && { alignContent: "flex-start" }) }}>
 
         {/* ── Left: driver hero + switch ── */}
         <div style={{ flex: "1 1 440px", maxWidth: 520, minWidth: "min(320px, var(--col-min))", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -242,21 +295,47 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               </div>
               {phone && skinMark}
             </div>
-            <button onClick={onEnterCockpit} style={{ width: "100%", marginTop: 18,
-              background: `var(--cta-bg, ${C.accent})`, color: `var(--cta-fg, ${C.onAccent})`,
-              border: "var(--cta-border, none)", borderRadius: "var(--r-sm, 10px)", padding: 14, fontFamily: FONT.ui, fontSize: 13, fontWeight: 800,
-              letterSpacing: 2, cursor: "pointer", boxShadow: `0 8px 24px ${C.accent44}` }}>ENTER COCKPIT →</button>
+            {/* On a phone the two actions share one row and the standalone
+                Switch Driver card below is dropped, which buys back its whole
+                68px plus the 16px gap under it — the most vertical space
+                available anywhere on this screen for one change. The hero's
+                inner width is 277px there and "ENTER COCKPIT →" alone inks at
+                155, so the CTA gives up its wide desktop tracking to make room;
+                it keeps the accent fill, so it still reads as the primary
+                action next to a bordered secondary one. */}
+            <div style={{ display: "flex", gap: 8, marginTop: tight ? 14 : 18, alignItems: "stretch" }}>
+              <button onClick={onEnterCockpit} style={{ flex: 1, minWidth: 0,
+                background: `var(--cta-bg, ${C.accent})`, color: `var(--cta-fg, ${C.onAccent})`,
+                border: "var(--cta-border, none)", borderRadius: "var(--r-sm, 10px)",
+                padding: tight ? "13px 8px" : 14, fontFamily: FONT.ui,
+                fontSize: tight ? 11.5 : 13, fontWeight: 800,
+                letterSpacing: tight ? 0.6 : 2, whiteSpace: "nowrap",
+                cursor: "pointer", boxShadow: `0 8px 24px ${C.accent44}` }}>ENTER COCKPIT →</button>
+              {tight && (
+                <button onClick={onSwitchDriver} title="Switch driver" style={{ flex: "none", display: "flex",
+                  alignItems: "center", justifyContent: "center", gap: 6,
+                  background: C.surface, border: `1px solid ${C.accent55}`, borderRadius: "var(--r-sm, 10px)",
+                  padding: "0 10px", color: C.textHi, fontFamily: FONT.ui, fontSize: 11.5, fontWeight: 800,
+                  letterSpacing: 0.3, whiteSpace: "nowrap", cursor: "pointer" }}>
+                  <span style={{ display: "flex", color: C.accent, flex: "none" }}>{switchIcon(17)}</span>
+                  Switch Driver
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Switch driver */}
+          {/* Switch driver. Desktop only — on a phone this action has moved up
+              beside ENTER COCKPIT, where it costs no row of its own. The eyebrow
+              and the signed-driver count go with the card rather than being
+              squeezed into the compact button; the roster modal states both on
+              arrival ("Sign In · N Profiles On Roster"). */}
+          {!tight && (
           <button onClick={onSwitchDriver} style={{ width: "100%", display: "flex", alignItems: "center", gap: 13,
             background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "13px 15px", cursor: "pointer",
             fontFamily: FONT.ui, textAlign: "left" }}>
             <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, flex: "none",
               borderRadius: 10, background: C.elevated, border: `1px solid ${C.accent55}`, color: C.accent }}>
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 1l4 4-4 4"></path><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><path d="M7 23l-4-4 4-4"></path><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-              </svg>
+              {switchIcon(19)}
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Cockpit Sign-In</div>
@@ -264,6 +343,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
             </div>
             <span style={{ fontSize: 9, letterSpacing: 1.5, color: C.textDim, fontFamily: FONT.mono, flex: "none" }}>{driverCount} SIGNED</span>
           </button>
+          )}
 
           {/* Where the driver stands on the board for the circuit they last ran.
               Renders nothing at all when offline or when the board is empty — an
