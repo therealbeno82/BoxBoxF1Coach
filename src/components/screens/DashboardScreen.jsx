@@ -303,20 +303,61 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                     <span style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, fontFamily: FONT.mono }}>CLICK → COMPARE</span>
                   </div>
                   <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, paddingRight: 4 }}>
-                    {stats.recent.map(({ lap, gap }) => (
-                      <button key={lap.id} onClick={() => onSelectLap?.(lap.id)} title="Open in Analytics" style={{
-                        display: "grid", gridTemplateColumns: "58px 1fr 96px 64px 52px", gap: 10, alignItems: "center",
-                        background: C.inset, border: `1px solid ${gap != null && gap <= 1e-6 ? "var(--pb-border, #2c2150)" : C.line}`,
-                        borderRadius: 8, padding: "9px 13px", cursor: "pointer", fontFamily: FONT.ui, textAlign: "left", width: "100%" }}>
-                        <span style={{ fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase" }}>Lap {lap.lapNumber ?? "?"}</span>
-                        <span style={{ fontSize: 12, color: C.textMid, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {stats.recent.map(({ lap, gap }) => {
+                      // The five readings, named rather than inlined, so the
+                      // two-line arrangement below reads as an arrangement
+                      // instead of burying the data in the layout.
+                      const lapNo = (
+                        <span style={{ fontSize: 10, letterSpacing: 1, color: C.textDim, textTransform: "uppercase", flex: "none" }}>Lap {lap.lapNumber ?? "?"}</span>
+                      );
+                      const subtitle = (
+                        <span style={{ fontSize: 12, color: C.textMid, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: "1 1 auto" }}>
                           {lap.meta?.track || "—"}{lap.meta?.sessionType ? <span style={{ color: C.textFaint }}> · {lap.meta.sessionType}</span> : null}{tyreLabel(lap.tyre) ? <span style={{ color: tyreCondition(lap.tyre) === "wet" ? "#7fb4e8" : C.textFaint }}> · {tyreLabel(lap.tyre)}</span> : null}
                         </span>
-                        <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 800, color: "#fff" }}>{fmt(lap.lapTime)}</span>
-                        <span style={{ fontFamily: FONT.mono, fontSize: 12, fontWeight: 700, textAlign: "right", color: gapCol(gap) }}>{gapText(gap)}</span>
-                        <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono, textAlign: "right" }}>{fmtDate(lap.recordedAt)}</span>
+                      );
+                      const time = (
+                        <span style={{ fontFamily: FONT.mono, fontSize: 15, fontWeight: 800, color: "#fff", flex: "none" }}>{fmt(lap.lapTime)}</span>
+                      );
+                      const delta = (
+                        <span style={{ fontFamily: FONT.mono, fontSize: 12, fontWeight: 700, textAlign: "right", color: gapCol(gap), flex: "none" }}>{gapText(gap)}</span>
+                      );
+                      const date = (
+                        <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono, textAlign: "right", flex: "none" }}>{fmtDate(lap.recordedAt)}</span>
+                      );
+                      return (
+                      <button key={lap.id} onClick={() => onSelectLap?.(lap.id)} title="Open in Analytics" style={{
+                        // TWO LINES, at every width — this is not a phone
+                        // concession. The row carries five readings and its four
+                        // fixed columns plus gaps and padding needed 336px, but
+                        // this card never gets that much: 329px even at a 1280
+                        // desktop, because the Dashboard splits a 686px row
+                        // between it and the PBs card, and 273px in a portrait
+                        // phone. So the subtitle — the only elastic column, and
+                        // `overflow: hidden`, which contributes ZERO to
+                        // min-content — was squeezed to 0px and simply never
+                        // rendered, on desktop as much as on Android. On a phone
+                        // it also pushed the row into a horizontal scroll nobody
+                        // could see, the list having `overflowY: auto` and so
+                        // `overflow-x: auto` with it.
+                        //
+                        // Splitting the context (track · session · compound, and
+                        // the date) onto its own line keeps every reading rather
+                        // than dropping one. It costs 17px a row.
+                        display: "flex", flexDirection: "column", gap: 3,
+                        background: C.inset, border: `1px solid ${gap != null && gap <= 1e-6 ? "var(--pb-border, #2c2150)" : C.line}`,
+                        borderRadius: 8, padding: "9px 13px", cursor: "pointer", fontFamily: FONT.ui, textAlign: "left", width: "100%" }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, width: "100%", minWidth: 0 }}>
+                          {lapNo}
+                          <span style={{ marginLeft: "auto", display: "flex", alignItems: "baseline", gap: 8, flex: "none" }}>
+                            {time}{delta}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, width: "100%", minWidth: 0 }}>
+                          {subtitle}{date}
+                        </div>
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
