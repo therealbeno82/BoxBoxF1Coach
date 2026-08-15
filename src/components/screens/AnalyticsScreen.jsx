@@ -285,23 +285,47 @@ export default function AnalyticsScreen({
           panel takes a fixed height and scrolls past instead. */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 14,
         ...(phone && { flexDirection: "column", flex: "none", minHeight: "auto" }) }}>
+        {/* On a phone this wrapper has no job left. Its only purpose is to hold
+            the map and the consistency strip together as ONE of the two desktop
+            columns, and the row above is already a column here. `display:
+            contents` dissolves it, so its two children become direct children of
+            that column — which is the whole point: while the strip lives inside
+            this wrapper and the traces live beside it, the two are in DIFFERENT
+            flex containers and no `order` can interleave them. Dissolving the
+            wrapper is what puts all three panels in one container and makes the
+            strip's `order` below mean something. (The 12px gap goes with it; the
+            outer column's 14px takes over, which is the spacing the other
+            phone stacks already use.) */}
         <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", gap: 12,
-          ...(phone && { flex: "none" }) }}>
+          ...(phone && { display: "contents" }) }}>
           {/* Taller on a phone than it looks like it needs: the driving-lines view
               un-stacks its corner overlays into rows above and below the map there,
-              so ~280px of this panel is controls before the road gets any.
+              so ~270px of this panel is controls before the road gets any.
               710, up from 655, because those controls grew when they were lifted to
               the 44px tap floor — the camera pills, the transport and the zoom row
               took ~55px between them. The map viewport is `flex: 1 1 0`, so without
-              this it silently paid for all of it and dropped to 351px. This screen
-              scrolls on a phone, so the height is cheap; the map is the content. */}
+              this it silently paid for all of it and dropped to 351px.
+              698 now: the camera pills went from 44px tall to 32 (they are 79px
+              WIDE, so the target is bigger in area than the floor protects — see
+              DrivingLinesView), and the 12px that frees has to come off the PANEL
+              rather than be left to the map. `flex: 1 1 0` means the map absorbs
+              any slack silently, and a 12px taller map is not what was asked for:
+              the point was to give the 12px back to the screen. */}
           <div style={{ flex: 1, minHeight: 0, ...card, padding: phone ? "10px 10px" : "14px 16px", display: "flex", flexDirection: "column",
-            ...(phone && { flex: "none", height: 710 }) }}>
+            ...(phone && { flex: "none", height: 698 }) }}>
             {linesSlot}
           </div>
 
-        {/* Collapsible lap-consistency strip, under the map */}
-        <div style={{ flex: "none", ...card, overflow: "hidden" }}>
+        {/* Collapsible lap-consistency strip. Under the map on desktop, where it
+            shares the left column's width; LAST on a phone, below the telemetry
+            traces. Everything else on this screen is the lap you are looking at —
+            the road and the traces — while the matrix is a table of the OTHER
+            laps, consulted rather than read. Putting it third keeps the two
+            views of the current lap adjacent instead of separated by a table.
+            `order` rather than a second copy of the markup: it is defined once
+            and sits in one place in the DOM, so the two layouts cannot drift. */}
+        <div style={{ flex: "none", ...card, overflow: "hidden",
+          ...(phone && { order: 1 }) }}>
           {/* The strip's own header carried 534px of content in the 353px box a
               phone gives it, which pushed the ▾ chevron clean off the screen at
               x536 — the button still toggled, but the only sign of whether the

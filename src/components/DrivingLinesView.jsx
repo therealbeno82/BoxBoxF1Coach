@@ -919,12 +919,23 @@ export default function DrivingLinesView({
         <button key={m} onClick={()=>setCamMode(m)}
           disabled={m === "compare" && !canCompare}
           title={m === "compare" && !canCompare ? "Needs two laps with position data" : ""}
-          // No `minHeight: 0` on the phone variant: these four ARE the view
-          // switch, and at 79×21 they were a fifth of a fingertip tall. They
-          // already span the width via `flex: 1 1 0`, so the coarse-pointer
-          // floor only has to supply the height.
+          // These four ARE the view switch, so they were given the full 44px
+          // coarse floor when they were 79×21 — a fifth of a fingertip tall.
+          // 32 on a PORTRAIT phone is a deliberate step back from that, and the
+          // reasoning is area rather than a relaxed rule: they span the row via
+          // `flex: 1 1 0`, which makes each one 79px wide, so 79×32 is 2,528px²
+          // against the 1,936px² of the nominal 44×44 the floor is protecting.
+          // A finger has MORE to aim at here, not less — it is only shorter, in
+          // the axis this panel has none to spare in. (It is also the height an
+          // iOS segmented control has always used, for the same reason.)
+          //
+          // Keyed on `phone`, not `coarse`, because this is a LAYOUT decision:
+          // only in portrait is the pill row an in-flow row whose height costs
+          // the map its share. On a landscape phone the pills are absolutely
+          // positioned OVER the map, so shrinking them would buy no space at all
+          // and would just make a target smaller.
           style={{...glassPill(camMode===m),padding: phone ? "4px 6px" : "3px 10px",
-            ...(phone && { flex:"1 1 0", fontSize:10 }),
+            ...(phone && { flex:"1 1 0", fontSize:10, height: 32, minHeight: 32 }),
             // Width floor for the short labels — "3D" came out 37px on a
             // landscape phone, where the pills size to their text instead of
             // sharing the row. Height is the stylesheet's to grant; width isn't.
