@@ -210,6 +210,33 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   );
 }
 
+// How much of the Session Laps list a phone shows before it starts scrolling.
+//
+// The panel already had `overflowY: auto`, but on a phone the card sizes to its
+// content (`flex: none`), so nothing ever BOUNDED the list and the scroll never
+// engaged: 25 laps made a 3,164px column and the Live screen became a lap list
+// with a track map on top of it. Capping the list is what turns the existing
+// scroller on.
+//
+// Measured at 375px: a lap row is 110px (its contents wrap to three lines there),
+// a run header 30px plus its own 2px margin-top, and the flex gap 6px. So five
+// rows, plus the run header they sit under, plus the gaps between all six, is
+// 32 + 6 + 5*110 + 4*6 = 612. That margin is worth carrying explicitly rather
+// than rounding away: leave it out and the fifth row lands 2px past the fold,
+// which is the difference between showing five laps and showing four.
+//
+// Rows are shorter on a wider phone, where less of the row wraps — so this shows
+// five laps at the narrow end and a few more at the wide end, which is the right
+// way round: it is a height budget, not a row count, and the point is that the
+// panel stops eating the screen.
+const PHONE_LAP_ROWS = 5;
+const PHONE_LAP_ROW_H = 110;
+const PHONE_RUN_HEADER_H = 30 + 2; // + its margin-top
+const PHONE_LAP_GAP = 6;
+const PHONE_LAP_LIST_MAX =
+  PHONE_RUN_HEADER_H + PHONE_LAP_GAP +
+  PHONE_LAP_ROWS * PHONE_LAP_ROW_H + (PHONE_LAP_ROWS - 1) * PHONE_LAP_GAP;
+
 export default function LiveScreen({
   tel, units = "km/h", trackName, sessionLabel, liveLapNumber,
   laps = [], sessionId, activeTrace, lastAdvice, refMismatch = null,
@@ -734,7 +761,8 @@ export default function LiveScreen({
               </div>
               <span style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, fontFamily: FONT.mono }}>{sessionLaps.length} COMPLETED</span>
             </div>
-            <div ref={lapListRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, paddingRight: 4 }}>
+            <div ref={lapListRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, paddingRight: 4,
+              ...(phone && { maxHeight: PHONE_LAP_LIST_MAX }) }}>
               {sessionLaps.length === 0 && (
                 <div style={{ margin: "auto", textAlign: "center", color: C.textFaint, fontSize: 11, lineHeight: 1.6, padding: 16 }}>
                   No completed laps yet this session.
