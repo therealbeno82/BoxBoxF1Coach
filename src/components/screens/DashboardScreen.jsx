@@ -485,18 +485,45 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                             {tracks.map((lap) => {
                               const country = getTrackByName(lap.meta?.track)?.country;
                               return (
-                                <div key={lap.id} style={{ display: "flex", alignItems: "center", gap: 8, background: C.inset,
+                                // TWO LINES, at every width — the same arithmetic
+                                // that reflowed the recent-lap row, and this row
+                                // was the worse of the two. Its five fixed columns
+                                // (country, tyre, lap time, wrench, trash) plus
+                                // gaps and padding need ~269px and the card never
+                                // offers that: 247px at a 1280 desktop, because
+                                // the Dashboard splits the row with Recent Laps,
+                                // and 265px on a phone. The track NAME is the only
+                                // elastic column, so it absorbed the whole
+                                // shortfall — measured 4.3px at 1280 and 22.6px on
+                                // a phone, i.e. the row's own identifier rendered
+                                // as an ellipsis or as nothing at all.
+                                //
+                                // Splitting it puts the two headline readings on
+                                // line 1 and the context plus the controls on
+                                // line 2, which keeps every reading. The hit-area
+                                // overhangs still only cover non-interactive
+                                // things: the wrench now grows left over the tyre
+                                // chip rather than the lap time, and the trash
+                                // still grows right into the row's own padding.
+                                <div key={lap.id} style={{ display: "flex", flexDirection: "column", gap: 3, background: C.inset,
                                   border: `1px solid ${C.line}`, borderRadius: 8, padding: "7px 10px" }}>
-                                  <span style={{ fontSize: 12, color: C.textBody2, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {lap.meta?.track || "—"}
-                                  </span>
-                                  {country ? (
-                                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.5, fontFamily: FONT.mono, color: C.textFaint }}>{country}</span>
-                                  ) : null}
-                                  <TyreChip lap={lap} />
-                                  <span style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 800, color: C.yellow }}>{fmt(lap.lapTime)}</span>
-                                  <WrenchBtn onClick={() => onOpenSetup?.(lap)} has={!!lap.setup} />
-                                  {onDeleteLap && <TrashBtn onClick={() => confirmDelete(lap)} />}
+                                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, width: "100%", minWidth: 0 }}>
+                                    <span style={{ fontSize: 12, color: C.textBody2, fontWeight: 600, flex: "1 1 auto", minWidth: 0,
+                                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {lap.meta?.track || "—"}
+                                    </span>
+                                    <span style={{ fontFamily: FONT.mono, fontSize: 14, fontWeight: 800, color: C.yellow, flex: "none" }}>{fmt(lap.lapTime)}</span>
+                                  </div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0 }}>
+                                    {country ? (
+                                      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.5, fontFamily: FONT.mono, color: C.textFaint, flex: "none" }}>{country}</span>
+                                    ) : null}
+                                    <TyreChip lap={lap} />
+                                    <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                                      <WrenchBtn onClick={() => onOpenSetup?.(lap)} has={!!lap.setup} />
+                                      {onDeleteLap && <TrashBtn onClick={() => confirmDelete(lap)} />}
+                                    </span>
+                                  </div>
                                 </div>
                               );
                             })}
