@@ -57,10 +57,12 @@ const navBtn = (active) => ({
 // the target, so it clears 44px without a min-height fight), and an accent bar on
 // top rather than a border box — a box at this size reads as clutter.
 //
-// 9px labels, not 10. The Donate entry makes SIX cells on a 375px bar, which
-// leaves each about 62px — and "Leaderboard" inks at 63px at 10px, so it would
-// have ellipsised to "Leaderboar…". Shrinking the type by a point keeps every
-// label whole, which matters more than the point: an abbreviated nav label is
+// 9px labels, not 10. The size is set by the build with the MOST tabs, not by
+// the one that ships this layout: the desktop build carries an FFB tab, so a
+// 375px bar can be six cells of ~62px, and "Leaderboard" inks at 63px at 10px —
+// it would ellipsise to "Leaderboar…". Android drops FFB and so has five cells
+// of ~75px, where 10px would fit, but a label that changes size with the build
+// is worse than one that is a point small in both. An abbreviated nav label is
 // read wrong once and mistrusted after.
 const tabBtn = (active) => ({
   flex: 1,
@@ -155,30 +157,36 @@ export default function Shell({
       animation: wsConnected ? "blink 1.6s infinite" : "none",
     }} />
   );
-  // No inline minHeight: the coarse-pointer rule lifts this to a full 44px tap
-  // target on a touch screen, which is what it should be. Width is a parameter
-  // only because the rail has 78px to spend and the 52px header has not.
-  // Donate, at the end of the compact navs. It is NOT a tab — there is no screen
-  // to be "on" — so it never takes the active treatment, sits in a `flex: none`
-  // cell rather than taking an equal share, and is an anchor so a plain browser
-  // opens it in a tab while the Tauri build hands it to the OS (openExternal).
-  // It replaces the Dashboard's donate card on these layouts, which cost a whole
-  // row there.
-  const donateEntry = (railForm) => (
+  // Donate — an action in the chrome's action cluster, NOT a nav entry. It has no
+  // screen to be "on", so as a tab it was borrowing the one visual language that
+  // means "you are here" while never being able to say it, and taking a cell on
+  // the bar from five things that are screens. It now sits with the other two
+  // chrome actions (driver chip, gear) in both compact layouts: after the gear in
+  // the phone header, and after it in the rail's footer.
+  //
+  // Icon-only, because both of those places hold icons at 44px and a word among
+  // them reads as a stray. Anchor rather than button so a plain browser opens its
+  // own tab while the Tauri build hands the URL to the OS (openExternal) instead
+  // of navigating the app window away from the app.
+  //
+  // The explicit minHeight is load-bearing: the coarse-pointer floor in
+  // index.html applies to `button`/`select`/`input`, and an `<a>` is in none of
+  // those lists, so this is the only thing giving it a fingertip.
+  //
+  // Desktop keeps the Dashboard's donate card, which has a row to spare for the
+  // full sentence.
+  const donateBtn = (
     <a href={KOFI_URL} target="_blank" rel="noreferrer" onClick={openExternal(KOFI_URL)}
       title="Donate — support continued development"
+      aria-label="Donate — support continued development"
       style={{
-        ...tabBtn(false),
-        flex: "none",
-        flexDirection: "row",
-        gap: 4,
-        padding: railForm ? "8px 6px" : "9px 8px 7px",
-        color: "#c99bf0",
-        textDecoration: "none",
-        ...(railForm && { minHeight: 44, borderTop: "none" }),
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: 44, minHeight: 44, flex: "none", borderRadius: 8,
+        border: "1px solid transparent", background: "transparent",
+        color: "#c99bf0", fontSize: 16, lineHeight: 1,
+        textDecoration: "none", fontFamily: FONT.ui,
       }}>
-      <span style={{ fontSize: 11, lineHeight: 1 }}>☕</span>
-      Donate
+      ☕
     </a>
   );
 
@@ -238,6 +246,8 @@ export default function Shell({
             style={{ ...gearBtn("7px 8px"), width: 44 }}>
             <GearIcon />
           </button>
+
+          {donateBtn}
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
@@ -253,7 +263,6 @@ export default function Shell({
           {NAV.map(([id, label]) => (
             <button key={id} onClick={() => onTab(id)} style={tabBtn(tab === id)}>{label}</button>
           ))}
-          {donateEntry(false)}
         </nav>
       </div>
     );
@@ -290,16 +299,16 @@ export default function Shell({
           paddingLeft: "env(safe-area-inset-left)",
           paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
         }}>
-          {/* No brand mark here, unlike the phone header. The rail was at exact
-              capacity with five entries — 251px of column for 251px of tabs — so
-              the sixth had to come from somewhere, and a 28px logo is the only
-              purely decorative thing in it. A nav that scrolls is a functional
-              cost paid on every tap; missing branding on a screen you are
-              already inside is not. */}
-          {/* The tab column SCROLLS rather than squashing. Six 44px entries plus
-              the brand and the footer cluster need ~408px against the ~251 a
-              393px landscape phone leaves, and a clipped entry is a screen you
-              cannot reach.
+          {/* No brand mark here, unlike the phone header. The rail runs at or
+              near exact capacity — a 393px landscape phone leaves ~251px of
+              column for the tabs — and a 28px logo is the only purely decorative
+              thing competing for it. A nav that scrolls is a functional cost paid
+              on every tap; missing branding on a screen you are already inside is
+              not. (Donate used to sit in this column and was what pushed it over;
+              it is now in the footer below, with the other chrome actions.) */}
+          {/* The tab column SCROLLS rather than squashing, because the desktop
+              build's sixth entry (FFB) still overruns those ~251px, and a clipped
+              entry is a screen you cannot reach.
               `scrollbarWidth: none` because a CLASSIC scrollbar takes its width
               out of a 78px rail — 11px of it — which is enough to ellipsise
               "Leaderboard" at 10px. Android's WebView overlays its scrollbars and
@@ -311,7 +320,6 @@ export default function Shell({
             {NAV.map(([id, label]) => (
               <button key={id} onClick={() => onTab(id)} style={railBtn(tab === id)}>{label}</button>
             ))}
-            {donateEntry(true)}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, flex: "none" }}>
@@ -321,6 +329,7 @@ export default function Shell({
               style={{ ...gearBtn("7px 8px"), width: 44, justifyContent: "center" }}>
               <GearIcon />
             </button>
+            {donateBtn}
           </div>
         </nav>
 
