@@ -337,12 +337,19 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               Renders nothing at all when offline or when the board is empty — an
               offline launch has to look like this feature isn't there, not like
               it's broken. That self-guard is also why it can sit outside the
-              hasLaps branch: no laps means no board to point at, so no card. */}
+              hasLaps branch: no laps means no board to point at, so no card.
+
+              Desktop only. The whole card is a pointer at a screen that is
+              already a nav entry one tap away, and on the layouts where rows are
+              scarce a pointer is not worth a row — the same trade that moved
+              Donate into the nav. */}
+          {!tight && (
           <LeaderboardCard
             laps={laps} driver={driver} preferSlug={liveTrackSlug}
             enabled={leaderboardEnabled} cardStyle={cardStyle}
             onOpenBoard={onOpenBoard}
           />
+          )}
 
           {/* Donate. Desktop only — on a phone and in landscape it has moved to
               the end of the nav, where it costs no row of the Dashboard at all.
@@ -396,6 +403,13 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
 
               {/* Recent laps + per-category PBs, side by side */}
               <div style={{ flex: 1, minHeight: 180, display: "flex", gap: 16, flexWrap: "wrap" }}>
+                {/* Recent laps. Desktop only — it is by far the tallest thing on
+                    the Dashboard (ten two-line rows), and every lap in it is
+                    already listed in Analytics' own lap selector, which is where
+                    tapping a row was sending the driver anyway. So on a phone the
+                    card costs most of a screen to duplicate a list one tap away,
+                    and dropping it leaves the PBs card the whole row. */}
+                {!tight && (
                 <div style={{ flex: "1.6 1 320px", minWidth: "min(280px, var(--col-min))", ...cardStyle, display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                     <span style={eyebrow}>Recent Laps</span>
@@ -459,6 +473,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                     })}
                   </div>
                 </div>
+                )}
 
                 {/* Personal bests by category — best lap per track within each
                     featured session type (Time Trial / Qualifying / Race), stacked */}
@@ -470,7 +485,15 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                         : type === "Race" ? "var(--cat-3, #2ED573)"
                         : "var(--cat-1, #34c8ff)";
                       return (
-                        <div key={type} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                        // Each category takes an equal share of the card's height
+                        // on desktop, where the card has a fixed height to divide
+                        // and a long track list should scroll inside its own third
+                        // rather than push the other two off. On a phone the card
+                        // has no fixed height — the screen scrolls — so an equal
+                        // share is just a squeeze: with one populated category out
+                        // of three, its single 42px lap row was handed 35px and
+                        // made to scroll. Size to content there instead.
+                        <div key={type} style={{ ...(tight ? { flex: "none" } : { flex: 1, minHeight: 0 }), display: "flex", flexDirection: "column" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
                             <span style={{ width: 8, height: 8, borderRadius: 2, background: accent, flex: "none" }} />
                             <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.textBody2 }}>{type}</span>
@@ -478,7 +501,8 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                               {tracks.length} {tracks.length === 1 ? "TRACK" : "TRACKS"}
                             </span>
                           </div>
-                          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5, paddingRight: 2 }}>
+                          <div style={{ ...(tight ? { flex: "none" } : { flex: 1, minHeight: 0, overflowY: "auto" }),
+                            display: "flex", flexDirection: "column", gap: 5, paddingRight: 2 }}>
                             {tracks.length === 0 && (
                               <div style={{ fontSize: 11, color: C.textFaint, padding: "10px 2px" }}>No {type} laps yet</div>
                             )}
