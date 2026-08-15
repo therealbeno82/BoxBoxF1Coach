@@ -267,7 +267,17 @@ export default function Shell({
         fontFamily: FONT.ui, display: "flex", flexDirection: "row",
       }}>
         <nav style={{
-          flex: "none", width: 78, display: "flex", flexDirection: "column",
+          flex: "none",
+          // 78px of COLUMN, plus whatever the cutout takes — not 78px total.
+          // Everything here is border-box, so `paddingLeft: env(...)` comes out
+          // of the width rather than being added to it, and a landscape cutout
+          // is not a rounding error: measured 48px on a Xiaomi 2311DRK48G, which
+          // left 30px of rail and clipped every label to "D…", "L…", "A…". It
+          // cannot be caught anywhere but on a device — a browser and the
+          // emulator both report every inset as 0 — so the arithmetic has to be
+          // right by construction rather than by having been looked at.
+          width: "calc(78px + env(safe-area-inset-left))",
+          display: "flex", flexDirection: "column",
           alignItems: "stretch", gap: 6,
           background: "rgba(7,9,14,.96)", borderRight: `1px solid ${C.borderModal}`,
           // Rotating a phone moves the notch to one of the SIDES and the gesture
