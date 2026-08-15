@@ -42,6 +42,18 @@ export default function CoachLogScreen({
   const lapSet = coachingSet?.laps || [];
   const dropped = coachingSet?.dropped || [];
   const gate = coachingSet?.gate || null;
+  // Second header line: what the advice is scoped to. Empty when neither part is
+  // known (no bucket, no reference), in which case the line isn't rendered at all
+  // rather than left as a blank row under the title.
+  const scopeLine = [coachBucket?.label, refLabel ? `vs ref ${refLabel}` : null]
+    .filter(Boolean).join(" · ");
+  // "Coach Log" is said once. With a circuit known the first line reads
+  // "Singapore · Coach Log · Analysis"; with no telemetry there is no circuit and
+  // the TITLE falls back to "Coach Log", so the text beside it drops the prefix
+  // rather than repeating the words straight back at the reader.
+  const headingAside = trackName
+    ? `Coach Log · ${sessionLabel || "Analysis"}`
+    : (sessionLabel || "Analysis");
 
   return (
     <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px var(--screen-px) 22px",
@@ -50,16 +62,36 @@ export default function CoachLogScreen({
       {/* Top bar */}
       <div style={{ display: "flex", alignItems: "center", gap: 13, flex: "none", flexWrap: "wrap" }}>
         <div style={{ width: 5, height: 42, borderRadius: 3, background: C.blue }} />
+        {/* Two lines, split by what they answer. The first says WHERE you are and
+            WHAT this screen is, as one phrase — "Singapore · Coach Log · Analysis"
+            reads as a title rather than a title with a caption beneath it. The
+            second says what the advice is SCOPED to, which is a different kind of
+            statement and was previously run onto the end of the first: all five
+            parts on one strip wrapped to two lines anyway on a phone, but broken
+            mid-phrase, so "Qualifying" could land on the line above the reference
+            it was being compared against.
+            It wraps rather than clipping, so a long circuit name ("Circuit of the
+            Americas" needs ~250px of the ~355 a phone offers) just pushes the
+            second half onto its own line instead of ellipsising the name. */}
         <div>
-          <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1 }}>{trackName || "Coach Log"}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 21, fontWeight: 800, letterSpacing: 1, lineHeight: 1 }}>{trackName || "Coach Log"}</span>
+            <span style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>
+              {headingAside}
+            </span>
+          </div>
           {/* The bucket names which laps the advice was drawn from — a race stint on
               hards is coached against other hard-tyre race laps, never against quali.
               `refLabel` names the reference's own running, so the driver can see both
-              sides of the comparison the numbers came from. */}
-          <div style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: 5 }}>
-            Coach Log · {sessionLabel || "Analysis"}{coachBucket?.label ? ` · ${coachBucket.label}` : ""}
-            {refLabel ? ` · vs ref ${refLabel}` : ""}
-          </div>
+              sides of the comparison the numbers came from.
+              Joined from the parts that exist rather than concatenated with fixed
+              separators: with the line no longer starting at "Coach Log", a missing
+              bucket would otherwise open the line with a stray "·". */}
+          {scopeLine && (
+            <div style={{ fontSize: 11, letterSpacing: 2, color: C.textDim, textTransform: "uppercase", marginTop: 5 }}>
+              {scopeLine}
+            </div>
+          )}
         </div>
 
         {/* Which lap is under analysis. "Latest lap" keeps the pre-selector
