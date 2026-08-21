@@ -20,6 +20,8 @@ import { APP_VERSION } from "../../lib/updateCheck.js";
 import { inTauri } from "../../lib/env.js";
 import LeaderboardSettings from "../LeaderboardSettings.jsx";
 import { invoke } from "@tauri-apps/api/core";
+import { useTauriEvents } from "../../hooks/useTauriEvents.js";
+import { EV_EDIT } from "../../lib/overlayBridge.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 13 };
 const label = { fontSize: 10, letterSpacing: 1.5, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 };
@@ -74,6 +76,11 @@ export default function SettingsScreen({
       setOverlayErr(String(e));
     }
   };
+  // The overlay can re-lock ITSELF (its Lock button / Escape), which it has to be
+  // able to do — unlocked, it covers the monitor and this checkbox is unreachable.
+  // Listening for the same event the command emits keeps the checkbox honest
+  // instead of still claiming "unlocked" after the driver locked it from the HUD.
+  useTauriEvents({ [EV_EDIT]: (e) => setOverlayClickable(!!e.payload) });
 
   // Draft text for the UDP port field so the user can clear/retype freely; only a
   // valid 1–65535 value is committed up to the app (which pushes it to the Rust core).
@@ -360,18 +367,22 @@ export default function SettingsScreen({
                       checked={overlayClickable}
                       onChange={e => toggleOverlayClickable(e.target.checked)}
                     />
-                    Make it clickable so I can drag it into position
+                    Unlock — move, resize and switch widgets on the overlay
                   </label>
                 )}
                 {overlayErr && (
                   <div style={{ fontSize: 10, color: C.red, fontFamily: FONT.mono }}>{overlayErr}</div>
                 )}
                 <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
-                  Draws speed, gear, pedals and lap time over the game. <b>The game must be
-                  running in Borderless or Windowed mode</b> — in Exclusive Fullscreen the game
-                  bypasses the desktop compositor and nothing can be drawn on top of it. While
-                  "clickable" is on, clicks landing on the overlay are taken from the game, so
-                  turn it back off before driving.
+                  Live delta to your reference lap, the audible-cue toggles, speed/gear and a lap
+                  clock — drawn over the game and arranged how you like. <b>The game must be
+                  running in Borderless or Windowed mode</b>; in Exclusive Fullscreen the game
+                  bypasses the desktop compositor and nothing can be drawn on top of it.
+                  <br /><br />
+                  <b>Unlock</b> to drag widgets, drag their bottom-right corner to resize, and show
+                  or hide them from the bar at the bottom of the screen. Your layout is remembered.
+                  While unlocked the overlay swallows clicks that would otherwise reach the game,
+                  so lock it again before driving — locked, it is completely click-through.
                 </div>
               </div>
             )}

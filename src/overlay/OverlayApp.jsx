@@ -1,61 +1,90 @@
-// ─── OVERLAY HUD (prototype) ────────────────────────────────────────────────
-// What the driver sees on top of the game. Scope is deliberately the half of the
-// problem that is free: every field here comes straight off the telemetry
-// snapshot, which the Rust emitter already broadcasts to EVERY webview (lib.rs
-// uses app.emit, not emit_to), so this window needs no new Rust plumbing at all.
+// ─── OVERLAY HOST ────────────────────────────────────────────────────────────
+// The full-screen transparent window that sits over the game. It owns three
+// things and delegates the rest:
 //
-// THE OTHER HALF IS NOT FREE. Delta-to-reference, mini-sector colours, the coach's
-// radio calls and lap state all live in BoxBoxApp's React tree, and this is a
-// separate JS context with no access to it. Getting those here means the main
-// window pushing them out over a channel (invoke a command → emit_to("overlay"))
-// — that bridge is the real work, and it is not in this prototype.
+//   1. Inputs. Telemetry arrives DIRECTLY from Rust at ~30 Hz (the emitter uses
+//      app.emit, which broadcasts to every webview) — it is not relayed through
+//      the main window, which would add a hop and make the HUD stutter whenever
+//      the main window was busy drawing a track map. Everything derived — the
+//      reference curve, whether it is comparable, which cues are armed — comes
+//      over the bridge (lib/overlayBridge.js) because it lives in BoxBoxApp's
+//      React tree and this is a different JS context.
 //
-// A note on what IS shared: localStorage is per-origin, and both windows are the
-// same origin, so preferences written by the main app are readable here, and its
-// writes fire a `storage` event in this document. That is how the units toggle
-// below stays in step without any IPC.
+//   2. The delta. Computed HERE rather than pushed, because it changes every
+//      tick: pushing it would mean a 30 Hz IPC round trip for a subtraction, and
+//      the two inputs are already both in this window.
+//
+//   3. Placement. Widgets are absolutely positioned and scaled from the saved
+//      layout; dragging is only live in edit mode.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTauriEvents } from "../hooks/useTauriEvents.js";
 import { inTauri } from "../lib/env.js";
+import { refTimeAt } from "../lib/timeAxis.js";
+import { emitCueToggle, emitRequestState, lockOverlay, EV_STATE, EV_EDIT } from "../lib/overlayBridge.js";
+import { WIDGETS } from "./widgets.jsx";
+import { useOverlayLayout, useDragScale } from "./useOverlayLayout.js";
 
-// Colours are literals, not the `C` tokens: those are var()-backed and the skin
-// that defines the vars is applied to the MAIN window's <html>, which this
-// document never sees. Skinning the overlay means shipping the palette across.
-const INK = "#ffffff";
-const DIM = "rgba(255,255,255,.55)";
-const PANEL = "rgba(8,11,17,.72)";
-const EDGE = "rgba(255,255,255,.10)";
-const GREEN = "#37d67a";
-const RED = "#ff5a5f";
-const ACCENT = "#3671C6";
-
-function fmtLapTime(s) {
-  if (!(s > 0)) return "--:--.---";
-  const m = Math.floor(s / 60);
-  const rest = s - m * 60;
-  return `${m}:${rest.toFixed(3).padStart(6, "0")}`;
+/**
+ * Live delta, or the reason there isn't one.
+ *
+ * The reasons matter as much as the number. A HUD that shows a dash is
+ * indistinguishable from a broken HUD, and the three ways to get here — no
+ * reference picked, a reference the coach has muted, a reference too old to
+ * carry a clock — each have a different fix.
+ */
+function computeDelta(state, snap) {
+  if (!state?.hasRef) return { v: null, why: "No reference lap loaded" };
+  if (state.refReason) return { v: null, why: state.refReason };
+  if (!state.refAxis) return { v: null, why: "Reference carries no lap clock" };
+  const t = snap?.lapTime, d = snap?.lapDistance;
+  if (!(t > 0) || typeof d !== "number" || d < 0) return { v: null, why: null };
+  const ref = refTimeAt(state.refAxis, d);
+  if (ref == null) return { v: null, why: null };
+  return { v: t - ref, why: null };
 }
 
-function gearLabel(g) {
-  if (g === 0) return "N";
-  if (g === -1) return "R";
-  return String(g);
-}
-
-/** A throttle/brake trace bar. `v` is 0-100 straight off the snapshot. */
-function PedalBar({ v, color }) {
+/** One widget: positions it, scales it, and hosts its drag handles in edit mode. */
+function Frame({ w, box, update, editing, children }) {
+  const drag = useDragScale({ id: w.id, box, update, designW: w.w, enabled: editing });
   return (
-    <div style={{ height: 5, background: "rgba(255,255,255,.12)", borderRadius: 3, overflow: "hidden" }}>
-      <div style={{
-        width: `${Math.max(0, Math.min(100, v))}%`,
-        height: "100%",
-        background: color,
-        // No CSS transition: the snapshot already arrives at ~30 Hz, and easing
-        // between samples would add lag to a readout whose whole value is being
-        // instantaneous.
-        borderRadius: 3,
-      }} />
+    <div
+      onPointerDown={(e) => drag.onPointerDown(e, "move")}
+      onPointerMove={drag.onPointerMove}
+      onPointerUp={drag.onPointerUp}
+      style={{
+        position: "absolute",
+        left: box.x, top: box.y,
+        width: w.w, height: w.h,
+        // Scaling from the top-left keeps the anchor the same point the drag
+        // moves, so resizing never also shifts the widget.
+        transform: `scale(${box.scale})`,
+        transformOrigin: "top left",
+        cursor: editing ? "move" : "default",
+        outline: editing ? "1px dashed rgba(255,255,255,.45)" : "none",
+        outlineOffset: 3,
+      }}>
+      {children}
+      {editing && (
+        <>
+          <div style={{
+            position: "absolute", top: -19, left: 0, fontSize: 9, fontWeight: 700,
+            letterSpacing: 1, color: "rgba(255,255,255,.7)", whiteSpace: "nowrap",
+            textShadow: "0 1px 3px #000",
+          }}>{w.name}</div>
+          {/* Corner grip. stopPropagation on the down is what stops a resize from
+              also being read as a move by the parent. */}
+          <div
+            onPointerDown={(e) => drag.onPointerDown(e, "scale")}
+            onPointerMove={drag.onPointerMove}
+            onPointerUp={drag.onPointerUp}
+            style={{
+              position: "absolute", right: -6, bottom: -6, width: 14, height: 14,
+              borderRadius: 3, background: "#3671C6", border: "1px solid #fff",
+              cursor: "nwse-resize",
+            }} />
+        </>
+      )}
     </div>
   );
 }
@@ -63,84 +92,103 @@ function PedalBar({ v, color }) {
 export default function OverlayApp() {
   const [snap, setSnap] = useState(null);
   const [receiving, setReceiving] = useState(false);
-
-  // Same-origin localStorage, kept live by the `storage` event the main window's
-  // write fires in this document.
-  const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
-  useEffect(() => {
-    const onStorage = (e) => {
-      if (e.key === "f1coach.units") setUnits(e.newValue || "km/h");
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  const [state, setState] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const { layout, update, toggle, reset } = useOverlayLayout(WIDGETS);
 
   useTauriEvents({
     telemetry: (e) => setSnap(e.payload),
     core_status: (e) => setReceiving(!!e.payload?.receiving),
+    [EV_STATE]: (e) => setState(e.payload),
+    [EV_EDIT]: (e) => setEditing(!!e.payload),
   });
 
-  const speedKph = snap?.speed ?? 0;
-  const speed = units === "mph" ? Math.round(speedKph * 0.621371) : speedKph;
-  const rpmPct = Math.max(0, Math.min(100, ((snap?.rpm ?? 0) / 13000) * 100));
+  // Ask the main window for a resend as soon as we exist. Without this the HUD
+  // would sit empty until something over there happened to change — which, with a
+  // reference already loaded and the cues already set, could be the whole session.
+  useEffect(() => { emitRequestState(); }, []);
+
+  // Escape re-locks. The overlay covers the whole monitor, so while unlocked it is
+  // in front of every other window — this is the same escape hatch as the Lock
+  // button for the case where a widget has been dragged over the bar.
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e) => { if (e.key === "Escape") lockOverlay(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing]);
+
+  const delta = useMemo(() => computeDelta(state, snap), [state, snap]);
 
   return (
+    <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
+      {WIDGETS.map(w => {
+        const box = layout[w.id];
+        if (!box?.on) return null;
+        return (
+          <Frame key={w.id} w={w} box={box} update={update} editing={editing}>
+            <w.Render
+              snap={snap}
+              state={state}
+              delta={delta}
+              editing={editing}
+              onCueToggle={emitCueToggle}
+            />
+          </Frame>
+        );
+      })}
+
+      {editing && (
+        <EditBar
+          layout={layout} toggle={toggle} reset={reset}
+          receiving={receiving} inTauri={inTauri}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Edit-mode chrome: which widgets are shown, and a way back to defaults. Only
+ *  rendered in edit mode, so nothing here is ever on screen while driving. */
+function EditBar({ layout, toggle, reset, receiving, inTauri: native }) {
+  const btn = (on) => ({
+    padding: "5px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: "pointer",
+    fontFamily: "inherit",
+    background: on ? "rgba(54,113,198,.35)" : "rgba(255,255,255,.06)",
+    border: `1px solid ${on ? "#3671C6" : "rgba(255,255,255,.15)"}`,
+    color: on ? "#fff" : "rgba(255,255,255,.5)",
+  });
+  return (
     <div style={{
-      height: "100%",
-      padding: 12,
-      display: "flex",
-      flexDirection: "column",
-      gap: 9,
-      background: PANEL,
-      border: `1px solid ${EDGE}`,
-      borderRadius: 12,
-      color: INK,
-      // A HUD sits on bright, busy, moving tarmac. The shadow is what keeps the
-      // panel edge readable against a white kerb.
-      boxShadow: "0 6px 22px rgba(0,0,0,.45)",
+      position: "absolute", left: "50%", bottom: 26, transform: "translateX(-50%)",
+      background: "rgba(8,11,17,.92)", border: "1px solid rgba(255,255,255,.14)",
+      borderRadius: 12, padding: "11px 14px", display: "flex", flexDirection: "column",
+      gap: 9, alignItems: "center", boxShadow: "0 10px 34px rgba(0,0,0,.6)",
+      color: "#fff", fontFamily: '"Archivo", system-ui, sans-serif',
     }}>
-      {/* Shift/rev bar across the top */}
-      <div style={{ height: 4, background: "rgba(255,255,255,.10)", borderRadius: 2, overflow: "hidden" }}>
-        <div style={{
-          width: `${rpmPct}%`,
-          height: "100%",
-          background: rpmPct > 92 ? RED : rpmPct > 80 ? "#ffb020" : ACCENT,
-        }} />
+      <div style={{ fontSize: 10, letterSpacing: 1.4, fontWeight: 700, color: "rgba(255,255,255,.6)" }}>
+        OVERLAY UNLOCKED — DRAG TO MOVE, CORNER TO RESIZE
       </div>
-
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-        <div style={{
-          fontSize: 44, fontWeight: 800, lineHeight: 1, minWidth: 46,
-          fontVariantNumeric: "tabular-nums",
-        }}>{gearLabel(snap?.gear ?? 0)}</div>
-
-        <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-          <div style={{
-            fontSize: 34, fontWeight: 700, lineHeight: 1,
-            fontVariantNumeric: "tabular-nums",
-          }}>{speed}</div>
-          <div style={{ fontSize: 11, color: DIM, fontWeight: 600 }}>{units}</div>
-        </div>
-
-        <div style={{ marginLeft: "auto", textAlign: "right" }}>
-          <div style={{ fontSize: 9, color: DIM, letterSpacing: 1.4, fontWeight: 600 }}>LAP {snap?.lapNumber ?? "-"}</div>
-          <div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-            {fmtLapTime(snap?.lapTime)}
-          </div>
-        </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+        {WIDGETS.map(w => (
+          <button key={w.id} onClick={() => toggle(w.id)} style={btn(layout[w.id]?.on)}>
+            {w.name}
+          </button>
+        ))}
+        <button onClick={reset} style={{
+          ...btn(false), borderColor: "rgba(255,120,120,.4)", color: "rgba(255,150,150,.9)",
+        }}>Reset layout</button>
+        {/* The way out. While unlocked this window is in front of everything and
+            eats every click on the desktop, so the control that re-locks it has to
+            live HERE — the Settings checkbox that unlocked it is unreachable. */}
+        <button onClick={lockOverlay} style={{
+          ...btn(true), background: "#37d67a", borderColor: "#37d67a", color: "#06210f",
+        }}>✓ Lock (Esc)</button>
       </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <PedalBar v={snap?.throttle ?? 0} color={GREEN} />
-        <PedalBar v={snap?.brake ?? 0} color={RED} />
-      </div>
-
-      {/* Status line — an overlay showing stale zeroes looks identical to one
-          showing a stationary car, so say which it is. */}
-      <div style={{ fontSize: 9, color: DIM, letterSpacing: 1.2, fontWeight: 600 }}>
-        {!inTauri ? "NO NATIVE CORE"
-          : receiving ? "TELEMETRY LIVE"
-          : "WAITING FOR TELEMETRY"}
+      <div style={{ fontSize: 10, color: "rgba(255,255,255,.42)" }}>
+        {!native ? "No native core"
+          : receiving ? "Telemetry live"
+          : "Waiting for telemetry — turn on Demo Mode to test without the game"}
       </div>
     </div>
   );
