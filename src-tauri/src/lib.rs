@@ -6,6 +6,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, RunEvent};
 
 mod ffb;
+mod overlay;
 mod telemetry;
 
 use ffb::{DeviceInfo, FfbCommand, FfbHandle, FfbSettings, FfbSystem};
@@ -258,6 +259,10 @@ pub fn run() {
             set_ffb_enabled,
             reset_ffb_peak,
             write_text_file,
+            overlay::open_overlay,
+            overlay::close_overlay,
+            overlay::is_overlay_open,
+            overlay::set_overlay_interactive,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

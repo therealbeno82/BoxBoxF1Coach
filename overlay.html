@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>F1 Coach Overlay</title>
+    <!-- Same self-hosted fonts as index.html. This is a separate document from
+         the main window, so it gets no styles from it — including the team skin,
+         which lib/ui/skins.js sets as CSS variables on the MAIN window's <html>
+         and which therefore do not reach here. The overlay's colours are literals
+         below; wiring it to the skin means pushing the palette across as an event. -->
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <style>
+      /* The window is created with transparent:true, so whatever this document
+         does NOT paint shows the game through it. Any opaque background here —
+         including the --bg the main app sets — turns the overlay into a solid
+         rectangle sitting on the road. */
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: transparent;
+      }
+      body {
+        font-family: "Archivo", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+        /* The window is click-through (set_ignore_cursor_events), so no pointer
+           interaction is possible anyway — but this also stops a stray text
+           selection or drag-image while the overlay is in interactive mode. */
+        user-select: none;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/overlay/main.jsx"></script>
+  </body>
+</html>

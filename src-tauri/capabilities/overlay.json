@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "The game overlay window. Capabilities in Tauri 2 are scoped BY WINDOW LABEL, and default.json only lists \"main\" — without this file the overlay's listen() calls are denied and it sits on 'waiting for telemetry' forever with nothing in the log to explain why. It gets events and nothing else: no dialog, no opener, no window control. Custom commands from generate_handler! are not capability-gated, so open/close/interactive still work from the main window.",
+  "windows": [
+    "overlay"
+  ],
+  "permissions": [
+    "core:event:default"
+  ]
+}

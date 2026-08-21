@@ -44,6 +44,37 @@ export default function SettingsScreen({
   const [orStatus, setOrStatus] = useState("idle");
   const [availVoices, setAvailVoices] = useState([]);
 
+  // Game overlay (prototype). The window is owned by Rust, so the truth lives
+  // there — read it on mount rather than assuming off, or the toggle lies after
+  // navigating away from Settings and back.
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [overlayClickable, setOverlayClickable] = useState(false);
+  const [overlayErr, setOverlayErr] = useState("");
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke("is_overlay_open").then(setOverlayOn).catch(() => {});
+  }, []);
+  const toggleOverlay = async (on) => {
+    setOverlayErr("");
+    try {
+      await invoke(on ? "open_overlay" : "close_overlay");
+      setOverlayOn(on);
+      // Closing destroys the window, so its click-through state goes with it —
+      // reset the local mirror or re-opening shows a stale "clickable".
+      if (!on) setOverlayClickable(false);
+    } catch (e) {
+      setOverlayErr(String(e));
+    }
+  };
+  const toggleOverlayClickable = async (on) => {
+    try {
+      await invoke("set_overlay_interactive", { interactive: on });
+      setOverlayClickable(on);
+    } catch (e) {
+      setOverlayErr(String(e));
+    }
+  };
+
   // Draft text for the UDP port field so the user can clear/retype freely; only a
   // valid 1–65535 value is committed up to the app (which pushes it to the Rust core).
   const [portDraft, setPortDraft] = useState(String(udpPort));
@@ -306,6 +337,45 @@ export default function SettingsScreen({
                 </div>
               </div>
             )}
+
+            {/* Game overlay (prototype) — a transparent always-on-top window
+                drawn over the game. Native-only: there is no second window to
+                create in plain-browser dev. */}
+            {inTauri && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <label style={label}>Game Overlay · prototype</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[["Off", false], ["Show on top of game", true]].map(([text, on]) => (
+                    <button key={text} onClick={() => toggleOverlay(on)} style={{
+                      padding: "9px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: .3, fontFamily: FONT.ui,
+                      background: overlayOn === on ? C.elevated : C.inset,
+                      border: `1px solid ${overlayOn === on ? C.blue : C.borderInput}`,
+                      color: overlayOn === on ? "#fff" : "#9aa3b5" }}>{text}</button>
+                  ))}
+                </div>
+                {overlayOn && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: C.textDim, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={overlayClickable}
+                      onChange={e => toggleOverlayClickable(e.target.checked)}
+                    />
+                    Make it clickable so I can drag it into position
+                  </label>
+                )}
+                {overlayErr && (
+                  <div style={{ fontSize: 10, color: C.red, fontFamily: FONT.mono }}>{overlayErr}</div>
+                )}
+                <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
+                  Draws speed, gear, pedals and lap time over the game. <b>The game must be
+                  running in Borderless or Windowed mode</b> — in Exclusive Fullscreen the game
+                  bypasses the desktop compositor and nothing can be drawn on top of it. While
+                  "clickable" is on, clicks landing on the overlay are taken from the game, so
+                  turn it back off before driving.
+                </div>
+              </div>
+            )}
+
             {/* Online leaderboards: the master switch, what your board identity
                 actually is, and the only place a published lap can be taken back
                 down. */}
