@@ -25,6 +25,12 @@ fn session_has_ai_lap_start(t: u8) -> bool {
 
 const PI: f32 = std::f32::consts::PI;
 
+/// How recent a UDP packet has to be for the game to count as "sending".
+const TELE_LIVE_MS: i64 = 2_000;
+/// How long telemetry must have been quiet before it resuming counts as the
+/// game starting up rather than a lull between sessions.
+const TELE_COLD_MS: i64 = 30_000;
+
 /// Normalised slip + grip cues, shared by the force computation and the UI
 /// gauges so the arc gauges always display exactly what the wheel feels.
 /// Returns (front_norm, rear_norm, understeer, oversteer).
@@ -474,6 +480,12 @@ pub fn ffb_thread(
     // allocation on the real-time thread.
     let mut last_gauge_pub: Option<Instant> = None;
 
+    // Telemetry-liveness edge: the ms at which the game last looked like it was
+    // sending. Frozen while it is quiet, so a resume after a long silence is
+    // recognisable as the game coming up.
+    let mut tele_alive_ms: i64 = 0;
+    let mut last_diag: Option<(i32, i32, bool, i32)> = None;
+
     // Rate meters.
     let mut rate_anchor = Instant::now();
     let mut ffb_count: u64 = 0;
@@ -620,11 +632,49 @@ pub fn ffb_thread(
             last_udp_count = udp_now;
             ffb_count = 0;
             rate_anchor = Instant::now();
+            // ── The game waking up is our most reliable "the wheel has just
+            // been taken" signal. ──
+            // No DirectInput query reports the theft dependably (some bases keep
+            // reporting the effect as playing while producing nothing), but the
+            // cure the driver found by hand — a full deselect/reselect — always
+            // works. Telemetry arriving after a long silence is the game coming
+            // up, i.e. just after the steal, so do that deselect/reselect for
+            // them. The long-gap requirement is what keeps it from firing on the
+            // short pauses between sessions, and `reacquire`'s own backoff stops
+            // it treading on a device the driver has only just chosen.
+            if wheel.is_open() {
+                let now = now_ms();
+                let last_pkt = stats.last_udp_ms.load(Ordering::Relaxed);
+                if last_pkt != 0 && now - last_pkt < TELE_LIVE_MS {
+                    if tele_alive_ms == 0 || now - tele_alive_ms > TELE_COLD_MS {
+                        wheel.reacquire("the game started sending telemetry");
+                    }
+                    tele_alive_ms = now;
+                }
+            }
+
             // Liveness probe + self-repair. It has to run AFTER the frame's
             // `send`, because that update is what drives SDL's re-acquire and so
             // decides whether the probe's `Start` can land. 2 Hz is plenty: what
             // it catches happens while the game is booting, not on track.
             let health_changed = wheel.poll_health();
+
+            // What the DEVICE says, logged only when it changes: the belief and
+            // the driver's answer diverging is the whole bug, so print the
+            // answer rather than the belief.
+            if wheel.is_open() {
+                let d = wheel.diag();
+                if last_diag != Some(d) {
+                    last_diag = Some(d);
+                    log::info!(
+                        "[ffb] device says: constant={} sine={} trusted={} sendRc={} \
+                         (we think open={} healthy={})",
+                        d.0, d.1, d.2, d.3, wheel.is_open(), wheel.is_healthy(),
+                    );
+                }
+            } else {
+                last_diag = None;
+            }
             // Surface a live SDL error if one appeared — or clear a stale one
             // once a recovery has taken.
             let err = wheel.last_error();

@@ -142,6 +142,10 @@ pub struct WheelOutput {
     /// non-null, which stays true right through a steal.
     healthy: bool,
     repair: Repair,
+    /// Return code of the last constant-force update. SDL re-acquires inside
+    /// that call, so a 0 here alongside a dead wheel is the signature of a base
+    /// that is registered and listening but not producing force.
+    last_send_rc: i32,
 }
 
 impl WheelOutput {
@@ -161,6 +165,7 @@ impl WheelOutput {
             desired: None,
             healthy: false,
             repair: Repair::new(),
+            last_send_rc: 0,
         }
     }
 
@@ -243,6 +248,7 @@ impl WheelOutput {
             return Err(self.error.clone());
         }
         let haptic_index = self.devices[index as usize].index;
+        let caps;
         unsafe {
             let h = sys::SDL_HapticOpen(haptic_index);
             if h.is_null() {
@@ -254,7 +260,7 @@ impl WheelOutput {
                 return Err(self.error.clone());
             }
 
-            let caps = sys::SDL_HapticQuery(h);
+            caps = sys::SDL_HapticQuery(h);
             if caps & sys::SDL_HAPTIC_CONSTANT == 0 {
                 self.error = "Device does not support constant-force FFB (required).".to_string();
                 sys::SDL_HapticClose(h);
@@ -326,24 +332,75 @@ impl WheelOutput {
         // here costs nothing permanent.
         let playing = self.effect_playing();
         self.repair.calibrate(playing);
+        // Stamp the reopen clock on a deliberate open too, so a trigger that
+        // fires moments later (telemetry waking up as the app starts) can't
+        // immediately tear down a device the driver just chose.
+        self.repair.reopened();
         self.desired = self.device_name();
-        Ok(self.device_name().unwrap_or_default())
+        let name = self.device_name().unwrap_or_default();
+        log::info!(
+            "[ffb] opened \"{name}\": caps=0x{caps:08x} constant={} damper={} sine={} \
+             statusAfterStart={} (trusted={})",
+            self.eff_constant,
+            self.eff_damper,
+            self.eff_sine,
+            self.effect_status(self.eff_constant),
+            self.repair.trusted,
+        );
+        Ok(name)
     }
 
-    /// Is the main effect playing, as far as the DEVICE is concerned? 1 =
-    /// playing, 0 = stopped, -1 = the query failed (we hold the handle but are
-    /// no longer acquired). Only the first counts as alive.
-    fn effect_playing(&self) -> bool {
-        if self.haptic.is_null() || self.eff_constant < 0 {
-            return false;
+    /// What the DEVICE says about one effect: 1 = playing, 0 = stopped, -1 =
+    /// the query failed (we hold the handle but are no longer acquired).
+    fn effect_status(&self, id: i32) -> i32 {
+        if self.haptic.is_null() || id < 0 {
+            return -1;
         }
-        let r = unsafe { sys::SDL_HapticGetEffectStatus(self.haptic, self.eff_constant) };
+        let r = unsafe { sys::SDL_HapticGetEffectStatus(self.haptic, id) };
         if r < 0 {
             // A failed query leaves its reason in SDL's global error slot; wipe
             // it so `send`'s next error read can't mistake it for a send fault.
             unsafe { sys::SDL_ClearError() };
         }
-        r == 1
+        r
+    }
+
+    /// Only a positive counts as alive.
+    fn effect_playing(&self) -> bool {
+        self.effect_status(self.eff_constant) == 1
+    }
+
+    /// What the device reports right now, for the log: (constant, sine, trusted,
+    /// last send rc). Every field is a raw driver answer, not our belief about
+    /// it — the whole point is to see where the two diverge.
+    pub fn diag(&self) -> (i32, i32, bool, i32) {
+        (
+            self.effect_status(self.eff_constant),
+            self.effect_status(self.eff_sine),
+            self.repair.trusted,
+            self.last_send_rc,
+        )
+    }
+
+    /// The programmatic equivalent of the driver deselecting the wheel and
+    /// selecting it again: a full close, re-enumerate and reopen. Coarser than
+    /// re-arming, and the only thing known to revive a base that another app has
+    /// taken — a `Start` on the old handle is not enough on every device. The
+    /// backoff keeps it from firing on the heels of a deliberate open.
+    pub fn reacquire(&mut self, why: &str) -> bool {
+        if self.desired.is_none() || !self.repair.may_reopen() {
+            return false;
+        }
+        log::info!("[ffb] re-acquiring the wheel ({why})");
+        self.reopen_desired();
+        let ok = self.is_open();
+        log::info!(
+            "[ffb] re-acquire {}: open={} status={:?}",
+            if ok { "done" } else { "FAILED" },
+            ok,
+            self.diag()
+        );
+        ok
     }
 
     /// Re-issue `Start` for every live effect. Cheap, idempotent, and the whole
@@ -510,9 +567,8 @@ impl WheelOutput {
                 e.constant.length = sys::SDL_HAPTIC_INFINITY;
                 let lvl = (clampf(finite_or_zero(sig.torque), -1.0, 1.0) * SDL_FORCE_MAX as f32) as i32;
                 e.constant.level = lvl.clamp(-SDL_FORCE_MAX, SDL_FORCE_MAX) as i16;
-                if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e) < 0
-                    && self.error.is_empty()
-                {
+                self.last_send_rc = sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e);
+                if self.last_send_rc < 0 && self.error.is_empty() {
                     self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
                 }
             }
