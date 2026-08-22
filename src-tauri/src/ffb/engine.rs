@@ -85,6 +85,11 @@ pub struct FfbGauges {
 #[serde(rename_all = "camelCase")]
 pub struct FfbStatus {
     pub device_open: bool,
+    /// Open AND actually producing force. `device_open` alone can't say: another
+    /// app acquiring the wheel stops our effects behind a still-valid handle,
+    /// so a green light keyed on `device_open` lies until the driver notices
+    /// there is no FFB. See `WheelOutput::poll_health`.
+    pub healthy: bool,
     pub device_name: Option<String>,
     pub active_index: i32,
     pub enabled: bool,
@@ -488,7 +493,7 @@ pub fn ffb_thread(
                     let _ = reply.send(r);
                 }
                 FfbCommand::Close => {
-                    wheel.close_device();
+                    wheel.release_device();
                     push_status(&handle, &wheel, String::new());
                 }
                 FfbCommand::ResetPeak => engine.reset_peak(stats),
@@ -615,9 +620,15 @@ pub fn ffb_thread(
             last_udp_count = udp_now;
             ffb_count = 0;
             rate_anchor = Instant::now();
-            // Surface a live SDL send error if one appeared.
+            // Liveness probe + self-repair. It has to run AFTER the frame's
+            // `send`, because that update is what drives SDL's re-acquire and so
+            // decides whether the probe's `Start` can land. 2 Hz is plenty: what
+            // it catches happens while the game is booting, not on track.
+            let health_changed = wheel.poll_health();
+            // Surface a live SDL error if one appeared — or clear a stale one
+            // once a recovery has taken.
             let err = wheel.last_error();
-            if !err.is_empty() && handle.status.load().error != err {
+            if health_changed || handle.status.load().error != err {
                 push_status(&handle, &wheel, err);
             }
         }
@@ -669,7 +680,7 @@ pub fn ffb_thread(
         }
     }
 
-    wheel.close_device();
+    wheel.release_device();
     if rt_active {
         realtime_end();
     }
@@ -678,6 +689,7 @@ pub fn ffb_thread(
 fn push_status(handle: &Arc<FfbHandle>, wheel: &WheelOutput, error: String) {
     handle.status.store(Arc::new(FfbStatus {
         device_open: wheel.is_open(),
+        healthy: wheel.is_healthy(),
         device_name: wheel.device_name(),
         active_index: wheel.active_index(),
         enabled: handle.enabled.load(Ordering::Relaxed),
