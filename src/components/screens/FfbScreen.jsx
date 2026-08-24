@@ -279,13 +279,18 @@ export default function FfbScreen({ ffb }) {
         </div>
       ) : devices.map((d) => {
         const active = status.activeIndex === d.index && status.deviceOpen;
+        // Open but not producing force: the engine is re-arming it (something
+        // else took the wheel). Saying CONNECTED here is what used to send the
+        // driver hunting for a deselect/reselect.
+        const lost = active && status.healthy === false;
+        const dot = lost ? C.yellow : active ? C.green : C.textFaint;
         return (
           <button key={d.index} onClick={() => (active ? closeDevice() : openDevice(d.index))}
             style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", padding: "9px 11px", borderRadius: 8, cursor: "pointer", fontFamily: FONT.ui,
               border: `1px solid ${active ? C.blue : C.borderInput}`, background: active ? C.elevated : C.inset, color: "#fff" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", flex: "none", background: active ? C.green : C.textFaint, boxShadow: active ? `0 0 8px ${C.green}` : "none" }} />
+            <span style={{ width: 8, height: 8, borderRadius: "50%", flex: "none", background: dot, boxShadow: active ? `0 0 8px ${dot}` : "none" }} />
             <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
-            <span style={{ fontSize: 10, fontWeight: 700, color: active ? C.green : C.textDim }}>{active ? "CONNECTED" : "OPEN"}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: lost ? C.yellow : active ? C.green : C.textDim }}>{lost ? "RECONNECTING" : active ? "CONNECTED" : "OPEN"}</span>
           </button>
         );
       })}
