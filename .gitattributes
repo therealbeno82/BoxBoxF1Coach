@@ -1,0 +1,37 @@
+# The line-ending policy lives HERE rather than in each machine's config. With
+# no .gitattributes the behaviour is whatever Git was installed with: the
+# Windows installer sets core.autocrlf=true system-wide, which stores LF in the
+# index but writes CRLF into the working tree.
+#
+# That split is what made generated files show as modified with an EMPTY diff.
+# Tauri's Android codegen, Gradle and the node scripts all write LF; Git wanted
+# CRLF; the mismatch was never a real change but was enough to block a branch
+# switch ("local changes would be overwritten"). Pinning the working tree to LF
+# makes Git agree with what the tooling actually writes.
+#
+# The index has always been LF — all 191 text files — so this rewrites no
+# history. It only changes what lands on disk.
+* text=auto eol=lf
+
+# cmd.exe is the one consumer that genuinely wants CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# `gradlew` is a POSIX shell script, and CRLF there is a runtime failure rather
+# than a cosmetic diff: sh reads the shebang as "/bin/sh\r" and reports
+# "bad interpreter". It was checked out CRLF before this file existed. The rule
+# above already covers it; it is named because it is the case that actually
+# breaks.
+src-tauri/gen/android/gradlew text eol=lf
+
+# Assets Git must never rewrite. text=auto already detects these by content,
+# but naming them stops a future file that happens to contain no NUL byte from
+# being mangled as text.
+*.glb   binary
+*.icns  binary
+*.ico   binary
+*.jar   binary
+*.png   binary
+*.wasm  binary
+*.woff2 binary
+*.onnx  binary
