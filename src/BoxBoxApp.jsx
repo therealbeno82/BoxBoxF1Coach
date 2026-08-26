@@ -49,6 +49,10 @@ import { inTauri } from "./lib/env.js";
 import { useLlmHealth } from "./hooks/useLlmHealth.js";
 import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
+import { useTauriEvents } from "./hooks/useTauriEvents.js";
+import { buildRefAxis } from "./lib/timeAxis.js";
+import { LIVE_LEGEND } from "./lib/cues.js";
+import { emitOverlayState, EV_REQUEST_STATE, EV_CUE_TOGGLE } from "./lib/overlayBridge.js";
 import { useFfbEngine } from "./hooks/useFfbEngine.js";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -106,19 +110,8 @@ function classifySample(s, hasBrake = true) {
   return { type: "normal", ersMode: mode };
 }
 
-// LIVE screen legend: [swatch colour, label, GRANULAR key (legendKeyFor)]. Each chip
-// is an independent on/off toggle controlling both the map colour AND that category's
-// voice cue. "normal" (None) toggles whether un-cued track segments are drawn AND
-// gates the ERS-off "None" cue (ersMode 0 maps to this key — see legendKeyFor).
-const LIVE_LEGEND = [
-  ["#ff5252", "Brake",  "brake"],
-  ["#ffab00", "LiCo",   "lico"],
-  ["#ffd54f", "Lift",   "lift"],
-  ["#888888", "Medium", "ers1"],  // 6-digit so the chip's `color + "66"` alpha border is valid
-  ["#e040fb", "Hotlap", "ers2"],
-  ["#2979ff", "Boost",  "ers3"],
-  ["#6b7280", "None",   "normal"], // visible neutral grey (was near-black #1e1e1e)
-];
+// LIVE_LEGEND moved to lib/cues.js — the game overlay renders the same seven
+// toggles from a different webview and must not keep its own copy.
 const DEFAULT_ZONES = [
   { id:1, name:"T1",          start:0.04, end:0.08, type:"brake", ersMode:0, note:"Heavy braking zone" },
   { id:2, name:"S1 Straight", start:0.12, end:0.22, type:"ers",   ersMode:3, note:"Main straight — Boost" },
@@ -2024,6 +2017,46 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     () => matchReference(coachLap, activeTrace, { drivenTrack: drivenTrackName }),
     [coachLap, activeTrace, drivenTrackName]);
   const refMismatch = refMatch && !refMatch.ok ? refMatch : null;
+
+  // ── Game overlay: push the derived state the HUD can't compute for itself ──
+  // The overlay reads telemetry straight from Rust, so only what lives up here
+  // has to cross: the reference's time-vs-distance curve (for the live delta),
+  // whether that reference is even comparable, and which cue categories are armed.
+  //
+  // The axis is rebuilt only when the reference itself changes — it is ~600 bins,
+  // and re-deriving it per telemetry tick would be a lap's worth of arithmetic 30
+  // times a second for a curve that did not move.
+  const overlayRefAxis = useMemo(
+    () => buildRefAxis(activeTrace?.samples),
+    [activeTrace]);
+
+  // The LIVE verdict, not the between-lap one: the delta is a real-time readout,
+  // so it has to fall silent on the same terms the corner calls do. A dry-line
+  // reference against a wet lap makes the number meaningless, not merely optimistic.
+  const overlayState = useMemo(() => ({
+    refAxis: liveRefMismatch ? null : overlayRefAxis,
+    // Just the headline of the first blocker — the HUD has room for a line, and
+    // the full explanation is on the Live screen where it can be read at rest.
+    refReason: liveRefMismatch?.reasons?.[0]?.title || null,
+    refLabel: activeTrace ? profileLabel(liveRefMatch?.ref) : null,
+    hasRef: !!activeTrace,
+    cues: liveCues,
+    units,
+  }), [overlayRefAxis, liveRefMismatch, liveRefMatch, activeTrace, liveCues, units]);
+
+  useEffect(() => { emitOverlayState(overlayState); }, [overlayState]);
+
+  // The overlay asks for a resend when it mounts, and toggles cues back at us.
+  // Both names are static, which is what useTauriEvents requires.
+  const overlayStateRef = useRef(overlayState);
+  overlayStateRef.current = overlayState;
+  useTauriEvents({
+    [EV_REQUEST_STATE]: () => emitOverlayState(overlayStateRef.current),
+    [EV_CUE_TOGGLE]: (e) => {
+      const { key, on } = e.payload || {};
+      if (typeof key === "string") setLiveCues(c => ({ ...c, [key]: !!on }));
+    },
+  });
 
   // The LIVE verdict gates the REAL-TIME call engine. Every brake / lift-and-coast
   // / ERS zone is derived from the reference's own channels (deriveZonesFromTrace),

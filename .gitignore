@@ -42,3 +42,8 @@ supabase/.temp/
 # Claude Code local config — contains secrets (API keys); never commit
 .claude/settings.json
 .claude/settings.local.json
+
+# Git worktrees live here. A worktree is a second checkout of this same repo, so
+# without this the parent checkout reports the whole thing as untracked and it is
+# one `git add .` away from being committed into itself.
+.claude/worktrees/

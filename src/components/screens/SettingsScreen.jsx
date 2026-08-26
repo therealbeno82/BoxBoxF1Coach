@@ -20,6 +20,8 @@ import { APP_VERSION } from "../../lib/updateCheck.js";
 import { inTauri } from "../../lib/env.js";
 import LeaderboardSettings from "../LeaderboardSettings.jsx";
 import { invoke } from "@tauri-apps/api/core";
+import { useTauriEvents } from "../../hooks/useTauriEvents.js";
+import { EV_EDIT } from "../../lib/overlayBridge.js";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 13 };
 const label = { fontSize: 10, letterSpacing: 1.5, color: C.textMuted, textTransform: "uppercase", fontWeight: 600 };
@@ -43,6 +45,42 @@ export default function SettingsScreen({
   const [orModels, setOrModels] = useState([]);
   const [orStatus, setOrStatus] = useState("idle");
   const [availVoices, setAvailVoices] = useState([]);
+
+  // Game overlay (prototype). The window is owned by Rust, so the truth lives
+  // there — read it on mount rather than assuming off, or the toggle lies after
+  // navigating away from Settings and back.
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [overlayClickable, setOverlayClickable] = useState(false);
+  const [overlayErr, setOverlayErr] = useState("");
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke("is_overlay_open").then(setOverlayOn).catch(() => {});
+  }, []);
+  const toggleOverlay = async (on) => {
+    setOverlayErr("");
+    try {
+      await invoke(on ? "open_overlay" : "close_overlay");
+      setOverlayOn(on);
+      // Closing destroys the window, so its click-through state goes with it —
+      // reset the local mirror or re-opening shows a stale "clickable".
+      if (!on) setOverlayClickable(false);
+    } catch (e) {
+      setOverlayErr(String(e));
+    }
+  };
+  const toggleOverlayClickable = async (on) => {
+    try {
+      await invoke("set_overlay_interactive", { interactive: on });
+      setOverlayClickable(on);
+    } catch (e) {
+      setOverlayErr(String(e));
+    }
+  };
+  // The overlay can re-lock ITSELF (its Lock button / Escape), which it has to be
+  // able to do — unlocked, it covers the monitor and this checkbox is unreachable.
+  // Listening for the same event the command emits keeps the checkbox honest
+  // instead of still claiming "unlocked" after the driver locked it from the HUD.
+  useTauriEvents({ [EV_EDIT]: (e) => setOverlayClickable(!!e.payload) });
 
   // Draft text for the UDP port field so the user can clear/retype freely; only a
   // valid 1–65535 value is committed up to the app (which pushes it to the Rust core).
@@ -306,6 +344,49 @@ export default function SettingsScreen({
                 </div>
               </div>
             )}
+
+            {/* Game overlay (prototype) — a transparent always-on-top window
+                drawn over the game. Native-only: there is no second window to
+                create in plain-browser dev. */}
+            {inTauri && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <label style={label}>Game Overlay · prototype</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[["Off", false], ["Show on top of game", true]].map(([text, on]) => (
+                    <button key={text} onClick={() => toggleOverlay(on)} style={{
+                      padding: "9px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: .3, fontFamily: FONT.ui,
+                      background: overlayOn === on ? C.elevated : C.inset,
+                      border: `1px solid ${overlayOn === on ? C.blue : C.borderInput}`,
+                      color: overlayOn === on ? "#fff" : "#9aa3b5" }}>{text}</button>
+                  ))}
+                </div>
+                {overlayOn && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: C.textDim, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={overlayClickable}
+                      onChange={e => toggleOverlayClickable(e.target.checked)}
+                    />
+                    Unlock — move, resize and switch widgets on the overlay
+                  </label>
+                )}
+                {overlayErr && (
+                  <div style={{ fontSize: 10, color: C.red, fontFamily: FONT.mono }}>{overlayErr}</div>
+                )}
+                <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.7 }}>
+                  Live delta to your reference lap, the audible-cue toggles, speed/gear and a lap
+                  clock — drawn over the game and arranged how you like. <b>The game must be
+                  running in Borderless or Windowed mode</b>; in Exclusive Fullscreen the game
+                  bypasses the desktop compositor and nothing can be drawn on top of it.
+                  <br /><br />
+                  <b>Unlock</b> to drag widgets, drag their bottom-right corner to resize, and show
+                  or hide them from the bar at the bottom of the screen. Your layout is remembered.
+                  While unlocked the overlay swallows clicks that would otherwise reach the game,
+                  so lock it again before driving — locked, it is completely click-through.
+                </div>
+              </div>
+            )}
+
             {/* Online leaderboards: the master switch, what your board identity
                 actually is, and the only place a published lap can be taken back
                 down. */}

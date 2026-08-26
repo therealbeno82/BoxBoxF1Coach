@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Single source of truth for the running build's version: read it straight from
 // package.json and inline it as __APP_VERSION__ so the update check (see
@@ -15,6 +16,19 @@ export default defineConfig({
   clearScreen: false,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+  },
+  // TWO HTML entries, not one. The game overlay (src-tauri/src/overlay.rs) is a
+  // second webview pointed at overlay.html, and Vite only emits the extra page if
+  // it is named here — without this the overlay 404s in the packaged build while
+  // working fine in dev, where the dev server resolves any file on disk. Keep
+  // `main` first: it stays index.html, which is what the main window loads.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+      },
+    },
   },
   server: {
     // Default to Tauri's conventional 1420, but honour a PORT override (e.g. a
