@@ -1,5 +1,7 @@
 # F1 Coach
 
+[![Join the Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/2bZGXGBZj9)
+
 **An AI race engineer for EA SPORTS F1™ 25/26.** F1 Coach reads the game's live UDP
 telemetry, compares your driving against reference traces, drives your force-feedback
 wheel, and coaches you over "team radio" — real-time braking/ERS calls in the corner, and
@@ -415,6 +417,17 @@ Known limitations worth stating plainly:
 
 See [CODE_REVIEW.md](CODE_REVIEW.md) for hardening items and the issue tracker for the
 roadmap.
+
+---
+
+## Community
+
+News, release announcements and setup help happen on the **F1 Coach Discord** —
+[**discord.gg/2bZGXGBZj9**](https://discord.gg/2bZGXGBZj9). New builds get announced there
+first, and it's the quickest place to get telemetry or a wheel sorted out, compare laps, or
+ask for a feature. Bug reports are still best filed on the
+[issue tracker](https://github.com/therealbeno82/BoxBoxF1Coach/issues) so they don't scroll
+away.
 
 ---
 

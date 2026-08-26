@@ -83,7 +83,7 @@ export function useFfbEngine() {
   // The engine's authoritative default tuning — fetched from Rust on mount so
   // "Reset all" / fresh installs can never drift from ffb/settings.rs.
   const defaultsRef = useRef(DEFAULT_FFB_SETTINGS);
-  const [status, setStatus] = useState({ deviceOpen: false, deviceName: null, activeIndex: -1, enabled: true, error: "" });
+  const [status, setStatus] = useState({ deviceOpen: false, healthy: false, deviceName: null, activeIndex: -1, enabled: true, error: "" });
   const [devices, setDevices] = useState([]);
   const [enabled, setEnabledState] = useState(() => localStorage.getItem(ENABLED_KEY) !== "0");
   const [profiles, setProfiles] = useState(loadProfiles);
@@ -116,6 +116,23 @@ export function useFfbEngine() {
     refreshDevices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A self-repair in the engine can re-enumerate behind this list's back (it
+  // reopens a lost wheel by NAME, since the haptic index moves when the device
+  // list changes), leaving the rows here pointing at the old indices. Rust only
+  // ever reports a name and an index that agree, so the two disagreeing here
+  // means exactly one thing: our copy is stale. Re-pull it — once per mismatch,
+  // so a name the engine reports and enumeration doesn't can't spin.
+  const chasedRef = useRef(null);
+  useEffect(() => {
+    const { deviceName, activeIndex } = status;
+    const row = devices.find((d) => d.index === activeIndex);
+    if (!deviceName || (row && row.name === deviceName)) { chasedRef.current = null; return; }
+    const key = `${deviceName}@${activeIndex}`;
+    if (chasedRef.current === key) return;
+    chasedRef.current = key;
+    refreshDevices();
+  }, [status, devices, refreshDevices]);
 
   const persist = (s) => localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean(s)));
 
@@ -203,7 +220,11 @@ export function useFfbEngine() {
     openDevice, closeDevice, resetPeak,
     enabled, setEnabled,
     profiles, activeProfile, dirty, saveProfileAs, saveActive, loadProfile, deleteProfile,
-    connected: !!status.deviceOpen,
+    // "Open" is not the same as "producing force" — another app acquiring the
+    // wheel stops our effects behind a handle that stays valid. The engine's
+    // `healthy` flag is the one that means the wheel actually responds, so it,
+    // not `deviceOpen`, is what the FFB pill reports.
+    connected: !!status.deviceOpen && status.healthy !== false,
   };
 }
 
