@@ -7,13 +7,15 @@ pub mod engine;
 pub mod settings;
 pub mod wheel;
 
-pub use engine::{ffb_thread, FfbCommand, FfbGauges, FfbHandle, FfbStatus};
+pub use engine::{
+    ffb_thread, FfbCommand, FfbGauges, FfbHandle, FfbStatus, FfbTrace, TraceDump,
+};
 pub use settings::FfbSettings;
 pub use wheel::DeviceInfo;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use arc_swap::ArcSwap;
@@ -38,6 +40,7 @@ impl FfbSystem {
             enabled: AtomicBool::new(true),
             cmd_tx: tx,
             running: running.clone(),
+            trace: Mutex::new(FfbTrace::default()),
         });
         let thread = {
             let handle = handle.clone();

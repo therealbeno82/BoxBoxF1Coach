@@ -69,7 +69,21 @@ const PARAM_GROUPS = [
       { k: "scrubHz", label: "Scrub Pitch", kind: "raw", lo: 20, hi: 70, step: 1, unit: "Hz",
         hint: "Vibration frequency of the front scrub (severity adds up to +30% on top). A mid buzz — sits between the slow wheelspin tramp and the fast lockup judder." },
   ]},
+  { title: "RECONSTRUCTION",
+    note: "How the game's ~60 Hz physics frames become a continuous force. Cubic removes the slope kink at every frame boundary (less grain); the delay trades latency for a fuller interpolation window. The latency shown is this app's own chain — the game and USB add more.",
+    rows: [
+      { k: "interpolation", label: "Frame Interpolation", kind: "choice",
+        options: [{ value: "linear", label: "Linear" }, { value: "cubic", label: "Cubic" }],
+        hint: "Linear = the original two-frame blend. Cubic = a monotone spline through the last four frames: C1 at every boundary, no overshoot. A/B it while driving." },
+      { k: "interpDelayFrac", label: "Reconstruction Delay", kind: "raw", lo: 0.5, hi: 1.0, step: 0.05, unit: "frame",
+        hint: "How far behind the newest physics frame the wheel is rendered. 0.5 frame ≈ 8 ms at 60 Hz. Raising it always interpolates instead of projecting a half frame ahead, at the cost of feel delay." },
+      { kind: "latency" },
+    ]},
   { title: "OUTPUT", rows: [
+    { k: "damping", label: "Damper", kind: "pct", lo: 0, hi: 2,
+      hint: "DirectInput damper (friction) the wheel base applies as it turns. Set to 0 if the wheel feels grainy or notchy at centre / low speed — direct-drive bases vary in how coarsely they render condition effects. 100% = the slip-based value." },
+    { k: "slewLimit", label: "Slew Limit", kind: "raw", lo: 0, hi: 20, step: 0.5, unit: "/s",
+      hint: "Caps how fast wheel force can change (full-scale per second), so high-frequency grain is stripped without losing steady force — unlike Smoothing, which reduces both. 0 = off. Start around 5 and raise until the grain calms; lower it if real hits feel slow." },
     { k: "smoothing", label: "Smoothing", kind: "pct", lo: 0, hi: 0.5,
       hint: "Latency-vs-smoothness trade: higher = smoother but laggier (up to ~40ms at max). Keep low for the crispest feel; raise to calm DD oscillation." },
     { k: "minForce", label: "Min Force", kind: "pct", lo: 0, hi: 0.3,
@@ -81,7 +95,7 @@ const PARAM_GROUPS = [
     { k: "runUpReleaseM", label: "Flying-Lap Release", kind: "raw", lo: 100, hi: 2000, step: 50, unit: "m",
       hint: "SAFETY (GP-weekend Qualifying flying lap). Force is held OFF during the AI run-up and restored when the car is this many metres before the start/finish line. Raise it if feedback returns too late; lower it if force comes back while the AI is still driving." },
     { k: "ffbUpdateHz", label: "Update Rate", kind: "raw", lo: 30, hi: 360, step: 1, unit: "Hz",
-      hint: "Output ceiling. 60–90 Hz suits most wheels; some drop force if updated too fast. Raise gradually." },
+      hint: "How often the wheel is updated — independent of the game's ~60 Hz telemetry, which is what the smoothing runs against. 200–360 Hz suits direct-drive bases; lower it if a belt/gear wheel drops force at high rates." },
     { k: "invertForce", label: "Invert Force Direction", kind: "bool",
       hint: "Flip wheel pull direction if torque fights your steering." },
     { k: "brakingInvert", label: "Invert Braking Weight", kind: "bool",
@@ -214,9 +228,26 @@ function InputBar({ label, value, color, bipolar = false }) {
   );
 }
 
-// One tuning row: percentage / raw-unit slider, or a toggle. The row carries the
-// original's hint as a native hover tooltip.
+// One tuning row: percentage / raw-unit slider, a two-way choice, or a toggle.
+// The row carries the original's hint as a native hover tooltip.
 function ParamRow({ row, settings, setSetting }) {
+  if (row.kind === "choice") {
+    const active = settings[row.k];
+    return (
+      <div title={row.hint} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "3px 0" }}>
+        <span style={{ fontSize: 12, color: C.textBody }}>{row.label}</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {row.options.map((o) => (
+            <button key={o.value} onClick={() => setSetting(row.k, o.value)} style={miniBtn({
+              padding: "5px 10px", color: active === o.value ? C.blue : C.textFaint,
+              border: `1px solid ${active === o.value ? C.blue : "transparent"}`,
+              background: active === o.value ? "rgba(54,113,198,.12)" : "transparent",
+            })}>{o.label}</button>
+          ))}
+        </div>
+      </div>
+    );
+  }
   if (row.kind === "bool") {
     return (
       <div title={row.hint} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "3px 0" }}>
@@ -245,10 +276,35 @@ function ParamRow({ row, settings, setSetting }) {
   );
 }
 
+// Live estimate of the latency this app adds between the game's physics frame
+// and the wheel command. Component terms are the reconstruction delay (a
+// fraction of a physics frame), the two-pole smoothing group delay (tau =
+// smoothing × 80 ms), and half an output tick. Measured values are preferred
+// where the gauges carry them.
+function LatencyRow({ settings, gauges }) {
+  const frameHz = (gauges?.motionHz || 0) > 10 ? gauges.motionHz : 60;
+  const recon = clamp(settings.interpDelayFrac ?? 0.5, 0, 1) * (1000 / frameHz);
+  const smoothing = (settings.smoothing || 0) * 80;
+  const tick = 1000 / (2 * (settings.ffbUpdateHz || 200));
+  const total = recon + smoothing + tick;
+  const part = (v) => v.toFixed(1);
+  return (
+    <div title="Estimated latency this app adds before the wheel is updated. Excludes the game's own FFB pipeline and the base's USB/firmware delay."
+      style={{ display: "flex", flexDirection: "column", gap: 3, background: C.inset, borderRadius: 8, padding: "8px 10px" }}>
+      <span style={{ fontFamily: FONT.mono, fontSize: 11, fontWeight: 800, color: C.textMuted }}>
+        EST. CHAIN LATENCY ≈ {part(total)} ms
+      </span>
+      <span style={{ fontFamily: FONT.mono, fontSize: 10, color: C.textFaint }}>
+        recon {part(recon)} + smoothing {part(smoothing)} + tick {part(tick)} ms · physics {Math.round(frameHz)} Hz
+      </span>
+    </div>
+  );
+}
+
 export default function FfbScreen({ ffb }) {
   const {
     settings, setSetting, resetSettings, status, devices, refreshDevices,
-    openDevice, closeDevice, resetPeak, enabled, setEnabled,
+    openDevice, closeDevice, resetPeak, exportTrace, enabled, setEnabled,
     profiles, activeProfile, dirty, saveProfileAs, saveActive, loadProfile, deleteProfile,
   } = ffb;
   // Subscribed here (not in useFfbEngine) so the ~30 Hz gauge stream only
@@ -310,6 +366,13 @@ export default function FfbScreen({ ffb }) {
       <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.6 }}>
         The game's UDP port is set in <span style={{ color: C.textMuted }}>Settings → Telemetry</span>. Set in-game FFB strength to 0%.
       </div>
+      {/simucube|granite/i.test(status.deviceName || "") ? (
+        <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.6, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
+          <span style={{ color: C.textMuted, fontWeight: 700 }}>Simucube 2:</span> run the base's Reconstruction Filter low (0–1) with this app's 200–360 Hz output.
+          If grain remains, mute <span style={{ color: C.textMuted }}>Game Effects → Sine Wave</span> and <span style={{ color: C.textMuted }}>Damper</span> to isolate the app's
+          rumble/damper, and use the Notch Filter for a single offending frequency.
+        </div>
+      ) : null}
     </div>
   );
 
@@ -430,6 +493,13 @@ export default function FfbScreen({ ffb }) {
                 <StatCell label="Friction" value={(g.friction || 0).toFixed(2)} color={C.cyan} />
                 <StatCell label="Rumble" value={rumbleTxt} color={C.cyan} />
                 <StatCell label="UDP Pkt" value={g.udpPackets || 0} color={C.textMuted} />
+                <StatCell label="Physics" value={`${Math.round(g.motionHz || 0)} Hz`}
+                  color={(g.motionHz || 0) > 0 && g.motionHz < 50 ? C.yellow : C.textMuted} />
+                <StatCell label="Knot Clock"
+                  value={g.gameClock == null ? "--" : g.gameClock ? "GAME" : "ARRIVAL"}
+                  color={g.gameClock === false ? C.yellow : C.textMuted} />
+                <StatCell label="Tick Late" value={(g.tickLateUs || 0) > 0 ? `${Math.round(g.tickLateUs)} µs` : "--"}
+                  color={(g.tickMaxLateUs || 0) > 1500 ? C.yellow : C.textMuted} />
                 <StatCell label="Session" value={sessionTypeName(g.sessionType || 0)} color={C.textMuted} />
                 <StatCell label="Control" value={g.aiControl ? "AI" : "YOU"} color={g.aiControl ? C.yellow : C.green} />
                 <StatCell label="Driver" value={`${DRIVER_STATUS[g.driverStatus] || "--"}${g.pitStatus ? " (pit)" : ""}`} color={C.textMuted} />
@@ -440,6 +510,11 @@ export default function FfbScreen({ ffb }) {
                 <InputBar label="THR" value={g.throttle} color={C.green} />
                 <InputBar label="BRK" value={g.brake} color={C.red} />
                 <InputBar label="STR" value={g.steer} color={C.cyan} bipolar />
+              </div>
+              <div style={{ height: 1, background: C.line, margin: "4px 0" }} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 10, color: C.textDim }}>Output trace · recorded while a wheel is open</span>
+                <button onClick={exportTrace} style={miniBtn({ padding: "5px 9px" })}>Export trace</button>
               </div>
             </div>
           </div>
@@ -470,6 +545,7 @@ export default function FfbScreen({ ffb }) {
                         </div>
                       );
                     }
+                    if (row.kind === "latency") return <LatencyRow key="latency" settings={settings} gauges={g} />;
                     return <ParamRow key={row.k || i} row={row} settings={settings} setSetting={setSetting} />;
                   })}
                 </div>

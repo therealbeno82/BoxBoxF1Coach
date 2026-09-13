@@ -8,6 +8,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
@@ -237,6 +238,15 @@ pub struct FfbTelemetry {
     pub brake: f32,
 }
 
+#[cfg_attr(mobile, allow(dead_code))]
+#[derive(Clone, Copy, Default)]
+pub struct FfbFrame {
+    pub telem: FfbTelemetry,
+    pub session_time: Option<f32>,
+    pub frame_identifier: u32,
+    pub arrival_s: f64,
+}
+
 /// The JSON telemetry snapshot the webview consumes. Field-for-field identical
 /// to the old bridge `snapshot()` so every downstream Coach consumer is unchanged.
 /// camelCase field names are deliberate — they are the serialized wire contract.
@@ -404,6 +414,7 @@ impl Snapshot {
 #[cfg_attr(mobile, allow(dead_code))]
 pub struct AppStats {
     pub udp_packets: AtomicU64,
+    pub motion_frames: AtomicU64,
     pub last_udp_ms: AtomicI64,
     pub last_frame_advance_ms: AtomicI64,
     pub frame_streak_start_ms: AtomicI64,
@@ -432,6 +443,7 @@ impl Default for AppStats {
     fn default() -> Self {
         AppStats {
             udp_packets: AtomicU64::new(0),
+            motion_frames: AtomicU64::new(0),
             last_udp_ms: AtomicI64::new(0),
             last_frame_advance_ms: AtomicI64::new(0),
             frame_streak_start_ms: AtomicI64::new(0),
@@ -493,7 +505,7 @@ impl AppStats {
 /// The handle shared across threads: the latest snapshot (UI + FFB) and stats.
 pub struct SharedTelemetry {
     pub ui: ArcSwap<Snapshot>,
-    pub ffb: ArcSwap<FfbTelemetry>,
+    pub ffb_frame: ArcSwap<FfbFrame>,
     pub stats: AppStats,
     /// Whether any real packet has been seen (the UI keeps its own simulator
     /// until real telemetry starts flowing, mirroring the old bridge).
@@ -512,20 +524,26 @@ impl SharedTelemetry {
         let seed = Latest::default();
         Arc::new(SharedTelemetry {
             ui: ArcSwap::from_pointee(Snapshot::from_latest(&seed)),
-            ffb: ArcSwap::from_pointee(Snapshot::ffb(&seed)),
+            ffb_frame: ArcSwap::from_pointee(FfbFrame::default()),
             stats: AppStats::default(),
             got_packet: AtomicBool::new(false),
             udp_port: AtomicU16::new(port),
-            last_ui_build_ms: AtomicI64::new(0),
+            // Seeded a full interval in the past so the FIRST publish always
+            // builds. `now_ms` is monotonic from process start, so 0 is a real
+            // recent timestamp — seeding to 0 would throttle the first snapshot
+            // away for the first UI_BUILD_MIN_MS of life (and `now_ms()` may
+            // itself be 0 here, since this is often its first caller).
+            last_ui_build_ms: AtomicI64::new(now_ms() - UI_BUILD_MIN_MS),
             ui_dirty: AtomicBool::new(false),
         })
     }
 
-    /// Publish after a parsed packet. The FFB snapshot (small, Copy) is always
-    /// refreshed — it feeds the real-time thread. The UI snapshot is only
-    /// rebuilt at ~30 Hz; in-between packets just mark it dirty.
+    /// Publish after a parsed packet. The UI snapshot is only rebuilt at
+    /// ~30 Hz; in-between packets just mark it dirty. The FFB frame is NOT
+    /// published here — it is a Motion Ex frame, published only by
+    /// `publish_ffb_frame` so the real-time thread always reads one physics
+    /// frame's channels together.
     pub fn publish(&self, l: &Latest) {
-        self.ffb.store(Arc::new(Snapshot::ffb(l)));
         self.got_packet.store(true, Ordering::Relaxed);
         let now = now_ms();
         if now - self.last_ui_build_ms.load(Ordering::Relaxed) >= UI_BUILD_MIN_MS {
@@ -533,6 +551,25 @@ impl SharedTelemetry {
         } else {
             self.ui_dirty.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Publish one Motion Ex frame for the FFB thread. Called on the UDP/demo
+    /// thread immediately after the packet is parsed and before `notify_frame`,
+    /// so the `motion_seq` edge and the frame it refers to always agree.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub fn publish_ffb_frame(
+        &self,
+        l: &Latest,
+        session_time: Option<f32>,
+        frame_identifier: u32,
+        arrival_s: f64,
+    ) {
+        self.ffb_frame.store(Arc::new(FfbFrame {
+            telem: Snapshot::ffb(l),
+            session_time,
+            frame_identifier,
+            arrival_s,
+        }));
     }
 
     /// Build the UI snapshot from any packets the throttle skipped — called when
@@ -551,11 +588,28 @@ impl SharedTelemetry {
     }
 }
 
-/// Milliseconds since the UNIX epoch (steady enough for the freeze/streak math).
+/// Milliseconds on a monotonic clock anchored at first use. Deliberately NOT
+/// wall time: every consumer subtracts two stamps (freeze/streak detection, the
+/// UI throttle, TT holds, `receiving`), so only the deltas matter — and a
+/// monotonic base keeps an NTP/clock step from turning a delta negative (a UI
+/// throttle that stalls until the clock catches up) or huge (a false pause).
 pub fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    mono_start().elapsed().as_millis() as i64
+}
+
+/// The same clock at sub-millisecond resolution, for the FFB frame stamps and
+/// the predictor's render-time axis.
+pub fn now_secs() -> f64 {
+    mono_start().elapsed().as_secs_f64()
+}
+
+/// Convert an `Instant` on the monotonic clock into seconds since its anchor.
+pub fn mono_secs(t: Instant) -> f64 {
+    t.saturating_duration_since(mono_start()).as_secs_f64()
+}
+
+fn mono_start() -> Instant {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    *START.get_or_init(Instant::now)
 }

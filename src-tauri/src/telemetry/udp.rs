@@ -12,7 +12,7 @@ use std::time::Duration;
 use super::demo::Replay;
 use super::header::{Header, HEADER_LEN};
 use super::packets;
-use super::state::{now_ms, Latest, SharedTelemetry, FFB_PAUSE_FREEZE_MS};
+use super::state::{now_ms, now_secs, Latest, SharedTelemetry, FFB_PAUSE_FREEZE_MS};
 
 // Packet ids (F1 2025/2026).
 const PKT_MOTION: u8 = 0;
@@ -158,8 +158,14 @@ fn run_loop(shared: Arc<SharedTelemetry>, control: Arc<CoreControl>) {
                 }
                 Err(e) => {
                     log::warn!("[core] could not bind UDP {want}: {e}");
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
+                    if socket.is_none() {
+                        // Nothing to fall back on — wait and retry.
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                    // A rebind to the new port failed but the old socket is still
+                    // live: keep reading it (the bind is retried next iteration)
+                    // rather than dropping telemetry for the whole retry window.
                 }
             }
         }
@@ -251,7 +257,14 @@ fn handle_datagram(buf: &[u8], latest: &mut Latest, ls: &mut LoopState, shared: 
             if packets::parse_motion_ex(payload, latest).is_some() {
                 shared.publish(latest);
                 // Motion Ex carries the core FFB inputs and lands once per physics
-                // frame → use it as the event-driven wake for the FFB engine.
+                // frame → publish the frame for the FFB engine, then wake it.
+                shared.publish_ffb_frame(
+                    latest,
+                    Some(hdr.session_time),
+                    hdr.frame_identifier,
+                    now_secs(),
+                );
+                stats.motion_frames.fetch_add(1, Ordering::Relaxed);
                 stats.notify_frame();
             }
         }

@@ -128,6 +128,7 @@ pub struct WheelOutput {
     eff_constant: i32,
     eff_damper: i32,
     eff_sine: i32,
+    last_constant_lvl: i32,
     last_damper_lvl: i32,
     last_sine_lvl: i32,
     last_sine_period: i32,
@@ -157,6 +158,7 @@ impl WheelOutput {
             eff_constant: -1,
             eff_damper: -1,
             eff_sine: -1,
+            last_constant_lvl: LVL_UNSET,
             last_damper_lvl: LVL_UNSET,
             last_sine_lvl: LVL_UNSET,
             last_sine_period: LVL_UNSET,
@@ -320,6 +322,7 @@ impl WheelOutput {
             self.haptic = h;
             self.active_idx = index;
             self.error.clear();
+            self.last_constant_lvl = LVL_UNSET;
             self.last_damper_lvl = LVL_UNSET;
             self.last_sine_lvl = LVL_UNSET;
             self.last_sine_period = LVL_UNSET;
@@ -425,9 +428,10 @@ impl WheelOutput {
             sys::SDL_HapticSetAutocenter(self.haptic, 0);
             sys::SDL_HapticSetGain(self.haptic, 100);
         }
-        // The damper/sine sends skip the driver while their level is unchanged;
-        // after a restart the device's copy is not what those caches believe,
-        // so drop them and let the next frame re-push real values.
+        // The constant/damper/sine sends skip the driver while their level is
+        // unchanged; after a restart the device's copy is not what those caches
+        // believe, so drop them and let the next frame re-push real values.
+        self.last_constant_lvl = LVL_UNSET;
         self.last_damper_lvl = LVL_UNSET;
         self.last_sine_lvl = LVL_UNSET;
         self.last_sine_period = LVL_UNSET;
@@ -558,18 +562,23 @@ impl WheelOutput {
             return;
         }
         unsafe {
-            // Constant force — main torque.
+            // Constant force — main torque. Skip the driver round-trip if the
+            // quantised level is unchanged; a running effect holds its level.
             if self.eff_constant >= 0 {
-                let mut e: sys::SDL_HapticEffect = std::mem::zeroed();
-                e.constant.type_ = sys::SDL_HAPTIC_CONSTANT as u16;
-                e.constant.direction.type_ = sys::SDL_HAPTIC_CARTESIAN as u8;
-                e.constant.direction.dir[0] = 1;
-                e.constant.length = sys::SDL_HAPTIC_INFINITY;
                 let lvl = (clampf(finite_or_zero(sig.torque), -1.0, 1.0) * SDL_FORCE_MAX as f32) as i32;
-                e.constant.level = lvl.clamp(-SDL_FORCE_MAX, SDL_FORCE_MAX) as i16;
-                self.last_send_rc = sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e);
-                if self.last_send_rc < 0 && self.error.is_empty() {
-                    self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
+                let lvl = lvl.clamp(-SDL_FORCE_MAX, SDL_FORCE_MAX);
+                if lvl != self.last_constant_lvl {
+                    let mut e: sys::SDL_HapticEffect = std::mem::zeroed();
+                    e.constant.type_ = sys::SDL_HAPTIC_CONSTANT as u16;
+                    e.constant.direction.type_ = sys::SDL_HAPTIC_CARTESIAN as u8;
+                    e.constant.direction.dir[0] = 1;
+                    e.constant.length = sys::SDL_HAPTIC_INFINITY;
+                    e.constant.level = lvl as i16;
+                    self.last_send_rc = sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e);
+                    if self.last_send_rc < 0 && self.error.is_empty() {
+                        self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
+                    }
+                    self.last_constant_lvl = lvl;
                 }
             }
 

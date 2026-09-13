@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
-use super::state::{now_ms, CarSetup, Latest, SharedTelemetry, MAX_ERS_JOULES};
+use super::state::{now_ms, now_secs, CarSetup, Latest, SharedTelemetry, MAX_ERS_JOULES};
 
 /// The replay session, compiled into the exe (~2 MB) so Demo Mode never depends
 /// on files next to the binary. Regenerate with `scripts/make-demo-session.mjs`.
@@ -361,12 +361,18 @@ impl Replay {
         stats.game_paused.store(false, Ordering::Relaxed);
         stats.ai_in_control.store(false, Ordering::Relaxed);
         stats.ai_run_up.store(false, Ordering::Relaxed);
+        // `ai_controls_car` is only ever set by real Participants packets, so it
+        // would otherwise stay latched from the previous session and mute FFB
+        // for the whole replay.
+        stats.ai_controls_car.store(false, Ordering::Relaxed);
         stats.session_type.store(l.session_type, Ordering::Relaxed);
         stats.track_length_m.store(l.track_length, Ordering::Relaxed);
         stats.driver_status.store(l.driver_status, Ordering::Relaxed);
         stats.pit_status.store(l.pit_status, Ordering::Relaxed);
         stats.set_lap_distance(l.lap_distance);
         shared.publish(l);
+        shared.publish_ffb_frame(l, None, 0, now_secs());
+        stats.motion_frames.fetch_add(1, Ordering::Relaxed);
         stats.notify_frame();
         true
     }

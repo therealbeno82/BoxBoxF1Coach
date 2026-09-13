@@ -210,6 +210,10 @@ pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
             l.sector2_start = 0.0;
             l.sector3_start = 0.0;
         }
+    } else {
+        // Too short to even read the offsets → clear for the same reason.
+        l.sector2_start = 0.0;
+        l.sector3_start = 0.0;
     }
     Some(game_paused)
 }
@@ -289,6 +293,8 @@ mod tests {
             packet_format: 2026,
             packet_id,
             session_uid: 0,
+            session_time: 0.0,
+            frame_identifier: 0,
             overall_frame_identifier: 0,
             player_car_index: player,
         }
@@ -299,11 +305,15 @@ mod tests {
         let mut b = vec![0u8; HEADER_LEN];
         put_u16(&mut b, 0, 2026);
         b[6] = 6; // packet id
+        put_f32(&mut b, 15, 12.5); // session time
+        put_u32(&mut b, 19, 99); // frame id
         put_u32(&mut b, 23, 4242); // overall frame id
         b[27] = 3; // player car index
         let h = Header::parse(&b).unwrap();
         assert!(h.is_supported());
         assert_eq!(h.packet_id, 6);
+        assert!((h.session_time - 12.5).abs() < 1e-6);
+        assert_eq!(h.frame_identifier, 99);
         assert_eq!(h.overall_frame_identifier, 4242);
         assert_eq!(h.player_car_index, 3);
         assert_eq!(h.max_cars(), 22);

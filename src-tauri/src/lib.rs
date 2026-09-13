@@ -168,6 +168,21 @@ fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
     let _ = handle.cmd_tx.send(FfbCommand::ResetPeak);
 }
 
+/// Bounded history of the output the wheel actually received (reconstructed
+/// input force and steer → final torque), recorded while a wheel is open.
+/// Exported from the FFB tab and analysed offline with
+/// `scripts/analyze-ffb-trace.mjs`.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ffb_trace(handle: tauri::State<Arc<FfbHandle>>) -> ffb::TraceDump {
+    let hz = handle.settings.load().ffb_update_hz as f32;
+    handle
+        .trace
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot(hz)
+}
+
 // ── File export ───────────────────────────────────────────────────────────────
 
 /// Write UTF-8 text to `path`, which the frontend obtained from the dialog
@@ -318,6 +333,7 @@ pub fn run() {
             get_ffb_defaults,
             set_ffb_enabled,
             reset_ffb_peak,
+            get_ffb_trace,
             write_text_file,
         ]);
 

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri, isAndroid } from "../lib/env.js";
+import { saveJson } from "../lib/lapExport.js";
 import { useTauriEvents } from "./useTauriEvents.js";
 
 // Is there a native FFB engine on the other end of the IPC at all? `inTauri`
@@ -35,8 +36,10 @@ export const DEFAULT_FFB_SETTINGS = {
   oversteerStrength: 0.90,
   peakEmphasis: 0.0,
   smoothing: 0.15,
+  interpolation: "cubic",
+  interpDelayFrac: 0.5,
   minSpeedKmh: 10,
-  ffbUpdateHz: 90,
+  ffbUpdateHz: 200,
   maxForceN: 12000,
   invertForce: false,
   lockupStrength: 0.60,
@@ -45,6 +48,8 @@ export const DEFAULT_FFB_SETTINGS = {
   wheelspinHz: 10,
   scrubStrength: 0.50,
   scrubHz: 45,
+  damping: 1.0,
+  slewLimit: 0.0,
   brakingStrength: 0.50,
   brakingInvert: false,
   maxOutput: 1.0,
@@ -62,6 +67,7 @@ const SETTINGS_KEY = "f1coach.ffbSettings";
 const PROFILES_KEY = "f1coach.ffbProfiles";
 const ACTIVE_KEY = "f1coach.ffbActiveProfile";
 const ENABLED_KEY = "f1coach.ffbEnabled";
+const RATE_MIGRATED_KEY = "f1coach.ffbRateMigrated";
 
 const clean = (s) => ({ ...s, testForce: 0, testRumble: 0 });
 
@@ -70,6 +76,16 @@ const hasSavedSettings = () => !!localStorage.getItem(SETTINGS_KEY);
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    // One-time: 90 Hz used to be an unreachable "ceiling" — the loop was pinned
+    // to the game's 60 Hz packets. Now that it free-runs, lift a legacy saved
+    // value to the direct-drive default once, without blocking a later choice.
+    if (!localStorage.getItem(RATE_MIGRATED_KEY)) {
+      localStorage.setItem(RATE_MIGRATED_KEY, "1");
+      if (saved.ffbUpdateHz != null && saved.ffbUpdateHz < DEFAULT_FFB_SETTINGS.ffbUpdateHz) {
+        saved.ffbUpdateHz = DEFAULT_FFB_SETTINGS.ffbUpdateHz;
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean(saved)));
+      }
+    }
     return clean({ ...DEFAULT_FFB_SETTINGS, ...saved });
   } catch {
     return { ...DEFAULT_FFB_SETTINGS };
@@ -110,10 +126,12 @@ export function useFfbEngine() {
   // On mount: hand the engine our persisted settings + enabled state, list wheels,
   // and pull its default tuning (a fresh install adopts it as the live settings).
   useEffect(() => {
+    let cancelled = false;
     pushSettings(settingsRef.current);
     if (ffbAvailable) {
       invoke("set_ffb_enabled", { enabled }).catch(() => {});
       invoke("get_ffb_defaults").then((d) => {
+        if (cancelled) return;
         const merged = clean({ ...DEFAULT_FFB_SETTINGS, ...d });
         defaultsRef.current = merged;
         if (!hasSavedSettings()) {
@@ -123,6 +141,7 @@ export function useFfbEngine() {
       }).catch(() => {});
     }
     refreshDevices();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -179,6 +198,21 @@ export function useFfbEngine() {
 
   const resetPeak = useCallback(() => { if (ffbAvailable) invoke("reset_ffb_peak").catch(() => {}); }, []);
 
+  // Snapshot the engine's bounded output history (motion → torque) and save it
+  // for offline analysis with scripts/analyze-ffb-trace.mjs. Resolves false if
+  // there is nothing recorded or the save dialog was cancelled.
+  const exportTrace = useCallback(async () => {
+    if (!ffbAvailable) return false;
+    try {
+      const trace = await invoke("get_ffb_trace");
+      if (!trace || !Array.isArray(trace.samples) || trace.samples.length === 0) return false;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      return await saveJson(trace, `ffb-trace-${stamp}.json`);
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Profiles (localStorage map name → settings).
   const saveProfileAs = useCallback((name) => {
     const nm = (name || "").trim();
@@ -226,7 +260,7 @@ export function useFfbEngine() {
   return {
     settings, setSetting, applySettings, resetSettings,
     status, devices, refreshDevices,
-    openDevice, closeDevice, resetPeak,
+    openDevice, closeDevice, resetPeak, exportTrace,
     enabled, setEnabled,
     profiles, activeProfile, dirty, saveProfileAs, saveActive, loadProfile, deleteProfile,
     // "Open" is not the same as "producing force" — another app acquiring the

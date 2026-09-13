@@ -4,13 +4,24 @@
 
 use serde::{Deserialize, Serialize};
 
-// FFB output-rate bounds (C++ `FFB_MIN_HZ` / `FFB_MAX_HZ`).
+// FFB output-rate bounds (C++ `FFB_MIN_HZ` / `FFB_MAX_HZ`). The engine's output
+// loop free-runs at `ffb_update_hz`, independent of the game's ~60 Hz telemetry.
 pub const FFB_MIN_HZ: i32 = 30;
 pub const FFB_MAX_HZ: i32 = 360;
 
-// Re-arm delay after a freeze before force returns, and the event-driven keepalive.
+// Re-arm delay after a freeze before force returns.
 pub const FFB_REARM_MS: i64 = 150;
-pub const FFB_KEEPALIVE_MS: i64 = 22;
+
+/// How the fixed-rate output loop reconstructs the game's ~60 Hz physics
+/// frames. `Linear` is the original blend (kept for A/B); `Cubic` is monotone
+/// Hermite, which is C1 at every frame boundary and overshoot-free.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum InterpMode {
+    Linear,
+    #[default]
+    Cubic,
+}
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -21,6 +32,10 @@ pub struct FfbSettings {
     pub oversteer_strength: f32,
     pub peak_emphasis: f32,
     pub smoothing: f32,
+    pub interpolation: InterpMode,
+    /// Fraction of a physics frame the reconstruction delays its input by
+    /// (0.5 = the original half-frame delay). Larger is smoother and laggier.
+    pub interp_delay_frac: f32,
     pub min_speed_kmh: f32,
     pub ffb_update_hz: i32,
     pub max_force_n: f32,
@@ -31,6 +46,17 @@ pub struct FfbSettings {
     pub wheelspin_hz: f32,
     pub scrub_strength: f32,
     pub scrub_hz: f32,
+    /// Scales the DirectInput damper (friction) effect. 1 = as computed from
+    /// slip, 0 = off. DirectInput condition effects are rendered by the base
+    /// from its own velocity estimate, which some direct-drive bases do coarsely
+    /// at low speed — heard as grain/notchiness at centre. Exposed so that can be
+    /// isolated (and removed) without recompiling.
+    pub damping: f32,
+    /// Optional slew-rate limit on the output torque, in full-scale units per
+    /// second (0 = off). Caps how fast the force may change, which strips
+    /// high-frequency grain WITHOUT reducing steady-state force — unlike a
+    /// low-pass, which does both. The trade-off is slower genuine transients.
+    pub slew_limit: f32,
     pub braking_strength: f32,
     pub braking_invert: bool,
     pub max_output: f32,
@@ -54,8 +80,10 @@ impl Default for FfbSettings {
             oversteer_strength: 0.90,
             peak_emphasis: 0.00,
             smoothing: 0.15,
+            interpolation: InterpMode::Cubic,
+            interp_delay_frac: 0.5,
             min_speed_kmh: 10.0,
-            ffb_update_hz: 90,
+            ffb_update_hz: 200,
             max_force_n: 12000.0,
             invert_force: false,
             lockup_strength: 0.60,
@@ -64,6 +92,8 @@ impl Default for FfbSettings {
             wheelspin_hz: 10.0,
             scrub_strength: 0.50,
             scrub_hz: 45.0,
+            damping: 1.00,
+            slew_limit: 0.00,
             braking_strength: 0.50,
             braking_invert: false,
             max_output: 1.00,
