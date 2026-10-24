@@ -197,16 +197,19 @@ export default function TrackOrbitView({
     return () => wrap.removeEventListener("wheel", onWheel);
   }, [start]);
 
-  // Wake when the SCENE changes, not on every render. `cars` is memoised by the
-  // parent on its car positions, so these identities move exactly when there is
-  // something new to draw.
+  // Wake when the SCENE changes, not on every render.
   //
   // This used to have no dep array. The loop self-terminates once the camera has
   // settled, but the root re-renders at the telemetry rate (~30 Hz) while the game
   // is sending, so it re-armed a complete three.js scene.render() 30 times a
   // second even with playback PAUSED — including an unconditional setCars().
+  //
+  // `cars` is rebuilt per render by the parent (it has to be: it sits after an
+  // early return there, so it cannot be a hook), so its identity says nothing.
+  // Compare the two cars by VALUE instead — it is four numbers each.
+  const carsKey = cars.map((c) => `${c.x},${c.z},${c.yaw},${c.dist}`).join("|");
   useEffect(() => { start(); },
-    [start, model, driven, reference, cornerMarks, brakeMarks, cars, zoom]);
+    [start, model, driven, reference, cornerMarks, brakeMarks, carsKey, zoom]);
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   const dragRef = useRef(null);

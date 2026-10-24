@@ -914,19 +914,17 @@ export default function DrivingLinesView({
   // camera watches — the driven lap, since that's the car you're steering the
   // comparison from.
   //
-  // Memoised on the VALUES, not rebuilt per render. "Per render is per frame while
-  // playing anyway" was true of playback, but the root also re-renders at the
-  // telemetry rate, so while PAUSED this handed TrackOrbitView a new `cars` array
-  // 30 times a second and kept its render loop — a full three.js scene draw —
-  // permanently awake. Same reasoning as camPanes above.
-  const orbitCars = useMemo(() => [
+  // Rebuilt per render, and deliberately NOT a useMemo: this sits after the
+  // `if (!lines.length) return` above, so a hook here would change the hook count
+  // between the empty and populated renders ("Rendered more hooks than during the
+  // previous render"). TrackOrbitView instead compares these by VALUE to decide
+  // whether its render loop needs waking — see the key it builds.
+  const orbitCars = [
     refCar && { x: refCar.x, z: refCar.z, yaw: refAngle * Math.PI / 180,
       color: REF_COLOR, dist: refFrac * (refLine?.lapLen || 0) },
     compCar && { x: compCar.x, z: compCar.z, yaw: compAngle * Math.PI / 180,
       color: COMP_COLOR, dist: playhead * (compLine?.lapLen || 0), main: true },
-  ].filter(Boolean),
-  [refCar?.x, refCar?.z, compCar?.x, compCar?.z, refAngle, compAngle,
-   refFrac, playhead, refLine?.lapLen, compLine?.lapLen]);
+  ].filter(Boolean);
 
   // ── The four control clusters ──────────────────────────────────────────────
   // On desktop they are absolutely-positioned overlays in the corners of the
