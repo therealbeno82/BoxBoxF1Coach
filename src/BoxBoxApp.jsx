@@ -1,20 +1,7 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react";
 import Shell from "./components/Shell.jsx";
-import DashboardScreen from "./components/screens/DashboardScreen.jsx";
-import LiveScreen from "./components/screens/LiveScreen.jsx";
-import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
-import SettingsScreen from "./components/screens/SettingsScreen.jsx";
-import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
-import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
-import PublishLapModal from "./components/modals/PublishLapModal.jsx";
-import PublishPrompt from "./components/PublishPrompt.jsx";
-import FfbScreen from "./components/screens/FfbScreen.jsx";
-import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
-import CarSetupModal from "./components/modals/CarSetupModal.jsx";
-import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.jsx";
 import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
-import TelemetryStudio from "./components/TelemetryStudio.jsx";
 import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob, readPickedText } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
 import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
@@ -22,10 +9,6 @@ import { buildLapEvidence } from "./lib/lapEvidence.js";
 import { buildTrends } from "./lib/lapHistory.js";
 import { buildCoachingSet, lapBucket, buildPaceBuckets, buildPaceBlock } from "./lib/lapBuckets.js";
 import { makeTrackLabeler } from "./lib/trackLabels.js";
-// The Analytics Overview's top-down driving-lines panel. It owns the shared
-// playback clock that also drives the TelemetryStudio trace cursor (state for
-// both lives here in BoxBoxApp — see anaPlayhead/anaPlaying).
-import DrivingLinesView from "./components/DrivingLinesView.jsx";
 import { getTrack, sameTrack } from "./lib/trackData.js";
 import { cornerLabel } from "./lib/cornerData.js";
 import { useTrackCorners } from "./hooks/useTrackCorners.js";
@@ -63,6 +46,49 @@ import { invoke } from "@tauri-apps/api/core";
 
 // Guard the `invoke` calls so `npm run dev` in a browser doesn't throw.
 const coreInvoke = (cmd, args) => { if (inTauri) invoke(cmd, args).catch(() => {}); };
+
+// ─── SCREENS, SPLIT OUT OF THE ENTRY CHUNK ────────────────────────────────────
+// Six screens, five overlays and the two Analytics panels are roughly 5,000 lines
+// a given session may never open, and as static imports every launch parsed all of
+// it before the first screen could paint. This is the same argument that already
+// keeps three.js and the track geometry behind dynamic imports; it just applies
+// several times over to the screens.
+//
+// `splitOut` registers each loader as it declares the component, so the warm-up
+// below can pull the chunks in on idle from ONE list that cannot drift out of step
+// with what is actually lazy. The import specifiers stay static string literals,
+// which is what Rollup needs to see to make a chunk of each.
+const chunkLoaders = [];
+const splitOut = (load) => { chunkLoaders.push(load); return lazy(load); };
+
+const DashboardScreen   = splitOut(() => import("./components/screens/DashboardScreen.jsx"));
+const LiveScreen        = splitOut(() => import("./components/screens/LiveScreen.jsx"));
+const AnalyticsScreen   = splitOut(() => import("./components/screens/AnalyticsScreen.jsx"));
+const SettingsScreen    = splitOut(() => import("./components/screens/SettingsScreen.jsx"));
+const CoachLogScreen    = splitOut(() => import("./components/screens/CoachLogScreen.jsx"));
+const LeaderboardScreen = splitOut(() => import("./components/screens/LeaderboardScreen.jsx"));
+// The Analytics Overview's trace stack and its top-down driving-lines panel. The
+// latter owns the shared playback clock that also drives the TelemetryStudio trace
+// cursor (state for both lives here in BoxBoxApp — see anaPlayhead/anaPlaying).
+const TelemetryStudio   = splitOut(() => import("./components/TelemetryStudio.jsx"));
+const DrivingLinesView  = splitOut(() => import("./components/DrivingLinesView.jsx"));
+const PublishPrompt     = splitOut(() => import("./components/PublishPrompt.jsx"));
+const PublishLapModal   = splitOut(() => import("./components/modals/PublishLapModal.jsx"));
+const SwitchDriverModal = splitOut(() => import("./components/modals/SwitchDriverModal.jsx"));
+const CarSetupModal     = splitOut(() => import("./components/modals/CarSetupModal.jsx"));
+const TraceConfiguratorModal = splitOut(() => import("./components/modals/TraceConfiguratorModal.jsx"));
+// Desktop only. Written as a folded ternary rather than registered and then never
+// used, so on Android `splitOut` is in the untaken branch: the import() becomes
+// unreachable and the whole screen drops out of that bundle instead of shipping as
+// a chunk nothing can ever fetch.
+const FfbScreen = isAndroid ? null : splitOut(() => import("./components/screens/FfbScreen.jsx"));
+
+// Fallback for a screen whose chunk has not arrived yet. Shell's body is a flex
+// column, so this holds the body open at full height and leaves the header, nav
+// and background exactly where they are — a tab switch shows an empty panel for a
+// frame or two at worst, never a jump or a flash of a different colour. In
+// practice the warm-up below means it is rarely seen at all.
+const ScreenFallback = () => <div style={{ flex: 1 }} />;
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
@@ -2408,6 +2434,28 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Push a UDP-port change to the native core; it rebinds its listener live.
   useEffect(() => { coreInvoke("set_udp_port", { port: udpPort }); }, [udpPort]);
 
+  // Warm the split-out screen chunks once the app is idle. Splitting them is about
+  // what LAUNCH has to parse before the first screen paints; it is not an argument
+  // for making the driver wait on a disk read when they change tab. Pulling them in
+  // after first paint keeps both: nothing blocks the launch, and by the time anyone
+  // reaches for a tab its chunk is already in the module cache, so the Suspense
+  // fallback above is never actually seen.
+  //
+  // requestIdleCallback yields to real work, which is the point — but it also may
+  // not fire at all on a page that never goes idle, so the timeout bounds it. These
+  // are local files; nothing here needs the network. The Trace Calibrator is
+  // deliberately NOT in this list: it is reached from one button in Settings and
+  // most sessions never open it, so it is the one chunk worth loading on demand.
+  useEffect(() => {
+    const warm = () => { for (const load of chunkLoaders) load().catch(() => {}); };
+    if (typeof requestIdleCallback === "function") {
+      const id = requestIdleCallback(warm, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const id = setTimeout(warm, 1500);
+    return () => clearTimeout(id);
+  }, []);
+
   // Native force-feedback engine (device control, live gauges, tuning + profiles).
   const ffb = useFfbEngine();
 
@@ -2735,6 +2783,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       activeDriver={activeDriver} driverColor={activeDriverObj?.color || "#3671C6"} driverCount={drivers.length}
       onDriverChip={()=>setSwitchDriverOpen(true)}
     >
+      {/* One Suspense for the tab screens, since only ever one of them is
+          mounted. The overlays below get their own (see there). */}
+      <Suspense fallback={<ScreenFallback />}>
       {/* ── DASHBOARD (full-bleed redesigned screen) ── */}
       {tab==="dashboard" && (
         <DashboardScreen
@@ -2857,23 +2908,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         );
       })()}
 
-      {publishPrompt && !pendingPublish && (
-        <PublishPrompt
-          lap={publishPrompt}
-          onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}
-          onDismiss={() => setPublishPrompt(null)}
-        />
-      )}
-
-      {pendingPublish && (
-        <PublishLapModal
-          lap={pendingPublish} driver={activeDriverObj}
-          busy={publishing} result={publishResult}
-          onConfirm={confirmPublish}
-          onClose={() => { setPendingPublish(null); setPublishResult(null); }}
-        />
-      )}
-
       {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
       {tab==="board" && (
         <LeaderboardScreen
@@ -2892,6 +2926,29 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           Shell drops the tab there, so this can never be reached anyway. */}
       {!isAndroid && tab==="ffb" && <FfbScreen ffb={ffb} />}
 
+      </Suspense>
+
+      {/* Overlays get a boundary of their own, with no fallback: sharing the
+          screens' one would blank the screen behind a modal for the frame its
+          chunk takes to arrive, and a modal appearing a frame late is invisible. */}
+      <Suspense fallback={null}>
+      {publishPrompt && !pendingPublish && (
+        <PublishPrompt
+          lap={publishPrompt}
+          onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}
+          onDismiss={() => setPublishPrompt(null)}
+        />
+      )}
+
+      {pendingPublish && (
+        <PublishLapModal
+          lap={pendingPublish} driver={activeDriverObj}
+          busy={publishing} result={publishResult}
+          onConfirm={confirmPublish}
+          onClose={() => { setPendingPublish(null); setPublishResult(null); }}
+        />
+      )}
+
       {/* ── Modals ── */}
       {switchDriverOpen && (
         <SwitchDriverModal
@@ -2903,6 +2960,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       )}
       {carSetup && <CarSetupModal pb={carSetup} onClose={()=>setCarSetup(null)} />}
       {traceOpen && <TraceConfiguratorModal channels={traceChannels} setChannels={setTraceChannels} onClose={()=>setTraceOpen(false)} />}
+      </Suspense>
     </Shell>
   );
 }
