@@ -175,12 +175,15 @@ fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
 #[cfg(desktop)]
 #[tauri::command]
 fn get_ffb_trace(handle: tauri::State<Arc<FfbHandle>>) -> ffb::TraceDump {
-    let hz = handle.settings.load().ffb_update_hz as f32;
+    // The configured rate is only a FALLBACK for a trace too short to measure —
+    // `snapshot` derives the real rate from the samples' own timestamps, which is
+    // what makes an A/B of two output rates label each export correctly.
+    let fallback_hz = handle.settings.load().ffb_update_hz as f32;
     handle
         .trace
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .snapshot(hz)
+        .snapshot(fallback_hz)
 }
 
 // ── File export ───────────────────────────────────────────────────────────────
@@ -253,6 +256,11 @@ impl FfbEmit {
     fn tick(&mut self, _app: &tauri::AppHandle) {}
 }
 
+/// How often the emitter samples shared state and emits to the webview. The FFB
+/// gauge producer is gated to the same period, so the two have to agree or a
+/// publish is built and dropped unread.
+const EMIT_PERIOD: Duration = Duration::from_millis(33);
+
 fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let shared = {
         let core = app.state::<CoreState>();
@@ -265,6 +273,7 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
         let mut last_core: Option<(bool, u16)> = None;
         let mut last_snap = None;
         while running.load(Ordering::Relaxed) {
+            let tick_start = std::time::Instant::now();
             let now = now_ms();
             let got_packet = shared.got_packet.load(Ordering::Relaxed);
             let core = (
@@ -288,7 +297,14 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
                 }
             }
             ffb.tick(&app);
-            std::thread::sleep(Duration::from_millis(33));
+            // Sleep to a DEADLINE, not for a fixed interval. `sleep(33)` plus this
+            // loop's own work ran at ~29 Hz against a gauge producer gated at
+            // exactly 33 ms, so a few percent of gauge publishes were built and
+            // then dropped unread.
+            let spent = tick_start.elapsed();
+            if spent < EMIT_PERIOD {
+                std::thread::sleep(EMIT_PERIOD - spent);
+            }
         }
     });
 }

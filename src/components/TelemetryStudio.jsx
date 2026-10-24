@@ -29,10 +29,23 @@ import { useViewport } from "../hooks/useViewport.jsx";
 const W = 1000, VH = 100;          // SVG coordinate system (stretched per panel)
 const SWEEP_SECONDS = 8;           // time for Play to sweep a full lap
 
-// Nearest sample to a lap distance (samples are sorted by dist).
+// Nearest sample to a lap distance. Binary search, not a scan: the array IS sorted
+// by dist, and this runs twice per playhead or hover move — so during playback the
+// linear reduce walked ~1,400 samples every frame at 60 fps to answer a question
+// the ordering already settles in ~10 comparisons.
 function nearest(samples, dist) {
   if (!samples || !samples.length) return null;
-  return samples.reduce((b, s) => Math.abs((s.dist || 0) - dist) < Math.abs((b.dist || 0) - dist) ? s : b, samples[0]);
+  let lo = 0, hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((samples[mid].dist || 0) < dist) lo = mid + 1;
+    else hi = mid;
+  }
+  // `lo` is the first sample at or past `dist`; the nearer of it and its
+  // predecessor is the answer.
+  const a = samples[lo - 1], b = samples[lo];
+  if (!a) return b;
+  return Math.abs((a.dist || 0) - dist) <= Math.abs((b.dist || 0) - dist) ? a : b;
 }
 
 // Build a channel's line path (optionally stepped for gear/ERS-mode) plus an

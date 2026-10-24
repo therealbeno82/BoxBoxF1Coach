@@ -5,7 +5,7 @@
 // legend chips + an audio-cue toggle), the session-laps list, and the AI "Next Lap
 // Focus" card. All data comes from the live telemetry snapshot + this driver's laps.
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback, memo } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
 import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
@@ -66,7 +66,9 @@ function StatusChip({ label, value, color, hint }) {
 // and in what conditions. The laps under it count from 1, so a weekend reads as
 // "QUALIFYING · Bahrain · Clear" then "RACE · Bahrain · Light Rain" — the context
 // you need to judge a strategy call after the fact.
-function RunHeader({ run }) {
+// memo: this screen re-renders at the telemetry rate (~30 Hz) because the root
+// holds the live snapshot in state, and a run header's data changes once a run.
+const RunHeader = memo(function RunHeader({ run }) {
   const m = run.meta || {};
   const conditions = conditionsLabel(m);
   return (
@@ -89,12 +91,19 @@ function RunHeader({ run }) {
       </span>
     </div>
   );
-}
+});
 
 // One lap in the log: number, time, the three sector splits (F1 timing-tower
 // colours via the `sectorColor` the screen owns), the tyre it was set on with its
 // wear, the fuel it burned, and the gap to the run's best.
-function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
+// memo, for the same reason as RunHeader and with more at stake: each row builds
+// ~45 elements (three sector spans, a four-wheel wear grid inside a Hint, a fuel
+// Hint, a 44px setup button with an inline SVG), and Hint is itself a component
+// with a context read, state and an effect. At the 25-lap case that was ~1,100
+// element reconciliations plus ~75 Hint renders PER TELEMETRY TICK, to redisplay
+// rows whose data changes once a lap. Both props it takes are stabilised by the
+// screen (sectorColor via useCallback) and the parent (onOpenSetup).
+const LapRow = memo(function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   const invalid = !!l.invalid;
   const isPB = !invalid && best != null && Math.abs(l.lapTime - best) < 1e-6;
   const delta = best != null ? l.lapTime - best : null;
@@ -208,7 +217,7 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
       </span>
     </div>
   );
-}
+});
 
 // How much of the Session Laps list a phone shows before it starts scrolling.
 //
@@ -372,7 +381,9 @@ export default function LiveScreen({
   }, [laps]);
 
   const SECTOR_EPS = 1e-4; // seconds — float tolerance for "ties the min"
-  const sectorColor = (lap, i) => {
+  // useCallback, because LapRow is memo'd and takes this as a prop: a fresh arrow
+  // every render would change the prop every tick and defeat the memo entirely.
+  const sectorColor = useCallback((lap, i) => {
     const v = lap?.sectorTimes?.[i];
     if (typeof v !== "number" || v <= 0) return SECTOR_GREY;
     // PURPLE first: v is folded into recordBests, so the bucket min is ≤ v — within
@@ -382,7 +393,7 @@ export default function LiveScreen({
     const best = sessionBests.get(lapRunKey(lap.meta))?.[i];
     if (best != null && v <= best + SECTOR_EPS) return C.green; // best of this session
     return C.yellow; // beaten this session
-  };
+  }, [recordBests, sessionBests]);
 
   // ── Live mini-sectors ─────────────────────────────────────────────────────
   // The pips inside each S1/S2/S3 card are MINI_PER_SECTOR slices of that third of

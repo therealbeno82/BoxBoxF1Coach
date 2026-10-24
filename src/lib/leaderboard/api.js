@@ -29,26 +29,30 @@ export function available({ enabled = true } = {}) {
 }
 
 // One fetch, with a timeout and no way to throw.
-// → parsed JSON | null. `head` returns the Content-Range count instead.
-async function request(url, { headers = {}, signal, count = false } = {}) {
+// → parsed JSON | null. `count` returns the Content-Range count INSTEAD of the
+// body; `withCount` returns { rows, total } so one request can serve both — a
+// page of rows and the board's real size — rather than two.
+async function request(url, { headers = {}, signal, count = false, withCount = false } = {}) {
   try {
+    const wantCount = count || withCount;
     const res = await fetch(url, {
       headers: {
         apikey: ANON_KEY,
         Authorization: `Bearer ${ANON_KEY}`,
         Accept: "application/json",
-        ...(count ? { Prefer: "count=exact" } : {}),
+        ...(wantCount ? { Prefer: "count=exact" } : {}),
         ...headers,
       },
       signal: signal ?? AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    if (count) {
-      // PostgREST reports an exact count in Content-Range as "0-24/518".
-      const range = res.headers.get("content-range") || "";
-      const total = Number(range.split("/")[1]);
+    // PostgREST reports an exact count in Content-Range as "0-24/518".
+    const totalOf = () => {
+      const total = Number((res.headers.get("content-range") || "").split("/")[1]);
       return Number.isFinite(total) ? total : null;
-    }
+    };
+    if (count) return totalOf();
+    if (withCount) return { rows: await res.json(), total: totalOf() };
     return await res.json();
   } catch {
     return null; // offline, timeout, DNS, CORS, malformed JSON — all the same here
@@ -86,11 +90,13 @@ export async function getBoard(boardId, { limit = 50, offset = 0, myDriverId, en
     `?select=${cols}&board_id=eq.${encodeURIComponent(boardId)}` +
     `&order=lap_time_ms.asc&limit=${limit}&offset=${offset}`;
   // `total` is the whole board, not the page length — a board with more than
-  // `limit` entries must report its real size for pagination/rank.
-  const [rows, total] = await Promise.all([
-    request(url, { signal }),
-    request(`${REST_URL}/entries?select=driver_id&board_id=eq.${encodeURIComponent(boardId)}&limit=1`, { signal, count: true }),
-  ]);
+  // `limit` entries must report its real size for pagination/rank. PostgREST
+  // returns that count in Content-Range on the SAME request as the rows, so this
+  // is one round trip: a separate count query doubled the request load on a path
+  // that includes the Dashboard card, which runs at every launch.
+  const page = await request(url, { signal, withCount: true });
+  if (!page) return null;
+  const { rows, total } = page;
   if (!Array.isArray(rows)) return null;
   const entries = rankEntries(rows.map((r) => entryFromRow(r, { myDriverId })).filter(Boolean));
   return { entries, total: total ?? entries.length };

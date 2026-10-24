@@ -197,8 +197,16 @@ export default function TrackOrbitView({
     return () => wrap.removeEventListener("wheel", onWheel);
   }, [start]);
 
-  // Wake on every render — a moved playhead, a lap swap or a zoom all arrive that way.
-  useEffect(() => { start(); });
+  // Wake when the SCENE changes, not on every render. `cars` is memoised by the
+  // parent on its car positions, so these identities move exactly when there is
+  // something new to draw.
+  //
+  // This used to have no dep array. The loop self-terminates once the camera has
+  // settled, but the root re-renders at the telemetry rate (~30 Hz) while the game
+  // is sending, so it re-armed a complete three.js scene.render() 30 times a
+  // second even with playback PAUSED — including an unconditional setCars().
+  useEffect(() => { start(); },
+    [start, model, driven, reference, cornerMarks, brakeMarks, cars, zoom]);
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   const dragRef = useRef(null);

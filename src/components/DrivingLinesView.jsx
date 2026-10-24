@@ -648,8 +648,15 @@ export default function DrivingLinesView({
       accent: compLine ? COMP_COLOR : REF_COLOR,
       other: compLine ? ghost(refCar, refAngle, REF_COLOR) : ghost(compCar, compAngle, COMP_COLOR),
     }];
+  // Depend on the car positions by VALUE, not by object identity. posAtFracSmooth
+  // returns a fresh {x, z} literal and it is called in the render body, so
+  // listing refCar/compCar here meant this memo never hit once — `panes` was a
+  // brand-new array on every render, which at 30 Hz telemetry made the T-cam's
+  // "has anything actually moved?" question unanswerable from its props and kept
+  // its render loop permanently awake.
   }, [camMode, compLine, refLine, camLine, camFrac, playhead, refFrac,
-      comparisonLabel, referenceLabel, refCar, compCar, refAngle, compAngle]);
+      comparisonLabel, referenceLabel, refAngle, compAngle,
+      refCar?.x, refCar?.z, compCar?.x, compCar?.z]);
 
   // ── Viewport: fit the current segment's bounding box (both lines), padded;
   // the zoom slider tightens/widens the framing around the same centre. ──
@@ -738,11 +745,15 @@ export default function DrivingLinesView({
     camRafRef.current = requestAnimationFrame(step);
   }, []);
 
-  // Wake the camera whenever a new target exists. Deliberately has no dep array:
-  // targetVb is recomputed every render, and every way it can move (playback,
-  // scrubbing, a segment step, zoom, a sync-mode switch) goes through a render.
-  // Costs one no-op call while the loop is already running.
-  useEffect(() => { if (targetVb) startCamera(); });
+  // Wake the camera whenever its TARGET moves. Keyed on the target's four numbers
+  // rather than on nothing: targetVb is a fresh literal every render, and the root
+  // re-renders at the telemetry rate, so a depless effect re-armed the loop ~30
+  // times a second on a paused, settled camera — reintroducing exactly the
+  // wakeups the self-terminating rewrite above removed. Each wake is cheap (a
+  // four-number diff, then it sleeps again), which is why this one was the least
+  // costly of the three, but it is the same mistake.
+  useEffect(() => { if (targetVbRef.current) startCamera(); },
+    [startCamera, targetVb?.x, targetVb?.y, targetVb?.w, targetVb?.h]);
   useEffect(() => () => { cancelAnimationFrame(camRafRef.current); camRafRef.current = 0; }, []);
 
   // ── Mini-map: whole circuit scaled into the inset, current segment highlighted ──
@@ -901,13 +912,21 @@ export default function DrivingLinesView({
   // The same two cars for the 3D view, in ITS units: heading in radians, and lap
   // distance in metres so the model's wheels roll. `main` marks the one the orbit
   // camera watches — the driven lap, since that's the car you're steering the
-  // comparison from. Rebuilt per render, which is per frame while playing anyway.
-  const orbitCars = [
+  // comparison from.
+  //
+  // Memoised on the VALUES, not rebuilt per render. "Per render is per frame while
+  // playing anyway" was true of playback, but the root also re-renders at the
+  // telemetry rate, so while PAUSED this handed TrackOrbitView a new `cars` array
+  // 30 times a second and kept its render loop — a full three.js scene draw —
+  // permanently awake. Same reasoning as camPanes above.
+  const orbitCars = useMemo(() => [
     refCar && { x: refCar.x, z: refCar.z, yaw: refAngle * Math.PI / 180,
       color: REF_COLOR, dist: refFrac * (refLine?.lapLen || 0) },
     compCar && { x: compCar.x, z: compCar.z, yaw: compAngle * Math.PI / 180,
       color: COMP_COLOR, dist: playhead * (compLine?.lapLen || 0), main: true },
-  ].filter(Boolean);
+  ].filter(Boolean),
+  [refCar?.x, refCar?.z, compCar?.x, compCar?.z, refAngle, compAngle,
+   refFrac, playhead, refLine?.lapLen, compLine?.lapLen]);
 
   // ── The four control clusters ──────────────────────────────────────────────
   // On desktop they are absolutely-positioned overlays in the corners of the

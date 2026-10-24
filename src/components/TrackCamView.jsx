@@ -235,8 +235,18 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
     };
   }, [resize, start]);
 
-  // Wake on every render — a changed playhead, lap, or model all arrive that way.
-  useEffect(() => { start(); });
+  // Wake when the SCENE changes, not on every render. `panes` carries the
+  // playhead and both car positions and is memoised by the parent, so these
+  // identities move exactly when there is something new to draw.
+  //
+  // This used to have no dep array at all. That was fine in isolation — the loop
+  // self-terminates once settled — but the root re-renders at the telemetry rate
+  // (~30 Hz) while the game is sending, so it re-armed a full frame 30 times a
+  // second even with playback PAUSED: a camera build per pane, the road/line
+  // window polygon clipping, a WebGL car pass and a canvas blit, all to redraw an
+  // identical image. drawOnce decides "settled" only at the END, after drawing.
+  useEffect(() => { start(); },
+    [start, panes, model, driven, reference, cornerMarks, brakeMarks]);
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   return (

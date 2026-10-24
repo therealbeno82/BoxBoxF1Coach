@@ -772,6 +772,11 @@ function useLLM(llmConfig) {
 // lap to a few hundred samples. The user can still export a lap to a file too.
 
 // Idle telemetry reading shown before the Rust telemetry core delivers a snapshot.
+// One shared empty array for "this lap has no such channel". A fresh `|| []` in a
+// render path is a new identity every time, which silently defeats any memo or
+// prop comparison downstream of it.
+const EMPTY_ARR = Object.freeze([]);
+
 const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3,
   ersHarvestLimit:0, overtakeAvailable:0, overtakeActive:0, overtakeActivationDistance:0, activeAeroMode:0, activeAeroAvailable:0, activeAeroActivationDistance:0, regs2026:0, sessionUid:"0" };
 
@@ -809,6 +814,10 @@ const runMeta = (m) => ({
 
 function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
+  // Bumped whenever the SET of recorded bins changes (a new 10 m bin, or a wipe at
+  // a lap/driver boundary) — never when the bin the car is already inside is
+  // overwritten. This is what currentLap keys on instead of the telemetry tick.
+  const [binVersion, setBinVersion] = useState(0);
   const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0, lapLenEst: 0 });
   const lapNumRef = useRef(0);
   // The run (session + session type + track — see lapRunKey) the lap counter is
@@ -839,7 +848,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   useEffect(() => {
     let cancelled = false;
     const buf = bufRef.current;
-    buf.bins.clear(); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+    buf.bins.clear(); setBinVersion(v => v + 1); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
     buf.fuelStart = null; buf.lastFuel = null; buf.lastFuelDelta = null;
     // These survive a swap too: a lap frozen right after the switch could
     // otherwise inherit the previous driver's fallback lap time / tyre tag.
@@ -998,6 +1007,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         lapStore.putLap(lap);                  // fire-and-forget; no-op if no driver
       }
       buf.bins.clear();
+      setBinVersion(v => v + 1);
       buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
       buf.fuelStart = null; // re-armed at this tick's fuel capture = the new lap's start level
       buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
@@ -1032,6 +1042,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       if (!wrapped &&
           ((lapNumber > buf.lastLapNum && buf.lastLapNum >= 0) || enteredCleanLap)) {
         buf.bins.clear();
+        setBinVersion(v => v + 1);
         buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
         buf.fuelStart = null;
         buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
@@ -1133,14 +1144,33 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         // recorded before this existed simply renders flat.
         if (typeof worldY === "number" && isFinite(worldY)) bin.y = worldY;
       }
+      const before = buf.bins.size;
       buf.bins.set(Math.round(lapDistance / 10), bin);
+      // Bump ONLY when a new bin lands. Overwriting the bin the car is currently
+      // inside doesn't add a sample, so it must not force a rebuild — see
+      // currentLap below, and recordedPath for the same pattern on the map.
+      if (buf.bins.size !== before) setBinVersion(v => v + 1);
     }
   }, [tel, trackName]);
 
-  // Render-friendly snapshot of the in-progress lap, refreshed each telemetry tick.
+  // Render-friendly snapshot of the in-progress lap, rebuilt only when the SET of
+  // bins actually changes — the same distinction `pathVersion` makes for the track
+  // outline, and for the same reason.
+  //
+  // This used to key on `tel.lapDistance`, which moves every telemetry tick, so a
+  // Map of up to ~700 bins was spread and sorted 30x/s on every tab. The cost was
+  // not the sort: the new array IDENTITY propagated into comparisonLap -> cs ->
+  // TelemetryStudio's `compareSamples`, whose `scales`, `paths` and read-out memos
+  // all key on it. That meant 18 buildPath calls (9 channels x main+ref), each
+  // walking ~700 samples and concatenating a 10-20 kB path string, plus 18 fresh
+  // SVG `d` attributes and a re-rasterise of six panels — 30 times a second, to
+  // redraw a trace that gains a point roughly 5 times a second.
+  //
+  // Keyed on the bin count, the newest sample is up to one bin (10 m) stale in the
+  // live view. That is the same trade recordedPath already makes.
   const currentLap = useMemo(() => ({
     samples: [...bufRef.current.bins.values()].sort((a, b) => a.dist - b.dist),
-  }), [tel.lapDistance, storedLaps]);
+  }), [binVersion, storedLaps]);
 
   // Live mini-sector progress for the Live screen's S1/S2/S3 cards: each slice's
   // duration once the car has cleared it (null while ahead/un-driven), plus the slice
@@ -2065,6 +2095,46 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // previous session's lap that's no longer in the now session-scoped list.
   useEffect(() => { setComparisonLapId("live"); }, [sessionId]);
 
+  // The two sample arrays the Analytics panels read, and the lap length derived
+  // from them. All three were computed INLINE in the Analytics branch of the JSX,
+  // which runs on every render — i.e. 30x/s while the game is sending, since
+  // liveTel is state on this component. The length reduce alone walked ~1,400
+  // samples a tick for a value that changes only when the selected lap or
+  // reference changes; both arrays are already sorted by `dist`, so the max is
+  // simply the last element.
+  const compareSamples = useMemo(() => comparisonLap?.samples || [], [comparisonLap]);
+  const referenceSamples = useMemo(() => activeTrace?.samples || [], [activeTrace]);
+  const lapLenFromSamples = useMemo(() => {
+    const lastOf = (a) => (a.length ? (a[a.length - 1].dist || 0) : 0);
+    return Math.max(lastOf(compareSamples), lastOf(referenceSamples));
+  }, [compareSamples, referenceSamples]);
+  // The live fallback is only reached when NEITHER lap carries samples, and it is
+  // the one part that legitimately follows telemetry — kept as a separate memo so
+  // the scan above doesn't get dragged back onto the tick rate with it.
+  const lapLen = useMemo(
+    () => lapLenFromSamples
+      || ((tel.lapPct > 0.02 && tel.lapDistance) ? tel.lapDistance / tel.lapPct : 0),
+    [lapLenFromSamples, tel.lapPct, tel.lapDistance]);
+
+  // Lap number the Live screen shows for the lap in progress: the highest lap
+  // number already recorded in THIS session, plus one. Was an inline reduce over
+  // the driver's entire uncapped history on every render — 500 laps is 15,000
+  // iterations a second for a number that changes once a lap.
+  // Both of these were array literals written inline in the Analytics JSX, so
+  // every render handed the screen a new identity and defeated any memo keyed on
+  // them downstream.
+  const referenceSources = useMemo(() => [...refTraces, ...sessionLaps], [refTraces, sessionLaps]);
+  const sectorDists = useMemo(() => activeTrace?.meta?.sectors || EMPTY_ARR, [activeTrace]);
+
+  const liveLapNumber = useMemo(() => {
+    if (sessionId == null) return 1;
+    let max = 0;
+    for (const l of storedLaps) {
+      if (!l.archived && l.meta?.sessionId === sessionId) max = Math.max(max, l.lapNumber || 0);
+    }
+    return max + 1;
+  }, [storedLaps, sessionId]);
+
   // Lap-wide evidence for the coach: your most recent COMPLETED lap vs the loaded
   // reference. Recomputed only when a lap finishes or the reference changes (not
   // per telemetry tick), so it's cheap. Falls back to null → coach uses the
@@ -2576,12 +2646,24 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   }, [askLap, lapEvidence, activeTrace, coachLap, paceBuckets, coachBucket, sessionTrends]);
 
   // Open the Car Setup modal for a lap/trace (Dashboard, Live, Analytics).
-  const openSetupForLap = (lap) => setCarSetup({
+  // useCallback: this is handed to the memo'd LapRow as `onOpenSetup`, so a fresh
+  // arrow every render would change the prop on every telemetry tick and undo the
+  // memo for every row in the session log.
+  const openSetupForLap = useCallback((lap) => setCarSetup({
     track: lap?.meta?.track || trackName || "—",
     time: lap?.lapTime ? fmtTime(lap.lapTime) : (lap?.meta?.lapTime ? fmtTime(lap.meta.lapTime) : ""),
     date: lap?.recordedAt ? new Date(lap.recordedAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "",
     color: activeDriverObj?.color || "#3671C6", setup: lap?.setup || null,
-  });
+  }), [trackName, activeDriverObj?.color]);
+
+  // The track-map legend chips. Was an inline map in the JSX, so seven objects and
+  // seven closures were allocated per render — i.e. per telemetry tick — for a set
+  // that only changes when a cue is toggled.
+  const legendChips = useMemo(
+    () => LIVE_LEGEND.map(([color, label, key]) => ({ color, label,
+      on: liveCues[key] !== false,
+      onToggle: () => setLiveCues(f => ({ ...f, [key]: !f[key] })) })),
+    [liveCues]);
 
   // ── Tab button style ────────────────────────────────────────────────────
   const tabBtn = (t) => ({
@@ -2639,8 +2721,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           tel={tel} units={units}
           trackName={trackName}
           sessionLabel={sessionTypeLabel}
-          liveLapNumber={sessionId == null ? 1
-            : storedLaps.reduce((m,l)=>((!l.archived && l.meta?.sessionId===sessionId)?Math.max(m,l.lapNumber||0):m),0)+1}
+          liveLapNumber={liveLapNumber}
           laps={storedLaps} sessionId={sessionId} liveMini={liveMini} demoMode={fakeMode}
           activeTrace={activeTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
@@ -2648,9 +2729,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onOpenSetup={openSetupForLap} onResetSessionLaps={resetSessionLaps}
           onSaveSession={saveSession} onLoadSession={loadSession}
           onSaveMap={mapPath && mapPath.length >= 20 ? exportTrackMapPng : null}
-          legendChips={LIVE_LEGEND.map(([color,label,key])=>({ color, label,
-            on: liveCues[key]!==false,
-            onToggle: ()=>setLiveCues(f=>({...f,[key]:!f[key]})) }))}
+          legendChips={legendChips}
           leadSeconds={leadSeconds} onLeadSeconds={setLeadSeconds} leadRange={CALL_LEAD}
           mapSlot={<TrackMap telemetry={tel} zones={zones} recordedPath={mapPath}
             filters={liveCues} corners={trackCorners} W={1000} H={720} fill />}
@@ -2659,27 +2738,21 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
       {/* ── ANALYTICS (full-bleed redesigned screen) ── */}
       {tab==="compare" && (() => {
-        const cs = comparisonLap?.samples || [];
-        const rs = activeTrace?.samples || [];
-        const lapLen = Math.max(
-          cs.reduce((m,s)=>Math.max(m,s.dist||0),0),
-          rs.reduce((m,s)=>Math.max(m,s.dist||0),0)
-        ) || ((tel.lapPct>0.02 && tel.lapDistance) ? tel.lapDistance/tel.lapPct : 0);
         const comparisonLabel = comparisonLapId==="live" ? "Live lap" : (comparisonLap ? lapSourceLabel(comparisonLap) : "—");
         const referenceLabel  = activeTrace ? lapSourceLabel(activeTrace) : "ref";
         return (
         <AnalyticsScreen
           trackName={trackName} sessionLabel={sessionTypeLabel} demoMode={fakeMode}
           laps={sessionLaps} comparisonLap={comparisonLap}
-          referenceSources={[...refTraces, ...sessionLaps]}
+          referenceSources={referenceSources}
           referenceId={activeTraceId} onSelectReference={setActiveTraceId}
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
           onDeleteLap={deleteLap} onExportLap={exportLapToFile} onPublishLap={requestPublish}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
-          tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
-            zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
+          tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
+            zones={zones} sectorDists={sectorDists} units={units} tempUnits={tempUnits} corners={trackCorners}
             visibleTraces={visibleTraces} onToggleTrace={toggleTrace} compact
             playhead={anaPlayhead} playing={anaPlaying} onSeek={setAnaPlayhead} onSetPlaying={setAnaPlaying} />}
           linesSlot={<DrivingLinesView referenceLap={activeTrace} comparisonLap={comparisonLap}

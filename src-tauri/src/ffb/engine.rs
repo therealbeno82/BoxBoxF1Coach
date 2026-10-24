@@ -157,17 +157,81 @@ fn linear_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
 /// across them, and no overshoot between. That is what removes the per-frame
 /// slope kink a linear blend leaves behind — jerk the two-pole smoother only
 /// partly buries.
-fn pchip_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
-    let n = ts.len();
-    if n == 0 {
-        return 0.0;
+/// The half of a PCHIP evaluation that depends only on the KNOT TIMES and the
+/// query point — not on any channel's values.
+///
+/// Every one of the CHANNELS is evaluated at the same `ts` and the same `t`, so
+/// without this the knot-segment search, the knot spacings, the interior tangent
+/// weights and the four Hermite basis coefficients were all recomputed 13 times
+/// per output tick, at up to 360 Hz. Build it once, then call
+/// `pchip_at_with` per channel.
+struct PchipBasis {
+    n: usize,
+    k: usize,
+    /// Spacing of each span: `hs[i] == ts[i + 1] - ts[i]`.
+    hs: [f32; PREDICTOR_FRAMES],
+    /// Fritsch-Carlson weights for each interior knot.
+    w1: [f32; PREDICTOR_FRAMES],
+    w2: [f32; PREDICTOR_FRAMES],
+    u: f32,
+    /// Hermite basis coefficients for ys[k], m[k], ys[k+1], m[k+1].
+    b_y0: f32,
+    b_m0: f32,
+    b_y1: f32,
+    b_m1: f32,
+}
+
+impl PchipBasis {
+    /// `None` when there is nothing to interpolate (no knots, one knot, or a
+    /// query at/before the first knot) — the caller answers those directly from
+    /// `ys`, exactly as the original single-shot function did.
+    fn build(ts: &[f32], t: f32) -> Option<Self> {
+        let n = ts.len();
+        if n == 0 || n == 1 || t <= ts[0] {
+            return None;
+        }
+        let mut hs = [0.0f32; PREDICTOR_FRAMES];
+        for i in 0..n - 1 {
+            hs[i] = ts[i + 1] - ts[i];
+        }
+        let mut w1 = [0.0f32; PREDICTOR_FRAMES];
+        let mut w2 = [0.0f32; PREDICTOR_FRAMES];
+        for i in 1..n - 1 {
+            let h0 = hs[i - 1];
+            let h1 = hs[i];
+            w1[i] = 2.0 * h1 + h0;
+            w2[i] = h1 + 2.0 * h0;
+        }
+        let mut k = 0usize;
+        while k + 1 < n - 1 && ts[k + 1] < t {
+            k += 1;
+        }
+        let h = hs[k];
+        let u = if h.abs() > 1e-9 { (t - ts[k]) / h } else { 0.0 };
+        let u2 = u * u;
+        let u3 = u2 * u;
+        Some(Self {
+            n,
+            k,
+            hs,
+            w1,
+            w2,
+            u,
+            b_y0: 2.0 * u3 - 3.0 * u2 + 1.0,
+            b_m0: (u3 - 2.0 * u2 + u) * h,
+            b_y1: -2.0 * u3 + 3.0 * u2,
+            b_m1: (u3 - u2) * h,
+        })
     }
-    if n == 1 || t <= ts[0] {
-        return ys[0];
-    }
+}
+
+/// Evaluate one channel against a prebuilt basis. The secants, the tangents and
+/// the monotonicity limiter are the only parts that genuinely depend on `ys`.
+fn pchip_at_with(b: &PchipBasis, ys: &[f32]) -> f32 {
+    let n = b.n;
     let mut secant = [0.0f32; PREDICTOR_FRAMES];
     for i in 0..n - 1 {
-        let h = ts[i + 1] - ts[i];
+        let h = b.hs[i];
         secant[i] = if h.abs() > 1e-9 { (ys[i + 1] - ys[i]) / h } else { 0.0 };
     }
     let mut m = [0.0f32; PREDICTOR_FRAMES];
@@ -176,10 +240,7 @@ fn pchip_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
         if s0 * s1 <= 0.0 {
             m[i] = 0.0;
         } else {
-            let h0 = ts[i] - ts[i - 1];
-            let h1 = ts[i + 1] - ts[i];
-            let w1 = 2.0 * h1 + h0;
-            let w2 = h1 + 2.0 * h0;
+            let (w1, w2) = (b.w1[i], b.w2[i]);
             m[i] = (w1 + w2) / (w1 / s0 + w2 / s1);
         }
     }
@@ -193,33 +254,43 @@ fn pchip_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
             continue;
         }
         let a = m[i] / s;
-        let b = m[i + 1] / s;
-        let q = a * a + b * b;
+        let bb = m[i + 1] / s;
+        let q = a * a + bb * bb;
         if q > 9.0 {
             let tau = 3.0 / q.sqrt();
             m[i] = tau * a * s;
-            m[i + 1] = tau * b * s;
+            m[i + 1] = tau * bb * s;
         }
     }
-    let mut k = 0usize;
-    while k + 1 < n - 1 && ts[k + 1] < t {
-        k += 1;
-    }
-    let h = ts[k + 1] - ts[k];
-    let u = if h.abs() > 1e-9 { (t - ts[k]) / h } else { 0.0 };
-    let u2 = u * u;
-    let u3 = u2 * u;
-    let y = (2.0 * u3 - 3.0 * u2 + 1.0) * ys[k]
-        + (u3 - 2.0 * u2 + u) * h * m[k]
-        + (-2.0 * u3 + 3.0 * u2) * ys[k + 1]
-        + (u3 - u2) * h * m[k + 1];
-    if u > 1.0 {
+    let k = b.k;
+    let y = b.b_y0 * ys[k] + b.b_m0 * m[k] + b.b_y1 * ys[k + 1] + b.b_m1 * m[k + 1];
+    if b.u > 1.0 {
         let lo = ys[n - 2].min(ys[n - 1]);
         let hi = ys[n - 2].max(ys[n - 1]);
         let d = hi - lo;
         return y.clamp(lo - 0.5 * d, hi + 0.5 * d);
     }
     y.clamp(ys[k].min(ys[k + 1]), ys[k].max(ys[k + 1]))
+}
+
+/// Single-shot convenience wrapper: build the basis and evaluate one channel.
+///
+/// The hot path uses `PchipBasis::build` once and `pchip_at_with` per channel
+/// instead, so nothing in the engine calls this — but it composes exactly those
+/// two pieces, which is what lets the unit tests exercise the real reconstruction
+/// without reproducing the per-tick plumbing.
+#[allow(dead_code)]
+fn pchip_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
+    match PchipBasis::build(ts, t) {
+        None => {
+            if ts.is_empty() {
+                0.0
+            } else {
+                ys[0]
+            }
+        }
+        Some(b) => pchip_at_with(&b, ys),
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -341,6 +412,13 @@ impl TelemetryPredictor {
             t_rel = ts[0];
         }
 
+        // Built ONCE for all channels — they share `ts` and `t_rel`, and this is
+        // the knot search plus the Hermite basis, i.e. most of the per-call work.
+        let basis = if mode == InterpMode::Linear {
+            None
+        } else {
+            PchipBasis::build(&ts[..n], t_rel)
+        };
         let mut out = [0.0f32; CHANNELS];
         for c in 0..CHANNELS {
             let mut ys = [0.0f32; PREDICTOR_FRAMES];
@@ -349,8 +427,12 @@ impl TelemetryPredictor {
             }
             out[c] = if mode == InterpMode::Linear {
                 linear_at(&ts[..n], &ys[..n], t_rel)
+            } else if let Some(b) = &basis {
+                pchip_at_with(b, &ys[..n])
             } else {
-                pchip_at(&ts[..n], &ys[..n], t_rel)
+                // Degenerate (no knots / one knot / query at or before the first):
+                // the same answer pchip_at gives, without rebuilding the basis.
+                ys[0]
             };
         }
         from_channels(out)
@@ -430,11 +512,27 @@ pub struct TraceDump {
 
 /// Bounded history of the FFB output. The real-time thread only ever
 /// `try_lock`s it, so a reader copying a trace can never stall a tick.
-#[derive(Default)]
 pub struct FfbTrace {
     samples: Vec<TraceSample>,
     head: usize,
     origin_s: f64,
+}
+
+impl Default for FfbTrace {
+    /// Allocate the whole ring UP FRONT, once, off the real-time thread.
+    ///
+    /// `Vec::new()` meant the first TRACE_CAP samples grew by doubling — ~15
+    /// reallocations, the last a 256 KiB malloc + memcpy — on the thread running
+    /// at THREAD_PRIORITY_TIME_CRITICAL, inside a 2.8 ms tick, while holding the
+    /// trace mutex. That covered the first 45-80 s after a wheel opened, which is
+    /// exactly when someone would be capturing an A/B trace.
+    fn default() -> Self {
+        Self {
+            samples: Vec::with_capacity(TRACE_CAP),
+            head: 0,
+            origin_s: 0.0,
+        }
+    }
 }
 
 impl FfbTrace {
@@ -456,7 +554,15 @@ impl FfbTrace {
         }
     }
 
-    pub fn snapshot(&self, hz: f32) -> TraceDump {
+    /// `fallback_hz` is only used when the trace is too short to measure.
+    ///
+    /// The rate is DERIVED from the samples' own timestamps rather than taken
+    /// from the setting, because the setting can have changed since they were
+    /// recorded — and A/B-ing one output rate against another is the whole
+    /// reason this export exists, so trusting the live value mislabelled exactly
+    /// the comparison being made and shifted every band in the PSD that
+    /// `scripts/analyze-ffb-trace.mjs` prints.
+    pub fn snapshot(&self, fallback_hz: f32) -> TraceDump {
         let mut samples = Vec::with_capacity(self.samples.len());
         if self.samples.len() < TRACE_CAP {
             samples.extend_from_slice(&self.samples);
@@ -464,6 +570,15 @@ impl FfbTrace {
             samples.extend_from_slice(&self.samples[self.head..]);
             samples.extend_from_slice(&self.samples[..self.head]);
         }
+        let span = match (samples.first(), samples.last()) {
+            (Some(a), Some(b)) => b.t - a.t,
+            _ => 0.0,
+        };
+        let hz = if samples.len() > 1 && span > 1e-3 {
+            (samples.len() - 1) as f32 / span
+        } else {
+            fallback_hz
+        };
         TraceDump { hz, samples }
     }
 }
