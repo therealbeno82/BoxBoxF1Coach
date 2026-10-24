@@ -54,6 +54,10 @@ import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
 import { useAndroidBack } from "./hooks/useAndroidBack.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
+import {
+  publishTelemetry, subscribeTelemetry, getTelemetry,
+  useLiveTelemetry, useTelemetryIdentity,
+} from "./lib/telemetryStore.js";
 import { useFfbEngine } from "./hooks/useFfbEngine.js";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -771,14 +775,10 @@ function useLLM(llmConfig) {
 // dashboard stats survive restarts. Distance-binning (~10 m) keeps a ~90 s / 30 Hz
 // lap to a few hundred samples. The user can still export a lap to a file too.
 
-// Idle telemetry reading shown before the Rust telemetry core delivers a snapshot.
 // One shared empty array for "this lap has no such channel". A fresh `|| []` in a
 // render path is a new identity every time, which silently defeats any memo or
 // prop comparison downstream of it.
 const EMPTY_ARR = Object.freeze([]);
-
-const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3,
-  ersHarvestLimit:0, overtakeAvailable:0, overtakeActive:0, overtakeActivationDistance:0, activeAeroMode:0, activeAeroAvailable:0, activeAeroActivationDistance:0, regs2026:0, sessionUid:"0" };
 
 // Cumulative lap-time stamped at each mini-sector boundary: index k = the running
 // lap time when the car entered mini-sector k. Slot 0 is the start line (time 0);
@@ -812,7 +812,11 @@ const runMeta = (m) => ({
   track: m.trackName || "Live",
 });
 
-function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
+// Reads the live snapshot straight off the telemetry store rather than taking it
+// as an argument. Recording IS per-tick work, but it produces no render output
+// beyond the bin-version bump below, so it has no business re-rendering the hub
+// that hosts it thirty times a second — see lib/telemetryStore.js.
+function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
   // Bumped whenever the SET of recorded bins changes (a new 10 m bin, or a wipe at
   // a lap/driver boundary) — never when the bin the car is already inside is
@@ -868,14 +872,18 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     return () => { cancelled = true; };
   }, [driver]);
 
-  useEffect(() => {
+  // Installed once per trackName, and run on the telemetry EDGE rather than on a
+  // render. The body is unchanged: the only difference is where the snapshot comes
+  // from. Everything else it reads was already behind a ref (metaRef, bufRef)
+  // precisely because this used to re-run on every tick regardless.
+  useEffect(() => subscribeTelemetry(() => {
     const { lapDistance, lapPct, lapNumber, throttle, brake, steer, speed, gear, ersMode, ersDeploy, lapTime,
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
             setup, tyreVisual, tyreActual, tyreAge, tyreWear, fuelInTank, fuelRemainingLaps,
             weather, trackTemp, airTemp,
             worldX, worldY, worldZ,
             sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
-            tyreSurfaceTemps, tyreInnerTemps } = tel;
+            tyreSurfaceTemps, tyreInnerTemps } = getTelemetry();
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
     const buf = bufRef.current;
 
@@ -1151,7 +1159,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       // currentLap below, and recordedPath for the same pattern on the map.
       if (buf.bins.size !== before) setBinVersion(v => v + 1);
     }
-  }, [tel, trackName]);
+  }), [trackName]);
 
   // Render-friendly snapshot of the in-progress lap, rebuilt only when the SET of
   // bins actually changes — the same distinction `pathVersion` makes for the track
@@ -1175,18 +1183,24 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   // Live mini-sector progress for the Live screen's S1/S2/S3 cards: each slice's
   // duration once the car has cleared it (null while ahead/un-driven), plus the slice
   // being driven now and the tyre worn — so the UI can colour past slices against the
-  // per-mini PBs and pulse the current one. One tick behind (the buffer is stamped in
-  // the effect, read here on the next render), imperceptible at telemetry rates.
-  const liveMini = useMemo(() => {
+  // per-mini PBs and pulse the current one.
+  //
+  // A function rather than a memo, because only the LIVE tab reads it: as a hub memo
+  // keyed on lapPct/lapTime it put the hub back on the telemetry tick single-handed.
+  // The Live tab's own telemetry boundary calls it once per tick instead (see
+  // LiveTelemetry below), which is where that rate belongs. Stable identity, so it
+  // can be handed out as a prop without defeating a memo downstream.
+  const readLiveMini = useCallback(() => {
     const b = bufRef.current;
     const durations = [];
     for (let m = 0; m < MINI_SECTORS; m++) {
       const a = b.miniBound[m], c = b.miniBound[m + 1];
       durations.push((a != null && c != null && c > a) ? c - a : null);
     }
-    const driving = typeof tel.lapTime === "number" && tel.lapTime > 0;
+    const { lapTime } = getTelemetry();
+    const driving = typeof lapTime === "number" && lapTime > 0;
     return { durations, current: driving ? b.miniIdx : -1, tyre: b.lastTyre };
-  }, [tel.lapPct, tel.lapTime, storedLaps]);
+  }, []);
 
   const deleteLap = useCallback(id => {
     setStoredLaps(prev => prev.filter(l => l.id !== id));
@@ -1225,7 +1239,7 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     lapStore.getLaps(d).then(setStoredLaps).catch(() => {});
   }, []);
 
-  return { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps };
+  return { currentLap, readLiveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps };
 }
 
 // ─── TRACK MAP ────────────────────────────────────────────────────────────────
@@ -1435,6 +1449,23 @@ const btnStyle = (bg,color,border) => ({
   background:bg, color, border:`1px solid ${border}`, borderRadius:6,
   padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit", fontWeight:600,
 });
+
+// ─── LIVE TELEMETRY BOUNDARY ──────────────────────────────────────────────────
+// The one place in this tree that re-renders at the telemetry rate. It subscribes
+// to the store and calls `children(tel)`, so a new snapshot re-renders THIS
+// component and its subtree — the Live screen and its track map — and nothing
+// above it. Everything else those leaves need is captured by the render closure
+// from the hub's last render, which is exactly the right staleness: those props
+// only move when the hub's own state does, and then the hub re-renders and hands
+// down a fresh closure.
+//
+// A render prop rather than making LiveScreen subscribe for itself, because the
+// map is handed in as an element (`mapSlot`) built in the hub's JSX: one boundary
+// covers both leaves and neither component's prop contract had to change.
+function LiveTelemetry({ children }) {
+  const tel = useLiveTelemetry();
+  return children(tel);
+}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function BoxBoxApp({ onOpenCalibrator }) {
@@ -1760,9 +1791,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     return true;
   }, [activeDriver]);
 
-  // Connection state
+  // Connection state. Note what is NOT here: the live snapshot. It lives in
+  // lib/telemetryStore.js, outside React, because as hub state it re-rendered
+  // every mounted screen about thirty times a second. `wsConnected` stays — it is
+  // edge-triggered ("is the game sending at all"), so it changes a handful of
+  // times a session, and the Shell, the auto-tab effect and useAndroidDevice all
+  // read it.
   const [wsConnected,  setWsConnected]  = useState(false);
-  const [liveTel,      setLiveTel]      = useState(null);
   // A drive "session": a fresh id minted each time live telemetry connects, so
   // laps recorded during one connection share it and the dashboard can count
   // distinct sessions per driver.
@@ -1798,27 +1833,32 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     return () => { cancelled = true; };
   }, [activeDriver]);
 
-  // Telemetry comes solely from the Rust telemetry core. Until a connection delivers a
-  // snapshot, fall back to a zeroed reading so the UI renders an idle state.
-  const rawTel = liveTel || EMPTY_TEL;
+  // The slow-moving telemetry facts this hub genuinely needs: which circuit, which
+  // session type, which compound is on the car, the game's session UID and the
+  // track length. The object's identity only changes when one of those does (see
+  // lib/telemetryStore.js), so reading it here costs a handful of renders a
+  // session rather than thirty a second. Every per-tick channel is read either by
+  // the Live tab's own telemetry boundary or by one of the three per-tick
+  // subscribers further down, none of which re-render this component.
+  const telId = useTelemetryIdentity();
 
   // Identify the circuit from the m_trackId the telemetry core forwards in each snapshot.
-  const trackInfo = useMemo(() => getTrack(rawTel.trackId ?? -1), [rawTel.trackId]);
+  const trackInfo = useMemo(() => getTrack(telId.trackId ?? -1), [telId.trackId]);
 
   // Coarse game mode (Time Trial / Qualifying / …) from the telemetry core's sessionType,
   // tagged onto each recorded lap so the dashboard can split fastest laps by mode.
-  const sessionTypeLabel = useMemo(() => sessionTypeName(rawTel.sessionType), [rawTel.sessionType]);
+  const sessionTypeLabel = useMemo(() => sessionTypeName(telId.sessionType), [telId.sessionType]);
 
-  // Lap recording runs on RAW telemetry — it only reads the channels + lap
-  // position (not currentZone), so storedLaps is available to resolve the
-  // reference and comparison laps below. Laps are saved under the active driver.
-  const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
-    useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
+  // Lap recording reads the snapshot straight off the telemetry store, so
+  // storedLaps is available to resolve the reference and comparison laps below.
+  // Laps are saved under the active driver.
+  const { currentLap, readLiveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
+    useLapRecorder(trackInfo?.name || loadedRefTrace?.meta?.track || null,
       activeDriver, sessionId, sessionTypeLabel, fakeMode,
       // Only pass the circuit id/slug when telemetry actually identified it — a
       // name borrowed from a loaded reference trace is a display fallback, not
       // proof of which circuit the car is on.
-      trackInfo ? (rawTel.trackId ?? -1) : -1, trackInfo?.slug || null);
+      trackInfo ? (telId.trackId ?? -1) : -1, trackInfo?.slug || null);
 
   // "Reset" the Session Laps panel. Archiving the current laps hides them from the
   // live Session-Laps / Analytics views permanently (the flag is persisted in
@@ -1889,13 +1929,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // menu blips (real → -1 → same real) never fire a spurious reset.
   const prevTrackRef = useRef(null);
   useEffect(() => {
-    const trackId = rawTel.trackId;
+    const trackId = telId.trackId;
     const tValid = typeof trackId === "number" && trackId >= 0; // -1/undefined = no session
     if (tValid) {
       if (prevTrackRef.current != null && prevTrackRef.current !== trackId) resetSessionLaps();
       prevTrackRef.current = trackId;
     }
-  }, [rawTel.trackId, resetSessionLaps]);
+  }, [telId.trackId, resetSessionLaps]);
 
   // Laps belonging to the current drive, scoped by sessionId exactly like the Live
   // screen's Session Laps panel (both go through visibleSessionLaps). The Analytics
@@ -1988,22 +2028,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   const trackName = trackInfo?.name || activeTrace?.meta?.track || null;
 
-  // Derive the active strategy zone from lap position here (not in the source):
-  // live snapshots from the telemetry core only carry lapPct, not the zone.
-  const currentZone = useMemo(
-    () => zones.find(z => rawTel.lapPct >= z.start && rawTel.lapPct <= z.end) || null,
-    [rawTel.lapPct, zones]
-  );
-  const tel = useMemo(() => ({ ...rawTel, currentZone }), [rawTel, currentZone]);
-
   // Accumulate world positions into ~12 m bins to trace the real circuit.
   // Bumped ONLY when the set of bins actually changes (a new ~12 m bin, or a
   // teleport wiping them) — see recordedPath below for why that distinction
   // matters. Overwriting the bin the car is currently inside doesn't move the
   // outline, so it must not count.
+  //
+  // Like the lap recorder, this runs on the telemetry EDGE rather than on a
+  // render: it is per-tick work whose only render-visible product is that bump,
+  // which lands ~5×/s at racing speed rather than 30.
   const [pathVersion, setPathVersion] = useState(0);
-  useEffect(() => {
-    const { worldX, worldZ, lapDistance, lapPct } = tel;
+  useEffect(() => subscribeTelemetry(() => {
+    const { worldX, worldZ, lapDistance, lapPct } = getTelemetry();
     if (typeof worldX !== "number" || typeof worldZ !== "number") return; // no world data yet
     if (!isFinite(worldX) || !isFinite(worldZ)) return;
     const rec = trackPathRef.current;
@@ -2016,7 +2052,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const before = rec.bins.size; // read AFTER any clear above, so a wipe counts
     rec.bins.set(Math.round((lapDistance || 0) / 12), bin);
     if (rec.bins.size !== before) setPathVersion(v => v + 1);
-  }, [tel.worldX, tel.worldZ]);
+  }), []);
 
   // Keyed on the bin COUNT, not on worldX/worldZ: the car sends ~30 positions a
   // second but only crosses a new 12 m bin ~5×/s at racing speed, and this
@@ -2108,13 +2144,15 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const lastOf = (a) => (a.length ? (a[a.length - 1].dist || 0) : 0);
     return Math.max(lastOf(compareSamples), lastOf(referenceSamples));
   }, [compareSamples, referenceSamples]);
-  // The live fallback is only reached when NEITHER lap carries samples, and it is
-  // the one part that legitimately follows telemetry — kept as a separate memo so
-  // the scan above doesn't get dragged back onto the tick rate with it.
+  // The live fallback is only reached when NEITHER lap carries samples. It wants a
+  // track length, which telemetry only carries implicitly as lapDistance / lapPct
+  // — so it reads the store's latched version of exactly that ratio rather than
+  // recomputing it from a raw snapshot, which would have put this memo, and with
+  // it the whole hub, back on the telemetry tick for a value that is constant per
+  // circuit. See nextTrackLen in lib/telemetryStore.js.
   const lapLen = useMemo(
-    () => lapLenFromSamples
-      || ((tel.lapPct > 0.02 && tel.lapDistance) ? tel.lapDistance / tel.lapPct : 0),
-    [lapLenFromSamples, tel.lapPct, tel.lapDistance]);
+    () => lapLenFromSamples || telId.trackLenM,
+    [lapLenFromSamples, telId.trackLenM]);
 
   // Lap number the Live screen shows for the lap in progress: the highest lap
   // number already recorded in THIS session, plus one. Was an inline reduce over
@@ -2237,9 +2275,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //     below is null, every rule fails open, and only a wrong-circuit reference
   //     can still flag — which is exactly what should flag with no lap running.
   const liveProfileLap = useMemo(() => ({
-    tyre: { visual: rawTel.tyreVisual },
+    tyre: { visual: telId.tyreVisual },
     meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
-  }), [rawTel.tyreVisual, drivenTrackName, sessionTypeLabel]);
+  }), [telId.tyreVisual, drivenTrackName, sessionTypeLabel]);
 
   const liveRefMatch = useMemo(
     () => matchReference(liveProfileLap, activeTrace, { drivenTrack: drivenTrackName }),
@@ -2346,8 +2384,12 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // no connect/disconnect: we just subscribe to its Tauri events. `wsConnected`
   // now means "the game is actively sending packets"; a fresh drive session id is
   // minted on each rising edge (as the old WebSocket onopen used to do).
+  // The snapshot goes to the telemetry store, NOT to state on this component:
+  // publishing it does not re-render the hub, so a UDP packet now only reaches the
+  // pieces that subscribed to it. "receiving" is still hub state — it is an edge,
+  // and the Shell's UDP pill reads it.
   useTelemetry({
-    onSnapshot: setLiveTel,
+    onSnapshot: publishTelemetry,
     onReceivingChange: setWsConnected,
   });
 
@@ -2359,9 +2401,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // only cleared by a different circuit (the auto-reset effect above) or the manual
   // "Reset Session Laps" button — both of which mint their own id.
   useEffect(() => {
-    const uid = rawTel.sessionUid;
+    const uid = telId.sessionUid;
     if (uid && uid !== "0") setSessionId(prev => prev || `s-${uid}`);
-  }, [rawTel.sessionUid]);
+  }, [telId.sessionUid]);
 
   // Push a UDP-port change to the native core; it rebinds its listener live.
   useEffect(() => { coreInvoke("set_udp_port", { port: udpPort }); }, [udpPort]);
@@ -2508,7 +2550,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // point. Seconds → lap-fraction uses current speed and the lap length, so the lead
   // is the same slice of TIME whether the mark is at the end of a straight or in a
   // slow corner. At leadSeconds = 0 the cue starts on the mark itself.
-  useEffect(() => {
+  //
+  // Runs on the telemetry edge rather than on a render, for the same reason as the
+  // lap recorder: firing a cue is per-tick work that renders nothing. Everything it
+  // reads that ISN'T telemetry therefore has to come through a ref — a dep array
+  // can't deliver it to a callback installed once. The ordering inside is unchanged,
+  // which matters for the fired-set bookkeeping below.
+  const callInputsRef = useRef(null);
+  callInputsRef.current = { audioOn, liveCalls, liveCues, leadSeconds, speak, beep };
+
+  useEffect(() => subscribeTelemetry(() => {
+    const { audioOn, liveCalls, liveCues, leadSeconds, speak, beep } = callInputsRef.current;
+    const tel = getTelemetry();
     const a = announcedRef.current;
     // Swapping the reference mid-lap re-derives the zone keys (z1…zN), which
     // collide with the stale fired-set and would suppress the new calls for the
@@ -2562,9 +2615,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       beep(f, d, t);
       speak(call.speak, call.type === "ers" ? "normal" : "urgent");
     }
-  }, [tel.lapPct, tel.speed, tel.lapDistance,
-      tel.gamePaused, tel.driverStatus, tel.pitStatus,
-      audioOn, liveCalls, liveCues, leadSeconds, speak, beep]);
+  }), []);
 
   // ── "That's your best — publish it?" ─────────────────────────────────────
   // Offers to publish when a freshly-recorded lap is both publishable AND the
@@ -2675,13 +2726,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     letterSpacing:1, fontFamily:"inherit",
   });
 
-  // ── Zone alert colours ──────────────────────────────────────────────────
-  const zone = tel.currentZone;
-  const zoneBg     = zone?.type==="brake"?"#1a0606":zone?.type==="lico"?"#1a1100":zone?.type==="ers"?"#00102a":"var(--surface)";
-  const zoneBorder  = zone ? zoneFill(zone) : "var(--border)";
-  const zoneLabel   = zone?.type==="brake"?"BRAKE":zone?.type==="lico"?"LIFT AND COAST":zone?.type==="ers"?`ERS — ${ERS_MODES[zone.ersMode]?.toUpperCase()}`:"CLEAR";
-  const zoneColor   = zone ? zoneFill(zone) : "var(--text-faintest)";
-
   return (
     <Shell
       tab={tab} onTab={setTab} onSettings={()=>setTab("setup")}
@@ -2717,12 +2761,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           driven, and its notice explains why the real-time calls are silent.
           Never the Coach Log's verdict, which follows the lap being reviewed. */}
       {tab==="live" && (
+        <LiveTelemetry>{(tel) => (
         <LiveScreen
           tel={tel} units={units}
           trackName={trackName}
           sessionLabel={sessionTypeLabel}
           liveLapNumber={liveLapNumber}
-          laps={storedLaps} sessionId={sessionId} liveMini={liveMini} demoMode={fakeMode}
+          laps={storedLaps} sessionId={sessionId} liveMini={readLiveMini()} demoMode={fakeMode}
           activeTrace={activeTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
           focusAudioOn={focusAudioOn} onToggleFocusAudio={()=>setFocusAudioOn(a=>!a)}
@@ -2734,6 +2779,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           mapSlot={<TrackMap telemetry={tel} zones={zones} recordedPath={mapPath}
             filters={liveCues} corners={trackCorners} W={1000} H={720} fill />}
         />
+        )}</LiveTelemetry>
       )}
 
       {/* ── ANALYTICS (full-bleed redesigned screen) ── */}
