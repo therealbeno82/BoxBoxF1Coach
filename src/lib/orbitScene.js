@@ -660,6 +660,9 @@ export function createOrbitScene(canvas, onReady) {
       cars.clear();
       template = null;
       renderer.dispose();
+      // See tcamCarLayer.dispose — force the context loss, or repeated camera-mode
+      // switching exhausts Chrome's live WebGL context cap.
+      try { renderer.forceContextLoss(); } catch { /* context already gone */ }
     },
   };
 }

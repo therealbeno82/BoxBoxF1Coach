@@ -333,7 +333,7 @@ export default function LeaderboardScreen({
                   </span>
                 )}
 
-                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} phone={phone} />
+                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} phone={phone} coarse={coarse} />
               </div>
             );
           })}
@@ -347,7 +347,7 @@ export default function LeaderboardScreen({
 // the coach wouldn't accept it, the button still works — the driver may well want
 // to look at the traces — but it says so first, naming the actual mismatch rather
 // than letting the coach go quiet later with no explanation.
-function UseButton({ entry, blocked, verdict, onUse, phone = false }) {
+function UseButton({ entry, blocked, verdict, onUse, phone = false, coarse = false }) {
   const reason = blocked ? verdict.reasons[0] : null;
   return (
     <button
@@ -355,7 +355,7 @@ function UseButton({ entry, blocked, verdict, onUse, phone = false }) {
       title={reason ? `${reason.title} — ${reason.detail}` : "Load this lap as your reference"}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
-        padding: phone ? 0 : "0 10px", height: phone ? 26 : 32, ...(phone && { minHeight: 0, width: 32 }),
+        padding: phone ? 0 : "0 10px", height: phone ? 26 : 32, ...(phone && { width: coarse ? 44 : 32 }),
         borderRadius: 8, cursor: "pointer",
         fontFamily: FONT.ui, fontSize: phone ? 12 : 10, letterSpacing: 0.8, textTransform: "uppercase",
         fontWeight: 700, whiteSpace: "nowrap",

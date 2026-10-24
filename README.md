@@ -70,7 +70,7 @@ In **F1 25/26**: *Settings → Telemetry Settings*
 | UDP Format       | **2026** (the app parses the 2026 packet format only) |
 | IP Address       | `127.0.0.1` on PC — or your PC's LAN IP on console (see below) |
 | Port             | `20777`                                            |
-| Send Rate        | **60 Hz** (smoothest force feedback)               |
+| Send Rate        | **60 Hz** (most FFB data per second)               |
 
 The app is always listening — there's no "connect" button. The **UDP** pill in the header
 goes green when packets arrive.
@@ -223,8 +223,13 @@ analysis is free and instant; the LLM debrief costs an API call and sits behind 
 
 ### FFB
 Wheel setup and live monitoring — device and profile pickers, wheel torque and clip meters,
-an output scope, grip gauges, and the full parameter set (strength, ceiling, full-scale
+an output scope, grip gauges, and the full parameter set (strength, output rate, full-scale
 force, load sensitivity and the rest) with hover hints explaining each one.
+
+The wheel is driven by a fixed-rate output loop, **not** by the game's UDP packets. The
+engine resamples the game's ~60 Hz telemetry and smooths it at the chosen **Update Rate**
+(200–360 Hz for direct-drive bases), so force changes continuously instead of stepping once
+per packet — the usual cause of a notchy, cogging feel.
 
 ![FFB — wheel device list, torque and clip meters, output scope and the full parameter set](docs/screenshots/ffb.png)
 

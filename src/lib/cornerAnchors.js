@@ -72,7 +72,10 @@ export function loadApexes(slug) {
   const p = fetch(`/tracks/${slug}.json`)
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => (Array.isArray(d?.apexes) && d.apexes.length ? d.apexes : null))
-    .catch(() => null);
+    // A genuinely absent file stays cached (no refetch on every track change);
+    // a transient network failure must be evicted, or one offline moment means
+    // legacy corner names until the app restarts.
+    .catch(() => { apexCache.delete(slug); return null; });
   apexCache.set(slug, p);
   return p;
 }

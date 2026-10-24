@@ -18,7 +18,7 @@
 // (as the decision). Returns findings rather than throwing, so the caller can
 // distinguish "reject" from "accept but flag".
 
-import { THRESHOLDS as T, plausibleLapTime } from "./limits.js";
+import { THRESHOLDS as T, plausibleLapTime, TRACK_LENGTH_M } from "./limits.js";
 
 const SPEED_FLOOR_MS = 1; // stopped-car guard on the 1/v integrand
 
@@ -178,9 +178,21 @@ export function checkErs(samples) {
 // that arrived via a session file or a profile import preserve the relation too.
 // That makes this the tightest check here and the cheapest to run — an edited lap
 // time almost always forgets to move the sectors with it.
+//
+// REQUIRED, not optional. This used to accept a missing/invalid split set by
+// flagging it, which meant stripping the field was a one-line bypass of the only
+// precise check we have (the integral backstop only catches >3.5% shaves).
+// A live recorder lap that reached the line always carries splits; the rare
+// splitless lap (a mid-lap join) is refused with a message rather than ranked
+// unverified. Note this makes the check a completeness policy as much as a
+// security one: a determined forger can fabricate three consistent values, but
+// no longer by omission.
 export function checkSectors(sectorTimes, lapTimeS) {
-  if (!Array.isArray(sectorTimes) || sectorTimes.length !== 3 || sectorTimes.some((s) => typeof s !== "number")) {
-    return { ok: true, flagged: true, reason: null }; // untagged: skip, but flag
+  if (!Array.isArray(sectorTimes) || sectorTimes.length !== 3 || sectorTimes.some((s) => !Number.isFinite(s))) {
+    return {
+      ok: false, flagged: false,
+      reason: "This lap has no complete sector splits, so it can't be verified for the board.",
+    };
   }
   const [s1, s2, s3] = sectorTimes;
   if (s1 < T.sectorMinS || s2 < T.sectorMinS || s3 < T.sectorMinS) {
@@ -229,6 +241,35 @@ export function sanitizeDisplayName(raw) {
   return cleaned;
 }
 
+// ─── (h) Declared track length ────────────────────────────────────────────────
+// `meta.trackLengthM` is client-supplied AND it gates the coverage and
+// sample-count checks, so without this a fabricated trace declares a short
+// "circuit", clears them, and lands at the track's lap-time floor. The board
+// slug was re-derived server-side from the payload's own identity, so it is the
+// one field here that can be trusted — compare the declaration against the
+// circuit's committed length, and use that committed length for the structural
+// checks rather than the client's number.
+//
+// `expected: null` (a circuit missing from the table) fails open, like the
+// lap-time floor does: an unlisted circuit should not reject every lap.
+export function checkTrackLength(slug, declaredM) {
+  const expected = TRACK_LENGTH_M[slug] ?? null;
+  if (expected == null) return { ok: true, flagged: true, expected: null, reason: null };
+  const declared = Number(declaredM);
+  if (!(declared > 0)) {
+    // Old laps don't carry the field: accept, and let callers use `expected`.
+    return { ok: true, flagged: false, expected, reason: null };
+  }
+  const ratio = declared / expected;
+  if (ratio < T.lengthMinFrac || ratio > T.lengthMaxFrac) {
+    return {
+      ok: false, flagged: false, expected,
+      reason: `This trace claims a ${Math.round(declared)}m lap of ${slug}, which isn't that circuit.`,
+    };
+  }
+  return { ok: true, flagged: false, expected, reason: null };
+}
+
 // ─── The whole battery ────────────────────────────────────────────────────────
 // → { ok, verdict: "ok"|"flagged", reason, checks }
 // `reason` is written to be shown to the driver verbatim when ok is false.
@@ -238,7 +279,15 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   const plausible = plausibleLapTime(slug, lapTime);
   if (!plausible.ok) return { ok: false, verdict: null, reason: plausible.reason, checks };
 
-  const coverage = checkCoverage(samples, trackLengthM);
+  const length = checkTrackLength(slug, trackLengthM);
+  checks.lengthM = length.expected ?? null;
+  checks.declaredLengthM = Number(trackLengthM) > 0 ? Number(trackLengthM) : null;
+  if (!length.ok) return { ok: false, verdict: null, reason: length.reason, checks };
+  // The length the structural checks measure against: the circuit's own value
+  // when we have one, so a client cannot shrink the lap it is checked over.
+  const effectiveLengthM = length.expected ?? (Number(trackLengthM) > 0 ? Number(trackLengthM) : 0);
+
+  const coverage = checkCoverage(samples, effectiveLengthM);
   checks.coverage = { span: coverage.span ?? null, maxGap: coverage.maxGap ?? null };
   if (!coverage.ok) return { ok: false, verdict: null, reason: coverage.reason, checks };
 
@@ -249,7 +298,7 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   const sectors = checkSectors(sectorTimes, lapTime);
   if (!sectors.ok) return { ok: false, verdict: null, reason: sectors.reason, checks };
 
-  const integral = checkLapTimeIntegral(samples, lapTime, trackLengthM);
+  const integral = checkLapTimeIntegral(samples, lapTime, effectiveLengthM);
   checks.derivedLapTime = integral.derived ?? null;
   checks.integralRatio = integral.ratio ?? null;
   if (!integral.ok) return { ok: false, verdict: null, reason: integral.reason, checks };

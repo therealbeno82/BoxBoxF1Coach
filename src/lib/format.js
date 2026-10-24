@@ -26,7 +26,7 @@ export function formatLapTime(seconds, decimals = 1) {
   const scale = 10 ** decimals;
   const total = Math.round(Math.abs(seconds) * scale) / scale;
   const m = Math.floor(total / 60);
-  const sec = (total - m * 60).toFixed(decimals).padStart(decimals + 3, "0"); // 2 int digits + "." + decimals
+  const sec = (total - m * 60).toFixed(decimals).padStart(decimals ? decimals + 3 : 2, "0"); // 2 int digits + "." + decimals
   return `${neg && total > 0 ? "-" : ""}${m}:${sec}`;
 }
 
@@ -46,7 +46,7 @@ export function speedUnitLabel(units = "km/h") {
 // Convert a Celsius tyre temp to the active unit and round to an integer. The
 // telemetry core always reports °C; the UI can show °C or °F (a user pref).
 export function toTemp(celsius, tempUnits = "°C") {
-  if (typeof celsius !== "number" || Number.isNaN(celsius)) return NaN;
+  if (typeof celsius !== "number" || Number.isNaN(celsius)) return 0;
   return Math.round(tempUnits === "°F" ? celsius * 9 / 5 + 32 : celsius);
 }
 

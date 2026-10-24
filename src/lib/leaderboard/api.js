@@ -18,6 +18,7 @@ import { REST_URL, ANON_KEY, STORAGE_URL, FUNCTIONS_URL, TRACE_BUCKET, TIMEOUT_M
 import { entryFromRow, rankEntries } from "./entries.js";
 import { buildSubmission, gzipJson } from "./payload.js";
 import { getAccessToken, diagnoseAuthFailure, currentUserId } from "./identity.js";
+import { validateSubmission } from "./validate.js";
 
 // Is the feature usable right now? Configured, enabled by the user, and the
 // browser believes it has a network. The onLine check is the cheap one that
@@ -84,10 +85,15 @@ export async function getBoard(boardId, { limit = 50, offset = 0, myDriverId, en
   const url = `${REST_URL}/entries` +
     `?select=${cols}&board_id=eq.${encodeURIComponent(boardId)}` +
     `&order=lap_time_ms.asc&limit=${limit}&offset=${offset}`;
-  const rows = await request(url, { signal });
+  // `total` is the whole board, not the page length — a board with more than
+  // `limit` entries must report its real size for pagination/rank.
+  const [rows, total] = await Promise.all([
+    request(url, { signal }),
+    request(`${REST_URL}/entries?select=driver_id&board_id=eq.${encodeURIComponent(boardId)}&limit=1`, { signal, count: true }),
+  ]);
   if (!Array.isArray(rows)) return null;
   const entries = rankEntries(rows.map((r) => entryFromRow(r, { myDriverId })).filter(Boolean));
-  return { entries, total: entries.length };
+  return { entries, total: total ?? entries.length };
 }
 
 // Where a given time would sit on a board, as a 1-based position, without
@@ -155,6 +161,20 @@ export async function submitLap(lap, { displayName, team, enabled, signal } = {}
   if (!payload) return { ok: false, reason: "This lap can't be published." };
   if (displayName) payload.meta.driver = displayName;
   if (team) payload.meta.team = team;
+
+  // Courtesy pre-check with the SAME shared validator the server runs, so a lap
+  // that cannot pass (no sector splits, a truncated trace, a length that
+  // disagrees with the circuit) is refused with the reason before spending a
+  // round trip — which is what the comment below already promises. The server's
+  // answer is still the one that decides.
+  const verdict = validateSubmission({
+    samples: payload.samples,
+    lapTime: payload.meta.lapTime,
+    sectorTimes: payload.meta.sectorTimes ?? null,
+    trackLengthM: payload.meta.trackLengthM,
+    slug: payload.meta.trackSlug,
+  });
+  if (!verdict.ok) return { ok: false, reason: verdict.reason };
 
   // Minting the account is deferred to exactly here: the first time the driver
   // actually chooses to publish something, never on app start.

@@ -177,7 +177,9 @@ export function reconcile(analysis, userLapTime, refLapTime) {
     ? userLapTime - refLapTime : null;
   const estimated = measuredLost == null;
   const totalLost = estimated ? Math.min(3.0, analysis.modeledTotalLost) : measuredLost;
-  const scale = (!estimated && analysis.modeledTotalLost > 0) ? measuredLost / analysis.modeledTotalLost : 1;
+  // `scale` maps modeled seconds onto the displayed total in BOTH branches, or the
+  // per-channel potentials can sum to more than the headline total when estimated.
+  const scale = analysis.modeledTotalLost > 0 ? totalLost / analysis.modeledTotalLost : 1;
   return { measuredLost, totalLost, scale, estimated };
 }
 

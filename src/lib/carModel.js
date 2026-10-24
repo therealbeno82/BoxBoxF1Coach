@@ -54,12 +54,17 @@ function rigWheels(root) {
     const parent = node.parent;
     if (!parent) continue;
     _box.setFromObject(node).getCenter(_c);
+    // `_c` is a WORLD-space centre; the pivot and node positions are parent-local.
+    // Convert, or a future bake with a transformed wheel-node parent misplaces the
+    // pivot (correct today only because the shipped GLB has identity transforms).
+    parent.updateWorldMatrix(true, false);
+    const local = parent.worldToLocal(_c.clone());
     const pivot = new THREE.Group();
     pivot.name = WHEEL_PIVOT;
-    pivot.position.copy(_c);
+    pivot.position.copy(local);
     parent.add(pivot);
     pivot.add(node);
-    node.position.sub(_c);
+    node.position.sub(local);
   }
 }
 

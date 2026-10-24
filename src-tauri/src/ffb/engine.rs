@@ -55,6 +55,15 @@ fn grip_cues(t: &FfbTelemetry) -> (f32, f32, f32, f32) {
     (front_norm, rear_norm, understeer, oversteer)
 }
 
+/// Has the game's physics frame gone stale (paused, or no frames arriving)?
+/// Shared by the safety release in `compute` and the run-state gauge so the two
+/// can never drift apart on what counts as frozen.
+#[inline]
+fn frames_frozen(stats: &AppStats, now: i64) -> bool {
+    let adv = stats.last_frame_advance_ms.load(Ordering::Relaxed);
+    adv == 0 || (now - adv > FFB_PAUSE_FREEZE_MS)
+}
+
 /// First-order EMA coefficient for a step `dt` at time constant `tau`. This is
 /// the exact zero-order-hold discretisation (`1 - e^(-dt/tau)`), so a filter
 /// stepped at 60 Hz and one stepped at 360 Hz have the SAME effective time
@@ -577,12 +586,18 @@ impl Engine {
         now: i64,
         dt: f32,
     ) -> FfbSignals {
-        // Diagnostic: steady test force bypasses all physics.
+        // Diagnostic: steady test force bypasses all physics. The steering
+        // state is still advanced so the first real tick after the test doesn't
+        // see a minutes-old rate and spike the braking damper; `last_out_torque`
+        // follows the emitted value so the slew limiter resumes from where the
+        // test left the wheel.
         if c.test_force.abs() > 0.001 {
             let t = clampf(c.test_force, -1.0, 1.0);
             self.smooth_torque = t;
             self.smooth_friction = 0.0;
             self.smooth_rumble = 0.0;
+            self.prev_steer = s.steer;
+            self.last_out_torque = t;
             return FfbSignals { torque: t, friction: 0.0, rumble: 0.0, rumble_hz: self.rumble_hz };
         }
         if c.test_rumble > 0.001 {
@@ -590,14 +605,15 @@ impl Engine {
             self.smooth_torque = 0.0;
             self.smooth_friction = 0.0;
             self.smooth_rumble = r;
+            self.prev_steer = s.steer;
+            self.last_out_torque = 0.0;
             return FfbSignals { torque: 0.0, friction: 0.0, rumble: r, rumble_hz: c.lockup_hz };
         }
 
         // ── SAFETY: release unless the car is actively being driven ──
         {
-            let adv = stats.last_frame_advance_ms.load(Ordering::Relaxed);
             let streak = stats.frame_streak_start_ms.load(Ordering::Relaxed);
-            let frozen = adv == 0 || (now - adv > FFB_PAUSE_FREEZE_MS);
+            let frozen = frames_frozen(stats, now);
             let rearming = now - streak < FFB_REARM_MS;
             let paused = stats.game_paused.load(Ordering::Relaxed);
 
@@ -663,7 +679,11 @@ impl Engine {
 
         // ── Auto Max Force: peak sustained front lateral force (~100 ms LP) ──
         {
-            let a_f = clampf(dt / (0.10 + dt), 0.0, 1.0);
+            // Same exact EMA form as every other filter here: the old
+            // `dt / (tau + dt)` was first-order only, so the 100 ms attack —
+            // and with it the peak the panel reports — moved with the output
+            // rate the loop free-runs at.
+            let a_f = ema_alpha(dt, 0.10);
             self.lat_force_lp += a_f * (s.front_lat_force.abs() - self.lat_force_lp);
             if self.lat_force_lp > stats.get_peak_lat_force() {
                 stats.set_peak_lat_force(self.lat_force_lp);
@@ -752,19 +772,24 @@ impl Engine {
         }
 
         // ── 7b. Braking weight (software damper on the constant-force channel) ──
+        // The steering-rate low-pass advances EVERY tick, not only while
+        // braking. Held across the gap between braking zones (often a minute or
+        // more) it kept its last pre-corner value, so the first braking tick
+        // injected a one-tick torque step from a stale rate before the filter
+        // re-converged. `prev_steer` is tracked unconditionally for the same
+        // reason. The damper itself still only applies under braking.
+        let raw_steer_vel = (s.steer - self.prev_steer) / if dt > 1e-4 { dt } else { 1e-4 };
+        self.steer_vel_lp += ema_alpha(dt, 0.03) * (raw_steer_vel - self.steer_vel_lp);
+        self.prev_steer = s.steer;
         let brake_load = clampf(s.front_lon_force.abs() / 18000.0, 0.0, 1.0)
             * clampf(s.brake * 1.5, 0.0, 1.0);
         let brake_weight = c.braking_strength * brake_load;
         if brake_weight > 1e-4 {
-            let raw_steer_vel = (s.steer - self.prev_steer) / if dt > 1e-4 { dt } else { 1e-4 };
-            let a_steer = ema_alpha(dt, 0.03);
-            self.steer_vel_lp += a_steer * (raw_steer_vel - self.steer_vel_lp);
             let damper = -clampf(self.steer_vel_lp, -6.0, 6.0) * 0.06;
             let bw = clampf(damper * brake_weight, -0.30, 0.30);
             let dir = (if c.invert_force { -1.0 } else { 1.0 }) * (if c.braking_invert { -1.0 } else { 1.0 });
             torque += dir * bw;
         }
-        self.prev_steer = s.steer;
 
         // ── 8. Overall scale + speed fade ──
         let scale = c.overall_strength * speed_factor;
@@ -785,17 +810,17 @@ impl Engine {
         // Torque gets TWO cascaded poles of tau/2 each: critically damped (no
         // overshoot) with the same low-frequency group delay as a single tau pole,
         // but a second-order rolloff — the game's high-frequency force grain is
-        // buried far better for the same perceived lag. A single pole is kept for
-        // friction/rumble.
+        // buried far better for the same perceived lag. Friction and rumble keep
+        // ONE pole each: friction at the full tau (a slower, heavier channel),
+        // rumble at tau/2 so tyre vibration stays crisp.
         let tau = c.smoothing * 0.08;
         let a_half = ema_alpha(dt, tau * 0.5);
         let a = ema_alpha(dt, tau);
-        let a_r = ema_alpha(dt, tau * 0.5);
         self.smooth_torque += a_half * (torque - self.smooth_torque);
         self.smooth_torque2 += a_half * (self.smooth_torque - self.smooth_torque2);
         self.smooth_friction += a * (friction - self.smooth_friction);
-        self.smooth_rumble += a_r * (rumble - self.smooth_rumble);
-        self.rumble_hz += a_r * (target_hz - self.rumble_hz);
+        self.smooth_rumble += a_half * (rumble - self.smooth_rumble);
+        self.rumble_hz += a_half * (target_hz - self.rumble_hz);
 
         // ── 10. Min-force deadzone removal ──
         let mut out_torque = self.smooth_torque2;
@@ -1031,8 +1056,11 @@ pub fn ffb_thread(
             }
         }
 
-        // 2) Compute + send.
-        let settings = handle.settings.load();
+        // 2) Compute + send. `load_full` rather than a `load()` guard: the
+        // guard would be held across the rest of this iteration — including the
+        // 250 ms idle wait with no wheel open — occupying a fast debt slot and
+        // pushing every concurrent settings write onto arc-swap's slower path.
+        let settings = handle.settings.load_full();
         let hz = {
             let h = settings.ffb_update_hz;
             if h < FFB_MIN_HZ { FfbSettings::default().ffb_update_hz } else { h.min(FFB_MAX_HZ) }
@@ -1071,7 +1099,6 @@ pub fn ffb_thread(
             }
         }
         ffb_count += 1;
-        stats.ffb_updates.fetch_add(1, Ordering::Relaxed);
 
         // Publish gauges at ~30 Hz (the emitter's sample rate — anything faster
         // is dropped unread). Output signals come from `sig` (zero when off / no
@@ -1086,8 +1113,7 @@ pub fn ffb_thread(
             let run_state: u8 = {
                 let now = now_ms();
                 let last_pkt = stats.last_udp_ms.load(Ordering::Relaxed);
-                let adv = stats.last_frame_advance_ms.load(Ordering::Relaxed);
-                let frozen = adv == 0 || (now - adv > FFB_PAUSE_FREEZE_MS);
+                let frozen = frames_frozen(stats, now);
                 if last_pkt == 0 {
                     0
                 } else if stats.game_paused.load(Ordering::Relaxed) {
@@ -1145,9 +1171,11 @@ pub fn ffb_thread(
             }
         }
 
-        // Refresh rate meters ~2×/s.
-        if rate_anchor.elapsed() >= Duration::from_millis(500) {
-            let secs = rate_anchor.elapsed().as_secs_f32();
+        // Refresh rate meters ~2×/s. One `elapsed()` read for both the gate and
+        // the window, so the rate divides by exactly the interval it measured.
+        let rate_elapsed = rate_anchor.elapsed();
+        if rate_elapsed >= Duration::from_millis(500) {
+            let secs = rate_elapsed.as_secs_f32();
             let udp_now = stats.udp_packets.load(Ordering::Relaxed);
             let udp_hz = (udp_now.saturating_sub(last_udp_count)) as f32 / secs;
             let motion_now = stats.motion_frames.load(Ordering::Relaxed);

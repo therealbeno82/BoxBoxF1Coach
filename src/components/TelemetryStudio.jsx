@@ -295,6 +295,9 @@ export default function TelemetryStudio({
   const barRef = useRef(null);
   const stackRef = useRef(null);
   const rafRef = useRef(0);
+  // Removes the window-level scrub listeners; held so unmounting mid-drag can
+  // detach them (the `up` handler is otherwise the only thing that ever does).
+  const scrubEnd = useRef(null);
   const { phone } = useViewport();
 
   const controlled = typeof playhead === "number" && typeof onSeek === "function";
@@ -416,10 +419,19 @@ export default function TelemetryStudio({
     setPlaying(false);
     scrubFrom(e.clientX);
     const move = (ev) => scrubFrom(ev.clientX);
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    const up = () => {
+      scrubEnd.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    scrubEnd.current = up;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+  // A drag that ends by unmount (tab change, lap switch) must not leave the
+  // listeners feeding scrubFrom into a dead tree. Same pattern as
+  // DrivingLinesView's onBarDown / scrubEnd.
+  useEffect(() => () => { scrubEnd.current?.(); }, []);
 
   // ── Hover inspection: while paused, moving the pointer across the trace stack
   // reads out both laps at that point instead of at the playback cursor. Ignored

@@ -58,6 +58,11 @@ function openDb() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    // Another connection holding an older version blocks the upgrade, and the
+    // spec fires ONLY this event — neither success nor error — so without it the
+    // promise never settles and every read/write in the app awaits forever.
+    // Reject so the rejected-promise reset below lets a later call retry.
+    req.onblocked = () => reject(new Error("IndexedDB upgrade blocked by another window"));
   });
   // Don't cache a rejected promise — let a later call retry the open.
   dbPromise.catch(() => { dbPromise = null; });
@@ -424,41 +429,42 @@ export async function renameDriver(oldName, newName) {
     // Avatar: copy the photo to the new key, then drop the old row.
     const avatar = await getAvatar(oldName);
     if (avatar) { await putAvatar(newName, avatar); await deleteAvatar(oldName); }
-    // Track maps: re-key each "<old>::<slug>" record to "<new>::<slug>". The guard
-    // on rec.driver skips the freshly-put records the cursor may revisit, so this
-    // never loops.
-    await new Promise((resolve, reject) => {
-      const store = trackMapTx(db, "readwrite");
-      const req = store.openCursor();
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor) { resolve(); return; }
-        const rec = cursor.value;
-        if (rec?.driver === oldName) {
-          store.put({ ...rec, key: trackMapKey(newName, rec.slug), driver: newName });
-          cursor.delete();
-        }
-        cursor.continue();
-      };
-      req.onerror = () => reject(req.error);
-    });
-    // Downloaded reference traces: same re-key, "<old>::<board>::<entry>" →
-    // "<new>::…". Without this a rename would leave the driver's saved
-    // references unreachable and they'd have to re-download every one.
-    await new Promise((resolve, reject) => {
-      const store = refTraceTx(db, "readwrite");
-      const req = store.openCursor();
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor) { resolve(); return; }
-        const rec = cursor.value;
-        if (rec?.driver === oldName) {
-          store.put({ ...rec, key: refTraceKey(newName, rec.boardId, rec.entryId), driver: newName });
-          cursor.delete();
-        }
-        cursor.continue();
-      };
-      req.onerror = () => reject(req.error);
-    });
+    // Track maps and ref traces: re-key each "<old>::…" record to "<new>::…". If a
+    // record already exists at the target key (renaming onto a name that already
+    // has data), the OLD record is dropped rather than overwriting the existing
+    // one — an unconditional put would silently destroy it.
+    const rekey = async (txFn, keyFn) => {
+      // Existing keys for the new name (so we never clobber one).
+      const taken = new Set();
+      await new Promise((resolve, reject) => {
+        const store = txFn(db, "readonly");
+        const req = store.openCursor();
+        req.onsuccess = () => { const c = req.result; if (!c) { resolve(); return; } if (c.value?.driver === newName) taken.add(c.value.key); c.continue(); };
+        req.onerror = () => reject(req.error);
+      });
+      await new Promise((resolve, reject) => {
+        const store = txFn(db, "readwrite");
+        const req = store.openCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (!cursor) { resolve(); return; }
+          const rec = cursor.value;
+          if (rec?.driver === oldName) {
+            const nk = keyFn(rec);
+            if (!taken.has(nk)) store.put({ ...rec, key: nk, driver: newName });
+            cursor.delete();
+          }
+          cursor.continue();
+        };
+        req.onerror = () => reject(req.error);
+      });
+    };
+    // Track maps: "<old>::<slug>" → "<new>::<slug>". The rec.driver guard skips
+    // freshly-put records the cursor may revisit, so this never loops.
+    await rekey(trackMapTx, (rec) => trackMapKey(newName, rec.slug));
+    // Downloaded reference traces: "<old>::<board>::<entry>" → "<new>::…".
+    // Without this a rename would leave the driver's saved references unreachable
+    // and they'd have to re-download every one.
+    await rekey(refTraceTx, (rec) => refTraceKey(newName, rec.boardId, rec.entryId));
   } catch { /* best-effort */ }
 }

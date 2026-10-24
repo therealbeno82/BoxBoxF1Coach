@@ -168,8 +168,15 @@ pub fn parse_participants_ai(payload: &[u8], h: &Header) -> Option<bool> {
     // formats; also tolerate a 24-slot padded array so a game build that ships one
     // degrades to a correct parse instead of disabling AI detection entirely.
     const HEADER_BYTE: usize = 1;
+    // A participant record is far larger than this in every format; without the
+    // floor a truncated payload (body == 22 → stride == 1) "divides evenly" and
+    // the AI flag is read from an arbitrary byte. parse_car_damage guards its
+    // stride the same way.
+    const MIN_STRIDE: usize = 16;
     let body = payload.len().checked_sub(HEADER_BYTE).filter(|&b| b > 0)?;
-    let cars = [h.max_cars(), 24].into_iter().find(|&c| body % c == 0)?;
+    let cars = [h.max_cars(), 24]
+        .into_iter()
+        .find(|&c| body % c == 0 && body / c >= MIN_STRIDE)?;
     let stride = body / cars;
     let base = HEADER_BYTE + h.player_car_index as usize * stride;
     Some(u8_at(payload, base)? != 0)
@@ -321,20 +328,23 @@ mod tests {
 
     #[test]
     fn participants_ai_22_car_array() {
-        // 1 count byte + 22 participants × 5-byte stride; player index 3 is AI.
-        let mut p = vec![0u8; 1 + 22 * 5];
+        // 1 count byte + 22 participants × 16-byte stride; player index 3 is AI.
+        // Stride is 16, not a real struct size (that's ~48 B): the parse only
+        // reads the first byte, and the min-stride guard refuses anything a
+        // truncated packet could produce by dividing evenly.
+        let mut p = vec![0u8; 1 + 22 * 16];
         p[0] = 20; // m_numActiveCars (irrelevant to the slot count)
-        p[1 + 3 * 5] = 1;
+        p[1 + 3 * 16] = 1;
         assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(true));
-        p[1 + 3 * 5] = 0;
+        p[1 + 3 * 16] = 0;
         assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(false));
     }
 
     #[test]
     fn participants_ai_tolerates_24_slot_padding() {
-        // 24 × 7-byte stride (168 is not divisible by 22, so the fallback fires).
-        let mut p = vec![0u8; 1 + 24 * 7];
-        p[1 + 3 * 7] = 1;
+        // 24 × 16-byte stride (384 is not divisible by 22, so the fallback fires).
+        let mut p = vec![0u8; 1 + 24 * 16];
+        p[1 + 3 * 16] = 1;
         assert_eq!(parse_participants_ai(&p, &hdr(4, 3)), Some(true));
     }
 
@@ -344,6 +354,10 @@ mod tests {
         let p = vec![0u8; 1 + 100];
         assert_eq!(parse_participants_ai(&p, &hdr(4, 0)), None);
         assert_eq!(parse_participants_ai(&[], &hdr(4, 0)), None);
+        // A short-but-divisible body (stride 1) must be refused too, not read as
+        // if it were a participant array.
+        let p = vec![0u8; 1 + 22];
+        assert_eq!(parse_participants_ai(&p, &hdr(4, 0)), None);
     }
 
     #[test]

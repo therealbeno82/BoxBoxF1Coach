@@ -39,8 +39,13 @@ export function entryFromLap(lap, { driver } = {}) {
     displayName: driver?.name || lap.meta?.driver || "You",
     team: driver?.team || null,
     lapTimeMs: ms,
-    sectorMs: Array.isArray(lap.sectorTimes) && lap.sectorTimes.length === 3
-      ? lap.sectorTimes.map(msOf) : null,
+    sectorMs: (() => {
+      // All-three-or-null, matching the server row path — a partially-recorded
+      // sector must not surface as a NaN downstream.
+      if (!Array.isArray(lap.sectorTimes) || lap.sectorTimes.length !== 3) return null;
+      const ms = lap.sectorTimes.map(msOf);
+      return ms.every((v) => v != null) ? ms : null;
+    })(),
     compound: compoundToken(lap),
     condition: conditionToken(lap),
     tyreVisual: lap.tyre?.visual ?? null,
@@ -114,6 +119,9 @@ export function localBoardEntries(laps = [], boardId, { driver, onePerDriver = f
   const mine = [];
   for (const lap of laps) {
     if (lap?.archived) continue;
+    // Demo replays and game-invalidated laps are stored but are not publishable;
+    // ranking them here would tell the driver a replay "would rank P1".
+    if (isDemoLap(lap) || !isRankable(lap)) continue;
     const board = boardIdForLap(lap);
     if (board.boardId !== boardId) continue;
     const entry = entryFromLap(lap, { driver });
@@ -129,6 +137,7 @@ export function localBoardIndex(laps = [], { driver } = {}) {
   const byBoard = new Map();
   for (const lap of laps) {
     if (lap?.archived) continue;
+    if (isDemoLap(lap) || !isRankable(lap)) continue;
     const { boardId } = boardIdForLap(lap);
     if (!boardId) continue;
     const entry = entryFromLap(lap, { driver });

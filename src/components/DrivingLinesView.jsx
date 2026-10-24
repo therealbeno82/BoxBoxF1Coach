@@ -279,7 +279,18 @@ function buildLines(laps) {
     const cum = recordedTimeAxis(pts) || integratedTimeAxis(pts);
     const total = cum[cum.length - 1] || 1;
     const timeAt = cum.map(t => t / total);
-    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen,
+    // Cumulative chordal arc over the raw samples, from the line's own start.
+    // World-fixed, so anything striped/dashed along the line keeps its phase as
+    // the playhead advances — the T-cam seeds its reference dashes from this,
+    // and orbitScene's dashedRibbon walks the same accumulation. Not the
+    // odometer: `dist` and geometry disagree by up to ±20% per bin.
+    const arcAt = new Array(pts.length);
+    let arc = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0) arc += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+      arcAt[i] = arc;
+    }
+    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen, arcAt,
       // Both directions of the time↔distance pair, precomputed once per line.
       tdSlopes: monoSlopes(timeAt, distAt), dtSlopes: monoSlopes(distAt, timeAt),
       // The arc-length-even resample the cars and the onboard camera are placed

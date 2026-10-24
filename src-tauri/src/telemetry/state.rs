@@ -387,20 +387,31 @@ impl Snapshot {
     }
 
     pub fn ffb(l: &Latest) -> FfbTelemetry {
+        // Everything the FFB engine touches is sanitised HERE, at the one point
+        // every frame enters the system. The game never sends NaN, but a
+        // malformed/crafted datagram can put one in a Motion Ex float, and every
+        // filter in the engine is an `x += a * (NaN - x)` recurrence — one bad
+        // sample would latch every smoothed state for the rest of the stint.
+        // wheel.rs already zeroes non-finite OUTPUT; this keeps the internal
+        // state finite so the engine can recover instead of going silently limp.
+        #[inline]
+        fn fin(v: f32) -> f32 {
+            if v.is_finite() { v } else { 0.0 }
+        }
         FfbTelemetry {
-            lateral_g: l.lateral_g,
-            front_slip_angle: l.front_slip_angle,
-            rear_slip_angle: l.rear_slip_angle,
-            front_lat_force: l.front_lat_force,
-            front_lon_force: l.front_lon_force,
-            front_vert_force: l.front_vert_force,
-            sideslip: l.sideslip,
-            front_slip_ratio: l.front_slip_ratio,
-            rear_slip_ratio: l.rear_slip_ratio,
-            speed_kmh: l.speed_kmh,
-            steer: l.steer,
-            throttle: l.throttle,
-            brake: l.brake,
+            lateral_g: fin(l.lateral_g),
+            front_slip_angle: fin(l.front_slip_angle),
+            rear_slip_angle: fin(l.rear_slip_angle),
+            front_lat_force: fin(l.front_lat_force),
+            front_lon_force: fin(l.front_lon_force),
+            front_vert_force: fin(l.front_vert_force),
+            sideslip: fin(l.sideslip),
+            front_slip_ratio: fin(l.front_slip_ratio),
+            rear_slip_ratio: fin(l.rear_slip_ratio),
+            speed_kmh: fin(l.speed_kmh),
+            steer: fin(l.steer),
+            throttle: fin(l.throttle),
+            brake: fin(l.brake),
         }
     }
 }
@@ -431,7 +442,6 @@ pub struct AppStats {
     pub lap_distance: AtomicU32, // f32 bits
     pub peak_lat_force_n: AtomicU32, // f32 bits
     pub clip_level: AtomicU32,   // f32 bits
-    pub ffb_updates: AtomicU64,
 
     /// Event-driven FFB wake: bumped once per Motion Ex frame; the FFB thread
     /// waits on the condvar so it computes on fresh data with minimal latency.
@@ -460,7 +470,6 @@ impl Default for AppStats {
             lap_distance: AtomicU32::new(0),
             peak_lat_force_n: AtomicU32::new(0),
             clip_level: AtomicU32::new(0),
-            ffb_updates: AtomicU64::new(0),
             motion_seq: AtomicU64::new(0),
             wake: (Mutex::new(()), Condvar::new()),
         }

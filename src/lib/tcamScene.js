@@ -179,6 +179,9 @@ function edgesOf(rows, n, closed, i) {
     lx: r.x + nx * wl, lz: r.z + nz * wl,
     rx: r.x - nx * wr, rz: r.z - nz * wr,
     nx, nz, y, wl, wr, cx: r.x, cz: r.z, k: r.k || 0,
+    // World-fixed arc from trackGeometry.finishModel: the kerb stripe phase is
+    // anchored to the circuit, not to the camera's window origin.
+    s: r.s || 0,
   };
 }
 
@@ -208,11 +211,12 @@ export function roadWindow(model, rowIndex, cam) {
   // Behind the camera: a fixed short run, purely so the quads STRADDLING the near
   // plane exist to be clipped rather than dropped. They cover the lower frame.
   for (let k = -behind; k <= 0; k++) if (inBounds(rowIndex + k)) out.push(at(rowIndex + k));
-  const tailArc = () => {   // running arc length, for anything striped along the road
+  // The first edge keeps its row's own world-fixed `s` (stamped by
+  // trackGeometry.finishModel); the rest are given running arc length from it.
+  const tailArc = () => {
     for (let i = 1; i < out.length; i++)
       out[i].s = out[i - 1].s + Math.hypot(out[i].cx - out[i - 1].cx, out[i].cz - out[i - 1].cz);
   };
-  if (out.length) out[0].s = 0;
 
   let wasAhead = false;
   for (let k = 1; k <= maxAhead; k++) {
@@ -521,8 +525,26 @@ function walkTo(rows, n, closed, i, x, z) {
 // road it throws the ghost roughly 10 px up the screen between one frame and the next
 // while the tarmac beneath it slides by perfectly smoothly. That mismatch is the
 // surging: the camera was interpolating its own height and the ghost was not.
+// Unbounded nearest-row scan, for a target too far from the seed row for the
+// bounded walk to reach (a ghost far up the road).
+function nearestRowFull(rows, n, x, z) {
+  let best = 0, bd = Infinity;
+  for (let j = 0; j < n; j++) {
+    const dx = rows[j].x - x, dz = rows[j].z - z;
+    const d = dx * dx + dz * dz;
+    if (d < bd) { bd = d; best = j; }
+  }
+  return best;
+}
+
 function roadYAt(rows, n, closed, seedRow, x, z) {
-  const i = walkTo(rows, n, closed, seedRow, x, z);
+  let i = walkTo(rows, n, closed, seedRow, x, z);
+  // walkTo is bounded (32 steps ≈ 80 m). A target farther than that (a ghost far
+  // up the road) would stop short and read its height from the wrong row — on a
+  // gradient that's metres of float. Fall back to a full scan when the walk
+  // couldn't actually reach it.
+  const dx = rows[i].x - x, dz = rows[i].z - z;
+  if (dx * dx + dz * dz > 2500) i = nearestRowFull(rows, n, x, z); // > 50 m
   return elevAt(rows, closed, rowFracAt(rows, closed, i, x, z));
 }
 
@@ -557,13 +579,24 @@ function lineWindow(line, camDist, rows, n, closed, startRow, cam) {
   const at = (j) => P[j < 0 ? 0 : j >= P.length ? P.length - 1 : j];
 
   const out = [];
+  // World-fixed arc per emitted point, interpolated from the line's own
+  // cumulative arc (buildLines' `arcAt`). This is what anchors the dashed
+  // reference's phase to the road: seeding from the window origin instead made
+  // the whole dash pattern jump ~3 m every time the playhead crossed a sample.
+  // Lines that never went through buildLines have no arcAt and fall back to 0.
+  const A = line.arcAt;
+  const arcOf = (i, t = 0) => {
+    if (!A) return 0;
+    const a0 = A[i] ?? 0, a1 = A[i + 1] ?? a0;
+    return a0 + (a1 - a0) * t;
+  };
   let row = startRow;
   let wasAhead = false;
   // Drape onto the road, then apply the same doubling-back cut the road window
   // makes: on a tight complex the line 250 m ahead is beside the car, and a ribbon
   // painted there reads as the driver having swerved into the runoff. Returns false
   // once the line has come back behind us, which ends the walk.
-  const emit = (x, z, src) => {
+  const emit = (x, z, src, arc) => {
     let y = 0;
     // Interpolated, like the eye and the ghost: the ribbon is the surface the ghost's
     // shadow lands on, so if one snapped to rows and the other didn't they'd disagree
@@ -577,11 +610,11 @@ function lineWindow(line, camDist, rows, n, closed, startRow, cam) {
       if (zc > 2) wasAhead = true;
       else if (wasAhead) return false;
     }
-    out.push({ x, z, y, throttle: src.throttle, brake: src.brake, dist: src.dist });
+    out.push({ x, z, y, throttle: src.throttle, brake: src.brake, dist: src.dist, arc });
     return true;
   };
 
-  if (emit(P[i0].x, P[i0].z, P[i0])) {
+  if (emit(P[i0].x, P[i0].z, P[i0], arcOf(i0))) {
     outer:
     for (let i = i0; i < i1; i++) {
       const a = P[i], b = P[i + 1];
@@ -592,7 +625,7 @@ function lineWindow(line, camDist, rows, n, closed, startRow, cam) {
         // Every sub-point of this span carries the span's OWN pedal reading — the
         // painter colours each quad by its far end, so this keeps the gradient
         // quantised exactly where it was before, one bin at a time.
-        if (!emit(q.x, q.z, { throttle: b.throttle, brake: b.brake, dist: a.dist + (b.dist - a.dist) * t })) break outer;
+        if (!emit(q.x, q.z, { throttle: b.throttle, brake: b.brake, dist: a.dist + (b.dist - a.dist) * t }, arcOf(i, t))) break outer;
       }
     }
   }
@@ -644,7 +677,9 @@ function paintDrivenRibbon(ctx, cam, pts) {
 // whole reason to draw this view at all.
 function paintRefRibbon(ctx, cam, pts) {
   const period = DASH_ON + DASH_OFF;
-  let s = 0;
+  // Start from the first point's WORLD arc, not zero: the window's first sample
+  // moves with the playhead, so a zero origin re-phased the whole pattern.
+  let s = Number.isFinite(pts[0].arc) ? pts[0].arc : 0;
   ctx.beginPath();
   let any = false;
   for (let i = 1; i < pts.length; i++) {

@@ -51,7 +51,13 @@ export function collectAllowedNumbers(ctx = {}) {
   const set = new Set();
   const add = (v) => { if (typeof v === "number" && !Number.isNaN(v)) set.add(Math.round(v)); };
   if (ctx.evidence) {
-    for (const m of String(ctx.evidence).matchAll(/\d+(?:\.\d+)?/g)) add(parseFloat(m[0]));
+    const text = String(ctx.evidence);
+    for (const m of text.matchAll(/\d+(?:\.\d+)?/g)) add(parseFloat(m[0]));
+    // Clock-formatted times ("1:32.461") name a figure the model may restate as
+    // seconds ("92.5 s") — add that too, or a faithful restatement is stripped.
+    for (const m of text.matchAll(/(\d+):(\d+(?:\.\d+)?)/g)) {
+      add(parseFloat(m[1]) * 60 + parseFloat(m[2]));
+    }
   }
   return set;
 }

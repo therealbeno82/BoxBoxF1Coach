@@ -19,8 +19,11 @@ const VISUAL = {
 const WET_CODES = new Set([7, 8, 10, 15]); // Intermediate + Wet (incl. legacy)
 
 // Driver-facing name for a visual compound code, or null if unknown / absent.
+// hasOwn: an imported lap's tyre tag is untrusted text, and a bare lookup would
+// return Object.prototype members for "constructor" etc. — a Function rendered
+// as a React child is a crash, not a cosmetic bug.
 export function tyreName(visualCode) {
-  return VISUAL[visualCode] ?? null;
+  return Object.hasOwn(VISUAL, visualCode) ? (VISUAL[visualCode] ?? null) : null;
 }
 
 // "wet" | "dry" | null — bucket a lap by the visual compound it was set on. Pass
@@ -30,6 +33,9 @@ export function tyreName(visualCode) {
 export function tyreCondition(tyreOrCode) {
   const code = typeof tyreOrCode === "number" ? tyreOrCode : tyreOrCode?.visual;
   if (typeof code !== "number" || code < 0) return null;
+  // Unknown/unsupported codes must not be bucketed as "dry" — that would mix an
+  // unrecognised compound in with dry personal bests.
+  if (!Object.hasOwn(VISUAL, code)) return null;
   return WET_CODES.has(code) ? "wet" : "dry";
 }
 

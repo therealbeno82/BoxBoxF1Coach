@@ -24,7 +24,14 @@ import { fileURLToPath } from "node:url";
 const vite = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
 const args = [vite, "--port", "1431", "--strictPort", ...process.argv.slice(2)];
 
-spawn(process.execPath, args, {
+const child = spawn(process.execPath, args, {
   stdio: "inherit",
   env: { ...process.env, TAURI_ENV_PLATFORM: "android" },
-}).on("exit", (code) => process.exit(code ?? 0));
+});
+// Without an error handler a failed spawn (missing node_modules/vite) is
+// reported as a clean exit by the `exit` handler's `code ?? 0`.
+child.on("error", (err) => {
+  console.error(`dev:android: could not start vite — ${err.message}`);
+  process.exit(1);
+});
+child.on("exit", (code) => process.exit(code ?? 0));

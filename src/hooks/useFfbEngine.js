@@ -112,6 +112,10 @@ export function useFfbEngine() {
   const [devices, setDevices] = useState([]);
   const [enabled, setEnabledState] = useState(() => localStorage.getItem(ENABLED_KEY) !== "0");
   const [profiles, setProfiles] = useState(loadProfiles);
+  // Latest profiles for the profile actions below, so their localStorage writes
+  // can stay OUTSIDE the state updater (the same rule setSetting follows).
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
   const [activeProfile, setActiveProfile] = useState(() => localStorage.getItem(ACTIVE_KEY) || "");
 
   useTauriEvents({
@@ -217,11 +221,9 @@ export function useFfbEngine() {
   const saveProfileAs = useCallback((name) => {
     const nm = (name || "").trim();
     if (!nm) return;
-    setProfiles((prev) => {
-      const next = { ...prev, [nm]: clean(settingsRef.current) };
-      localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
-      return next;
-    });
+    const next = { ...profilesRef.current, [nm]: clean(settingsRef.current) };
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
+    setProfiles(next);
     setActiveProfile(nm);
     localStorage.setItem(ACTIVE_KEY, nm);
   }, []);
@@ -239,17 +241,15 @@ export function useFfbEngine() {
   }, [profiles, applySettings]);
 
   const deleteProfile = useCallback((name) => {
-    setProfiles((prev) => {
-      const next = { ...prev };
-      delete next[name];
-      localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
-      return next;
-    });
-    setActiveProfile((cur) => {
-      if (cur === name) { localStorage.removeItem(ACTIVE_KEY); return ""; }
-      return cur;
-    });
-  }, []);
+    const next = { ...profilesRef.current };
+    delete next[name];
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
+    setProfiles(next);
+    if (activeProfile === name) {
+      localStorage.removeItem(ACTIVE_KEY);
+      setActiveProfile("");
+    }
+  }, [activeProfile]);
 
   // "MODIFIED": current sliders differ from the active profile's saved values.
   const dirty = useMemo(() => {

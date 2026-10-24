@@ -161,7 +161,8 @@ export function computeDriverStats(laps = [], opts = {}) {
     .map((l) => {
       const track = l.meta?.track || "Unknown";
       const best = trackMap.get(track)?.best;
-      const gap = hasTime(l) && best ? l.lapTime - best.lapTime : null;
+      // An invalidated lap can beat the rankable best; don't render a negative gap.
+      const gap = hasTime(l) && best ? Math.max(0, l.lapTime - best.lapTime) : null;
       return { lap: l, gap };
     });
 

@@ -204,15 +204,16 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
     // startup asset, so an offline launch never waits on them, and they fail soft the
     // same way the car layer does: no overlay and tcamScene draws its hoop instead;
     // overlay but no mask and the car renders untinted rather than wrongly tinted.
+    let cancelled = false;
     const load = (src, ref) => {
       const im = new Image();
-      im.onload = () => { ref.current = im; stRef.current.lastKey = null; start(); };
+      // Guard on unmount: an onload firing after cleanup must not reschedule the
+      // loop into a detached canvas.
+      im.onload = () => { if (cancelled) return; ref.current = im; stRef.current.lastKey = null; start(); };
       im.src = src;
     };
     load("/tcam-ego.png", egoRef);
     load("/tcam-ego-mask.png", egoMaskRef);
-
-    let cancelled = false;
     import("../lib/tcamCarLayer.js").then(({ createCarLayer }) => {
       if (cancelled) return;
       // The callback fires when the car model finishes loading, which is after this

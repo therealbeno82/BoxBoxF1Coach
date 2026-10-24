@@ -251,7 +251,9 @@ impl Replay {
         l.ers_deployed_this_lap = lerp(a.ek, b.ek, u) * 1000.0; // kJ → J
         l.ers_harvest_limit = MAX_ERS_JOULES;
         l.overtake_active = a.bo;
-        l.overtake_available = 1 - a.bo;
+        // saturating: `bo` is a plain u8 off the JSON, so a value above 1 would
+        // panic a debug build (and wrap to 255 in release) on a subtraction.
+        l.overtake_available = 1u8.saturating_sub(a.bo);
         l.overtake_activation_distance = 0;
         l.active_aero_mode = a.ae;
         l.active_aero_available = 1;

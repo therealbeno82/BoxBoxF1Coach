@@ -63,7 +63,9 @@ const SESSION_CLASS = {
 
 function sessionClassFromText(text) {
   const raw = String(text ?? "").trim().toLowerCase();
-  return SESSION_CLASS[raw] || null;
+  // hasOwn: a hand-edited/imported lap whose session text is "constructor" would
+  // otherwise pick up a Function off Object.prototype as its session class.
+  return Object.hasOwn(SESSION_CLASS, raw) ? (SESSION_CLASS[raw] || null) : null;
 }
 
 // Normalise either shape into the four fields the rules compare. Every field is

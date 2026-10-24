@@ -65,7 +65,12 @@ export function loadNativeTts() {
       // forever: an engine that hasn't come up in eight seconds isn't going to.
       _error = "the device's speech engine did not start";
     }
-    return { ready: _ready, error: _error, voices: _voices };
+    const result = { ready: _ready, error: _error, voices: _voices };
+    // A failure must be retryable (installing voice data is user-fixable), so
+    // clear the cached promise and let the next call poll again — don't pin a
+    // permanent "failed" for the whole session.
+    if (!_ready) _initPromise = null;
+    return result;
   })();
 
   return _initPromise;

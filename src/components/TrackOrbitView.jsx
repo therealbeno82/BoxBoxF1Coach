@@ -207,6 +207,7 @@ export default function TrackOrbitView({
   const ptsRef = useRef(new Map());
   const pinchRef = useRef(null);
   const lastTapRef = useRef(0);
+  const pinchedRef = useRef(false); // a pinch ran during this gesture → don't count taps
 
   const pinchGap = () => {
     const [a, b] = [...ptsRef.current.values()];
@@ -227,9 +228,11 @@ export default function TrackOrbitView({
       // camera doesn't swing while the gap is being measured.
       dragRef.current = null;
       pinchRef.current = pinchGap();
+      pinchedRef.current = true;
       return;
     }
     if (ptsRef.current.size > 2) return;
+    pinchedRef.current = false;
     dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
     // Capture keeps the orbit alive when the cursor leaves the panel mid-drag, which
     // is most drags — but it is an optimisation, not the mechanism, so a browser that
@@ -283,9 +286,16 @@ export default function TrackOrbitView({
     // Double-TAP to reset, mirroring double-click. `touch-action: none` means the
     // browser synthesises no dblclick here, so it has to be counted by hand.
     if (e.type === "pointerup" && e.pointerType === "touch") {
-      const now = Date.now();
-      if (now - lastTapRef.current < 300) { resetPose(); lastTapRef.current = 0; }
-      else lastTapRef.current = now;
+      if (pinchedRef.current) {
+        // A lift that ended a pinch is not a tap — otherwise a pinch-zoom can
+        // read as a double-tap and snap the camera back mid-gesture.
+        pinchedRef.current = false;
+        lastTapRef.current = 0;
+      } else {
+        const now = Date.now();
+        if (now - lastTapRef.current < 300) { resetPose(); lastTapRef.current = 0; }
+        else lastTapRef.current = now;
+      }
     }
   };
 
