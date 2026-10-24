@@ -384,7 +384,7 @@ function useAudio(voicePrefs = {}) {
   // Single-voice arbiter: `current` is the item being spoken, `queue` holds at
   // most one pending lower-priority item so nothing overlaps. `source` is the
   // live Kokoro AudioBufferSourceNode (so a preempt can stop it).
-  const stateRef      = useRef({ current: null, queue: null, source: null });
+  const stateRef      = useRef({ current: null, queue: null, source: null, watchdog: 0 });
   // Keep a ref so the memoized callbacks always read the latest preference.
   const voicePrefsRef = useRef(voicePrefs);
   voicePrefsRef.current = voicePrefs;
@@ -460,6 +460,10 @@ function useAudio(voicePrefs = {}) {
     // Finish handler: clear the slot and advance the one pending item (unless stale).
     const onDone = () => {
       if (stateRef.current.current !== item) return; // already preempted
+      if (stateRef.current.watchdog) {
+        clearTimeout(stateRef.current.watchdog);
+        stateRef.current.watchdog = 0;
+      }
       stateRef.current.current = null;
       stateRef.current.source  = null;
       const next = stateRef.current.queue;
@@ -508,12 +512,31 @@ function useAudio(voicePrefs = {}) {
     // Chrome is known to occasionally never fire onend/onerror, which would leave
     // the arbiter's slot occupied and silently swallow every later phrase. Force
     // the arbiter forward after a generous estimate so speech can never deadlock.
-    const estMs = Math.min(20000, (item.text.length / 12) * 1000 + 2500);
-    setTimeout(() => { if (stateRef.current.current === item) onDone(); }, estMs);
+    //
+    // The estimate must divide by the RATE this utterance is actually speaking
+    // at, or a driver on a slow voice gets cut off by their own watchdog: at
+    // rate 0.5 a 150-character tip really takes ~27 s, the old fixed estimate
+    // capped at 20 s, and firing early releases the slot MID-SENTENCE — play()
+    // then starts the queued phrase over the top and the arbiter's idea of what
+    // is speaking no longer matches what is audible. The handle is kept so the
+    // normal onend path cancels it (see onDone) rather than leaving a timer to
+    // fire into a torn-down tree.
+    const rate   = u.rate > 0 ? u.rate : 1;
+    const estMs  = Math.min(30000, ((item.text.length / 12) * 1000) / rate + 2500);
+    stateRef.current.watchdog = setTimeout(() => {
+      stateRef.current.watchdog = 0;
+      if (stateRef.current.current === item) onDone();
+    }, estMs);
   }, [getBuffer]);
 
   // Stop whatever is currently speaking, on any engine.
   const stopCurrent = () => {
+    // Nothing is speaking after this, so the Web Speech watchdog has no phrase
+    // left to rescue — drop it rather than leaving a timer to wake up later.
+    if (stateRef.current.watchdog) {
+      clearTimeout(stateRef.current.watchdog);
+      stateRef.current.watchdog = 0;
+    }
     if (HAS_NATIVE_TTS) stopNative();
     try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
     const s = stateRef.current.source;
@@ -557,6 +580,18 @@ function useAudio(voicePrefs = {}) {
       console.error("Kokoro load failed:", e);
       setKokoroStatus("error");
     }
+  }, []);
+
+  // Silence everything on teardown. Without this the Web Speech watchdog can
+  // outlive the tree, and its onDone would call play() on the queued item —
+  // speaking into a component that no longer exists.
+  useEffect(() => () => {
+    if (stateRef.current.watchdog) clearTimeout(stateRef.current.watchdog);
+    stateRef.current.watchdog = 0;
+    stateRef.current.current = null;
+    stateRef.current.queue = null;
+    if (HAS_NATIVE_TTS) { try { stopNative(); } catch { /* engine already gone */ } }
+    try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch { /* no engine */ }
   }, []);
 
   // Honor the persisted engine choice on every launch. The model itself lives in a

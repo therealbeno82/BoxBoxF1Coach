@@ -164,6 +164,14 @@ Deno.serve(async (req) => {
   if (!verdict.ok) return refuse(verdict.reason);
 
   const displayName = sanitizeDisplayName(payload.meta.driver) ?? "Anonymous";
+  // `team` is rendered on every public board row right beside the driver name,
+  // so it gets the SAME treatment. Unsanitised it was an unbounded,
+  // un-moderatable text channel on a public page: a URL, bidi-override
+  // characters, or 50 KB of anything (the column has no constraint, and the row
+  // renders it `white-space: nowrap`, so a long value blows the layout out).
+  // sanitizeDisplayName returns null for an advert, which is the right outcome
+  // here too — drop the field rather than refuse an otherwise-valid lap.
+  const teamName = payload.meta.team == null ? null : sanitizeDisplayName(payload.meta.team);
   const lapTimeMs = Math.round(lapLike.lapTime * 1000);
 
   // ── 6. Store the exact bytes that were validated ───────────────────────────
@@ -203,7 +211,7 @@ Deno.serve(async (req) => {
     p_board_id: board.boardId,
     p_driver_id: user.id,
     p_display_name: displayName,
-    p_team: payload.meta.team ?? null,
+    p_team: teamName,
     p_track_slug: board.slug,
     p_session_group: board.session,
     p_compound: board.compound,
@@ -232,11 +240,36 @@ Deno.serve(async (req) => {
     return refuse("Couldn't publish the lap. Try again.", 500);
   }
 
+  // ── 8. Count the publish ───────────────────────────────────────────────────
+  // Lifetime + daily counters in one atomic statement. A failure here must NOT
+  // fail the publish — the lap is already live — it only risks the daily cap
+  // under-counting, which is the safe direction.
+  //
+  // This runs for EVERY accepted submission, improved or not, and that ordering
+  // is the whole point: the cooldown and the daily cap at step 2 read
+  // last_upload_at / daily_upload_count / daily_upload_date, and this function
+  // is the only writer of them. Counting only the improvements meant a driver
+  // who had already published could resubmit the same or a slower lap in a
+  // tight loop forever — every request passed both limiters because neither
+  // counter ever moved, and each one cost an auth round trip, an inflate, full
+  // validation, a gzip, a STORAGE UPLOAD and a delete. The work is already
+  // spent by the time we know whether the lap improved, so it is also the only
+  // place the charge can honestly be made.
+  const countPublish = async () => {
+    const { error: countErr } = await admin.rpc("record_publish", {
+      p_id: user.id,
+      p_display_name: displayName,
+      p_team: teamName,
+    });
+    if (countErr) console.error("record_publish failed:", countErr.message);
+  };
+
   // A set-returning function comes back as an array; a tie/slower lap comes back
   // improved=false with the time that already stands.
   const outcome = Array.isArray(upserted) ? upserted[0] : upserted;
   if (!outcome?.improved) {
     await dropBlob();
+    await countPublish();
     const best = outcome?.best_lap_time_ms ?? lapTimeMs;
     const rank = await rankOf(admin, board.boardId, best);
     return json({
@@ -246,16 +279,7 @@ Deno.serve(async (req) => {
     });
   }
 
-  // ── 8. Count the publish ───────────────────────────────────────────────────
-  // Lifetime + daily counters in one atomic statement. A failure here must NOT
-  // fail the publish — the lap is already live — it only risks the daily cap
-  // under-counting, which is the safe direction.
-  const { error: countErr } = await admin.rpc("record_publish", {
-    p_id: user.id,
-    p_display_name: displayName,
-    p_team: payload.meta.team ?? null,
-  });
-  if (countErr) console.error("record_publish failed:", countErr.message);
+  await countPublish();
 
   const rank = await rankOf(admin, board.boardId, lapTimeMs);
   return json({

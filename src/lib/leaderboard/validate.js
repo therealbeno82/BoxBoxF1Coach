@@ -97,6 +97,16 @@ export function checkCoverage(samples, trackLengthM = null) {
     return { ok: false, reason: `Only ${samples?.length ?? 0} trace samples — too few to be a full lap.` };
   }
   const first = samples[0], last = samples[samples.length - 1];
+  // A non-object sample is a REFUSAL, not a throw. sanitizeTraceSamples passes
+  // non-objects through untouched, and the server hands us its output directly
+  // (the client path only survives because payload.js re-spreads every sample,
+  // turning a null into {}). Without this, a payload of `[null, null, …]`
+  // cleared the length check and then died on `first.dist` — an uncaught
+  // TypeError out of the Edge Function handler, so a generic 500 instead of
+  // this module's documented "return findings rather than throw" contract.
+  if (!first || typeof first !== "object" || !last || typeof last !== "object") {
+    return { ok: false, reason: "This lap's trace is malformed — it can't be verified for the board." };
+  }
 
   if (first.dist > T.firstDistMaxM) {
     return { ok: false, reason: `The trace starts ${Math.round(first.dist)}m past the line — it isn't a complete lap.` };
@@ -250,11 +260,24 @@ export function sanitizeDisplayName(raw) {
 // circuit's committed length, and use that committed length for the structural
 // checks rather than the client's number.
 //
-// `expected: null` (a circuit missing from the table) fails open, like the
-// lap-time floor does: an unlisted circuit should not reject every lap.
+// A circuit missing from the table fails CLOSED, unlike the lap-time floor.
+// That is deliberate and it is the whole point of the check: the only other
+// option is to fall back on the client's own `declaredM`, which is exactly the
+// number this function exists to stop trusting — a synthetic trace could then
+// declare a 2 km "Monaco" and clear every structural gate by measuring itself
+// against its own claim. Nothing reachable hits this branch (TRACK_LENGTH_M
+// covers all 25 CALENDAR_SLUGS and boardIdForLap refuses anything off the
+// calendar), so arriving here means that invariant has been broken — adding a
+// circuit to TRACKS without running scripts/measure-track-lengths.mjs. Better
+// to refuse that circuit's laps loudly than to silently re-open the hole.
 export function checkTrackLength(slug, declaredM) {
-  const expected = TRACK_LENGTH_M[slug] ?? null;
-  if (expected == null) return { ok: true, flagged: true, expected: null, reason: null };
+  const expected = Object.hasOwn(TRACK_LENGTH_M, slug) ? TRACK_LENGTH_M[slug] : null;
+  if (expected == null) {
+    return {
+      ok: false, flagged: false, expected: null,
+      reason: "This circuit has no verified length on record, so a lap here can't be checked for the board.",
+    };
+  }
   const declared = Number(declaredM);
   if (!(declared > 0)) {
     // Old laps don't carry the field: accept, and let callers use `expected`.
@@ -283,9 +306,12 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   checks.lengthM = length.expected ?? null;
   checks.declaredLengthM = Number(trackLengthM) > 0 ? Number(trackLengthM) : null;
   if (!length.ok) return { ok: false, verdict: null, reason: length.reason, checks };
-  // The length the structural checks measure against: the circuit's own value
-  // when we have one, so a client cannot shrink the lap it is checked over.
-  const effectiveLengthM = length.expected ?? (Number(trackLengthM) > 0 ? Number(trackLengthM) : 0);
+  // The length the structural checks measure against. ALWAYS the circuit's own
+  // committed value — checkTrackLength refuses outright when it has none, so
+  // there is no path where this falls back to the client's declaration. It used
+  // to, and that made `meta.trackLengthM` gate the very checks it was supposed
+  // to be verified by.
+  const effectiveLengthM = length.expected;
 
   const coverage = checkCoverage(samples, effectiveLengthM);
   checks.coverage = { span: coverage.span ?? null, maxGap: coverage.maxGap ?? null };

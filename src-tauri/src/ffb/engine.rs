@@ -576,6 +576,13 @@ impl Engine {
         self.steer_vel_lp = 0.0;
         self.lat_force_lp = 0.0;
         stats.set_clip_level(0.0);
+        // The run-state flags are only ever SET inside compute(), which doesn't
+        // run on this path — so without clearing them here they latch. Closing
+        // the device (or flipping the master off) during an out-lap the car had
+        // been placed into pinned the FFB tab's lamp to "AI driving" for the
+        // rest of the process, hiding every real state afterwards.
+        stats.ai_run_up_held.store(false, Ordering::Relaxed);
+        stats.tt_holding.store(false, Ordering::Relaxed);
     }
 
     fn compute(
@@ -591,9 +598,29 @@ impl Engine {
         // see a minutes-old rate and spike the braking damper; `last_out_torque`
         // follows the emitted value so the slew limiter resumes from where the
         // test left the wheel.
+        // The max-output safety cap applies to a test force too. Bypassing the
+        // PHYSICS is the point of the diagnostic; bypassing the number the
+        // driver set to protect themselves is not — on a strong base, "Max
+        // Output 10%" has to mean 10% even here.
+        let test_cap = clampf(c.max_output, 0.0, 1.0);
+        // Both test paths return before the safety block that maintains these,
+        // so clear them here or they latch exactly as they do on release().
+        // Neither "AI driving" nor "holding at the line" is true of a bench test.
+        if c.test_force.abs() > 0.001 || c.test_rumble > 0.001 {
+            stats.ai_run_up_held.store(false, Ordering::Relaxed);
+            stats.tt_holding.store(false, Ordering::Relaxed);
+        }
         if c.test_force.abs() > 0.001 {
-            let t = clampf(c.test_force, -1.0, 1.0);
+            let t = clampf(c.test_force, -test_cap, test_cap);
             self.smooth_torque = t;
+            // smooth_torque2 is the pole the OUTPUT reads (step 10), so it has to
+            // be seeded too. Leaving it stale meant the first real tick after the
+            // test button was released stepped from the test value toward
+            // whatever was loaded when the test began — from a held -0.8 to a
+            // +0.25 test force, that lands at -0.21 in ONE tick: a 0.46
+            // full-scale reversal with soft_gain already at 1.0 and no slew
+            // limit by default.
+            self.smooth_torque2 = t;
             self.smooth_friction = 0.0;
             self.smooth_rumble = 0.0;
             self.prev_steer = s.steer;
@@ -601,8 +628,9 @@ impl Engine {
             return FfbSignals { torque: t, friction: 0.0, rumble: 0.0, rumble_hz: self.rumble_hz };
         }
         if c.test_rumble > 0.001 {
-            let r = clampf(c.test_rumble, 0.0, 1.0);
+            let r = clampf(c.test_rumble, 0.0, test_cap);
             self.smooth_torque = 0.0;
+            self.smooth_torque2 = 0.0;
             self.smooth_friction = 0.0;
             self.smooth_rumble = r;
             self.prev_steer = s.steer;
@@ -1076,10 +1104,25 @@ pub fn ffb_thread(
         let enabled = handle.enabled.load(Ordering::Relaxed);
         // A new Motion Ex frame means a fresh physics sample: record it, then
         // drive the wheel with the interpolated input rather than the held one.
+        // Load the FRAME first, then re-read the sequence, and only accept the
+        // pair when the sequence hasn't moved underneath us. publish_ffb_frame
+        // stores the frame before bumping the sequence, so reading seq first let
+        // a frame published between the two loads be pushed while `seen_seq`
+        // still recorded the older number — the next tick then pushed the SAME
+        // frame again. A duplicate knot has a zero clock delta and a zero
+        // arrival delta, so both spacing guards fall through to the smoothed
+        // span and it lands a full frame after itself: one frame rendered flat,
+        // the next at double slope, which is exactly the slope discontinuity the
+        // predictor exists to remove.
         let seq = stats.motion_seq.load(Ordering::Relaxed);
         if seq != seen_seq {
-            seen_seq = seq;
-            predictor.push(&shared.ffb_frame.load());
+            let frame = shared.ffb_frame.load();
+            if stats.motion_seq.load(Ordering::Relaxed) == seq {
+                seen_seq = seq;
+                predictor.push(&frame);
+            }
+            // Sequence moved mid-read: leave seen_seq alone and take the pair on
+            // the next tick, at most one tick later.
         }
         let now_s = mono_secs(t0);
         let telem: FfbTelemetry =

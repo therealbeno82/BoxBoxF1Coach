@@ -58,7 +58,11 @@ export const TRACK_FLOOR_S = {
 export const CEILING_MULTIPLIER = 3;
 
 export function floorFor(slug) {
-  return TRACK_FLOOR_S[slug] ?? null;
+  // hasOwn, not a bare index: `slug` reaches here from lap metadata, and
+  // TRACK_FLOOR_S is an object literal, so "constructor" would resolve to a
+  // Function off Object.prototype and sail through every numeric comparison as
+  // NaN. Matches the hardening in tyres.js / cornerData.js / refMatch.js.
+  return Object.hasOwn(TRACK_FLOOR_S, slug) ? (TRACK_FLOOR_S[slug] ?? null) : null;
 }
 
 export function ceilingFor(slug) {

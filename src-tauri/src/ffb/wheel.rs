@@ -578,7 +578,17 @@ impl WheelOutput {
                     if self.last_send_rc < 0 && self.error.is_empty() {
                         self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
                     }
-                    self.last_constant_lvl = lvl;
+                    // Only cache a level the device actually ACCEPTED. Caching a
+                    // failed send is how a force gets stranded on the wheel: if
+                    // the send that failed was the safety release (torque 0.0 →
+                    // lvl 0) because the game had just stolen the device, the
+                    // cache then claims 0, the base still holds its last level,
+                    // and every later tick computes 0, matches the cache and
+                    // skips the send — forever, since only rearm()/open_device()
+                    // clear it and poll_health won't rearm an untrusted device.
+                    if self.last_send_rc >= 0 {
+                        self.last_constant_lvl = lvl;
+                    }
                 }
             }
 
@@ -595,8 +605,13 @@ impl WheelOutput {
                         e.condition.right_sat[a] = SDL_FORCE_MAX as u16;
                         e.condition.left_sat[a] = SDL_FORCE_MAX as u16;
                     }
-                    sys::SDL_HapticUpdateEffect(self.haptic, self.eff_damper, &mut e);
-                    self.last_damper_lvl = coeff;
+                    // Same rule as the constant channel, and the return code was
+                    // being discarded entirely here.
+                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_damper, &mut e) >= 0 {
+                        self.last_damper_lvl = coeff;
+                    } else if self.error.is_empty() {
+                        self.error = format!("SDL_HapticUpdateEffect (damper): {}", sdl_error());
+                    }
                 }
             }
 
@@ -618,12 +633,11 @@ impl WheelOutput {
                     e.periodic.period = self.last_sine_period as u16;
                     e.periodic.magnitude = mag as i16;
                     e.periodic.length = sys::SDL_HAPTIC_INFINITY;
-                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_sine, &mut e) < 0
-                        && self.error.is_empty()
-                    {
+                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_sine, &mut e) >= 0 {
+                        self.last_sine_lvl = mag;
+                    } else if self.error.is_empty() {
                         self.error = format!("SDL_HapticUpdateEffect (rumble): {}", sdl_error());
                     }
-                    self.last_sine_lvl = mag;
                 }
             }
         }

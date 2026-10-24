@@ -62,6 +62,12 @@ function buildPath(samples, key, min, max, { step = false, area = false, d0 = 0,
     const s = valid[i];
     const x = clamp(((s.dist || 0) - d0) / span, 0, 1) * W;
     const y = VH - clamp((s[key] - min) / (max - min), 0, 1) * VH;
+    // A degenerate scale (max === min) makes the division NaN, and `clamp` is
+    // Math.max/Math.min, which propagates it â€” one NaN anywhere in a `d`
+    // attribute drops the WHOLE path with no error, so the channel just
+    // silently disappears. Every scale is safe by construction today; this
+    // keeps a future `scales` edit from costing an invisible trace.
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     pts.push([x, y]);
   }
   if (pts.length < 2) return { line: "", area: "" };

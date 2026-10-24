@@ -39,6 +39,18 @@ export function eligibility(lap) {
     return { ok: false, reason: "This lap's trace is too short to be useful as a reference." };
   }
 
+  // Sector splits are a HARD requirement in the validator (checkSectors), so
+  // they have to be one here too — this function is what the publish prompt and
+  // the Publish button ask, and without it a splitless lap (a mid-lap join) got
+  // offered, enabled, and then refused only after the driver confirmed the
+  // upload. Same predicate as checkSectors, deliberately: if the two ever
+  // disagree again, the answer has drifted, which is the thing this module
+  // exists to prevent.
+  if (!Array.isArray(lap.sectorTimes) || lap.sectorTimes.length !== 3
+      || lap.sectorTimes.some((s) => !Number.isFinite(s))) {
+    return { ok: false, reason: "This lap has no complete sector splits, so it can't be verified for the board." };
+  }
+
   const board = boardIdForLap(lap);
   if (!board.boardId) return { ok: false, reason: board.reason };
 

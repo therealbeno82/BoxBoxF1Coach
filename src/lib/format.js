@@ -45,8 +45,14 @@ export function speedUnitLabel(units = "km/h") {
 
 // Convert a Celsius tyre temp to the active unit and round to an integer. The
 // telemetry core always reports °C; the UI can show °C or °F (a user pref).
+// NaN — not 0 — is the no-data sentinel, and that is load-bearing: every caller
+// is a read-out that funnels through TelemetryStudio's `r0`, which renders NaN
+// as "—" and 0 as "0". A lap recorded before tyre temps were captured (or an
+// older leaderboard reference) would otherwise show "0°" in the one panel whose
+// job is comparing two numbers, which reads as a real measurement. Anywhere a
+// temp reaches a style value or an SVG attribute instead, guard it there.
 export function toTemp(celsius, tempUnits = "°C") {
-  if (typeof celsius !== "number" || Number.isNaN(celsius)) return 0;
+  if (typeof celsius !== "number" || Number.isNaN(celsius)) return NaN;
   return Math.round(tempUnits === "°F" ? celsius * 9 / 5 + 32 : celsius);
 }
 

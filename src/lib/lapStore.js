@@ -31,6 +31,12 @@ function openDb() {
       return;
     }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+    // Set once the open has been abandoned as blocked. The request stays live
+    // after that rejection, so when the other connection finally closes it still
+    // fires onsuccess — and resolve() is a no-op on a settled promise, which
+    // would leave that IDBDatabase open with no owner, blocking the NEXT
+    // version change. Close it instead.
+    let abandoned = false;
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -56,13 +62,26 @@ function openDb() {
         store.createIndex("driver", "driver", { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      if (abandoned) { try { db.close(); } catch { /* already closed */ } return; }
+      // Yield to a newer version rather than blocking it. Without this, this
+      // connection holds the old version open forever and a second window (or an
+      // Android WebView beside a dev server on the same origin) deadlocks across
+      // a DB_VERSION bump: their open fires onblocked, ours never closes, and the
+      // retry below just re-rejects.
+      db.onversionchange = () => { try { db.close(); } catch { /* already closed */ } dbPromise = null; };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
     // Another connection holding an older version blocks the upgrade, and the
     // spec fires ONLY this event — neither success nor error — so without it the
     // promise never settles and every read/write in the app awaits forever.
     // Reject so the rejected-promise reset below lets a later call retry.
-    req.onblocked = () => reject(new Error("IndexedDB upgrade blocked by another window"));
+    req.onblocked = () => {
+      abandoned = true;
+      reject(new Error("IndexedDB upgrade blocked by another window"));
+    };
   });
   // Don't cache a rejected promise — let a later call retry the open.
   dbPromise.catch(() => { dbPromise = null; });
@@ -159,15 +178,26 @@ export async function archiveLaps(driver) {
   try {
     const db = await openDb();
     await new Promise((resolve, reject) => {
-      const req = tx(db, "readwrite").index("driver").openCursor(driver);
+      const store = tx(db, "readwrite");
+      const req = store.index("driver").openCursor(driver);
       req.onsuccess = () => {
         const cursor = req.result;
-        if (!cursor) { resolve(); return; }
+        if (!cursor) return;                 // exhausted; the transaction settles below
         const rec = cursor.value;
         if (rec && !rec.archived) { rec.archived = true; cursor.update(rec); }
         cursor.continue();
       };
       req.onerror = () => reject(req.error);
+      // Resolve on the TRANSACTION, same as clearLaps above: the cursor being
+      // exhausted only means every update was queued. Each update rewrites a
+      // whole lap record including its sample array, so a quota failure here
+      // aborts the transaction and rolls every archive back — resolving on the
+      // cursor reported success for writes that then vanished, and the panel
+      // repopulated on the next launch, which is the exact bug the persisted
+      // flag was added to fix.
+      store.transaction.oncomplete = () => resolve();
+      store.transaction.onerror = () => reject(store.transaction.error);
+      store.transaction.onabort = () => reject(store.transaction.error);
     });
   } catch { /* ignore */ }
 }
@@ -416,15 +446,24 @@ export async function renameDriver(oldName, newName) {
     // Laps: rewrite meta.driver on each of the driver's laps (the id key is
     // unchanged, so the record moves owners without being re-created).
     await new Promise((resolve, reject) => {
-      const req = tx(db, "readwrite").index("driver").openCursor(oldName);
+      const store = tx(db, "readwrite");
+      const req = store.index("driver").openCursor(oldName);
       req.onsuccess = () => {
         const cursor = req.result;
-        if (!cursor) { resolve(); return; }
+        if (!cursor) return;                 // the transaction settles below
         const rec = cursor.value;
         if (rec?.meta) { rec.meta = { ...rec.meta, driver: newName }; cursor.update(rec); }
         cursor.continue();
       };
       req.onerror = () => reject(req.error);
+      // Resolve on the TRANSACTION. Each update rewrites a whole lap record
+      // including its sample array, so a quota failure aborts and rolls every
+      // rename back — resolving on the cursor meant the profile was renamed in
+      // Settings while its entire history stayed under the old name, orphaned,
+      // and the catch below never saw it.
+      store.transaction.oncomplete = () => resolve();
+      store.transaction.onerror = () => reject(store.transaction.error);
+      store.transaction.onabort = () => reject(store.transaction.error);
     });
     // Avatar: copy the photo to the new key, then drop the old row.
     const avatar = await getAvatar(oldName);
@@ -447,16 +486,28 @@ export async function renameDriver(oldName, newName) {
         const req = store.openCursor();
         req.onsuccess = () => {
           const cursor = req.result;
-          if (!cursor) { resolve(); return; }
+          if (!cursor) return;               // the transaction settles below
           const rec = cursor.value;
           if (rec?.driver === oldName) {
             const nk = keyFn(rec);
-            if (!taken.has(nk)) store.put({ ...rec, key: nk, driver: newName });
+            if (!taken.has(nk)) {
+              store.put({ ...rec, key: nk, driver: newName });
+              // Claim the key as we go. `taken` was only ever seeded with the NEW
+              // name's existing keys, so two old records mapping to the same new
+              // key both passed and the second silently overwrote the first —
+              // reachable whenever the key's inputs are missing (a legacy
+              // trackmaps row with no slug, or a reftraces row with no
+              // boardId/entryId, which collapse every key to "<new>::undefined").
+              taken.add(nk);
+            }
             cursor.delete();
           }
           cursor.continue();
         };
         req.onerror = () => reject(req.error);
+        store.transaction.oncomplete = () => resolve();
+        store.transaction.onerror = () => reject(store.transaction.error);
+        store.transaction.onabort = () => reject(store.transaction.error);
       });
     };
     // Track maps: "<old>::<slug>" → "<new>::<slug>". The rec.driver guard skips

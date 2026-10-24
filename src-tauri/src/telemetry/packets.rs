@@ -57,18 +57,29 @@ pub fn parse_motion_ex(payload: &[u8], l: &mut Latest) -> Option<()> {
     let lon_force = |w: usize| f(112 + w * 4);
     let vert_force = |w: usize| f(172 + w * 4);
 
-    l.front_slip_angle = (slip_angle(2)?.abs() + slip_angle(3)?.abs()) * 0.5;
-    l.rear_slip_angle = (slip_angle(0)?.abs() + slip_angle(1)?.abs()) * 0.5;
-    l.front_lat_force = lat_force(2)? + lat_force(3)?;
-    l.front_lon_force = lon_force(2)? + lon_force(3)?;
-    l.front_vert_force = vert_force(2)? + vert_force(3)?;
-    l.front_slip_ratio = (slip_ratio(2)? + slip_ratio(3)?) * 0.5;
-    l.rear_slip_ratio = (slip_ratio(0)? + slip_ratio(1)?) * 0.5;
+    // All-or-nothing, as in parse_car_telemetry: these channels go straight into
+    // the FFB frame, so a half-written `l` from a short packet must not survive
+    // the None the caller is about to act on.
+    let front_slip_angle = (slip_angle(2)?.abs() + slip_angle(3)?.abs()) * 0.5;
+    let rear_slip_angle = (slip_angle(0)?.abs() + slip_angle(1)?.abs()) * 0.5;
+    let front_lat_force = lat_force(2)? + lat_force(3)?;
+    let front_lon_force = lon_force(2)? + lon_force(3)?;
+    let front_vert_force = vert_force(2)? + vert_force(3)?;
+    let front_slip_ratio = (slip_ratio(2)? + slip_ratio(3)?) * 0.5;
+    let rear_slip_ratio = (slip_ratio(0)? + slip_ratio(1)?) * 0.5;
 
     // Vehicle sideslip from local velocity: atan2(lateral, |forward|); gated at
     // low speed where the ratio is numerically meaningless.
     let vx = f(132)?;
     let vz = f(140)?;
+
+    l.front_slip_angle = front_slip_angle;
+    l.rear_slip_angle = rear_slip_angle;
+    l.front_lat_force = front_lat_force;
+    l.front_lon_force = front_lon_force;
+    l.front_vert_force = front_vert_force;
+    l.front_slip_ratio = front_slip_ratio;
+    l.rear_slip_ratio = rear_slip_ratio;
     l.sideslip = if vz.abs() > 1.0 { vx.atan2(vz.abs()) } else { 0.0 };
     Some(())
 }
@@ -80,18 +91,36 @@ pub fn parse_motion_ex(payload: &[u8], l: &mut Latest) -> Option<()> {
 pub fn parse_car_telemetry(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
     let stride = if is26(h) { CAR_TELEM_STRIDE_2026 } else { CAR_TELEM_STRIDE_2025 };
     let base = h.player_car_index as usize * stride;
-    l.speed_kmh = u16_at(payload, base)? as f32;
-    l.throttle = f32_at(payload, base + 2)?;
-    l.steer = f32_at(payload, base + 6)?;
-    l.brake = f32_at(payload, base + 10)?;
-    l.gear = i8_at(payload, base + 15)?;
-    l.rpm = u16_at(payload, base + 16)?;
+    // Read EVERY field into a local before touching `l`. A `?` partway through a
+    // direct-assignment sequence leaves the earlier fields written while the
+    // caller sees None and skips `publish` — so a truncated or spoofed datagram
+    // used to plant values that the next legitimate Motion Ex then copied into
+    // the FFB frame wholesale. `speed_kmh` gates speed_factor/min_speed_kmh and
+    // `steer` feeds the braking damper's derivative, so those reach the wheel.
+    // All-or-nothing here keeps a rejected packet from changing any state.
+    let speed_kmh = u16_at(payload, base)? as f32;
+    let throttle = f32_at(payload, base + 2)?;
+    let steer = f32_at(payload, base + 6)?;
+    let brake = f32_at(payload, base + 10)?;
+    let gear = i8_at(payload, base + 15)?;
+    let rpm = u16_at(payload, base + 16)?;
     // tyresSurfaceTemperature[4] @30, tyresInnerTemperature[4] @34 — u8 °C,
     // wheel order RL RR FL FR.
+    let mut surface = [0u8; 4];
+    let mut inner = [0u8; 4];
     for i in 0..4 {
-        l.tyre_surface_temps[i] = u8_at(payload, base + 30 + i)?;
-        l.tyre_inner_temps[i] = u8_at(payload, base + 34 + i)?;
+        surface[i] = u8_at(payload, base + 30 + i)?;
+        inner[i] = u8_at(payload, base + 34 + i)?;
     }
+
+    l.speed_kmh = speed_kmh;
+    l.throttle = throttle;
+    l.steer = steer;
+    l.brake = brake;
+    l.gear = gear;
+    l.rpm = rpm;
+    l.tyre_surface_temps = surface;
+    l.tyre_inner_temps = inner;
     Some(())
 }
 
@@ -103,34 +132,52 @@ pub fn parse_car_status(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()
     // expressed in LAPS *relative to what is left to run*, so it is already a delta
     // and goes negative when the car is short. Both sit ahead of the 2026 struct
     // insertion (at +50), so one pair of offsets serves both formats.
-    l.fuel_in_tank = f32_at(payload, base + 5)?;
-    l.fuel_remaining_laps = f32_at(payload, base + 13)?;
-    l.tyre_actual = u8_at(payload, base + 25)? as i8;
-    l.tyre_visual = u8_at(payload, base + 26)? as i8;
-    l.tyre_age = u8_at(payload, base + 27)?;
-    l.ers_store_energy = f32_at(payload, base + 37)?;
-    l.ers_mode = u8_at(payload, base + 41)?;
+    // All-or-nothing, as in parse_car_telemetry.
+    let fuel_in_tank = f32_at(payload, base + 5)?;
+    let fuel_remaining_laps = f32_at(payload, base + 13)?;
+    let tyre_actual = u8_at(payload, base + 25)? as i8;
+    let tyre_visual = u8_at(payload, base + 26)? as i8;
+    let tyre_age = u8_at(payload, base + 27)?;
+    let ers_store_energy = f32_at(payload, base + 37)?;
+    let ers_mode = u8_at(payload, base + 41)?;
     // 2026 inserted m_ersHarvestLimitPerLap before m_ersDeployedThisLap.
-    if is26(h) {
-        l.ers_harvest_limit = f32_at(payload, base + 50)?;
-        l.ers_deployed_this_lap = f32_at(payload, base + 54)?;
+    let (ers_harvest_limit, ers_deployed_this_lap) = if is26(h) {
+        (f32_at(payload, base + 50)?, f32_at(payload, base + 54)?)
     } else {
-        l.ers_harvest_limit = 0.0;
-        l.ers_deployed_this_lap = f32_at(payload, base + 50)?;
-    }
+        (0.0, f32_at(payload, base + 50)?)
+    };
+
+    l.fuel_in_tank = fuel_in_tank;
+    l.fuel_remaining_laps = fuel_remaining_laps;
+    l.tyre_actual = tyre_actual;
+    l.tyre_visual = tyre_visual;
+    l.tyre_age = tyre_age;
+    l.ers_store_energy = ers_store_energy;
+    l.ers_mode = ers_mode;
+    l.ers_harvest_limit = ers_harvest_limit;
+    l.ers_deployed_this_lap = ers_deployed_this_lap;
     Some(())
 }
 
 // ── Car Telemetry 2 (id 16, 2026): boost / active aero ──
 pub fn parse_car_telemetry2(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
     let base = h.player_car_index as usize * CAR_TELEM2_STRIDE;
-    l.active_aero_mode = u8_at(payload, base)?;
-    l.active_aero_available = u8_at(payload, base + 1)?;
-    l.active_aero_activation_distance = u16_at(payload, base + 2)?;
-    l.overtake_available = u8_at(payload, base + 4)?;
-    l.overtake_active = u8_at(payload, base + 5)?;
-    l.overtake_activation_distance = u16_at(payload, base + 6)?;
-    l.regs2026 = u8_at(payload, base + 8)?;
+    // All-or-nothing, as in parse_car_telemetry.
+    let active_aero_mode = u8_at(payload, base)?;
+    let active_aero_available = u8_at(payload, base + 1)?;
+    let active_aero_activation_distance = u16_at(payload, base + 2)?;
+    let overtake_available = u8_at(payload, base + 4)?;
+    let overtake_active = u8_at(payload, base + 5)?;
+    let overtake_activation_distance = u16_at(payload, base + 6)?;
+    let regs2026 = u8_at(payload, base + 8)?;
+
+    l.active_aero_mode = active_aero_mode;
+    l.active_aero_available = active_aero_available;
+    l.active_aero_activation_distance = active_aero_activation_distance;
+    l.overtake_available = overtake_available;
+    l.overtake_active = overtake_active;
+    l.overtake_activation_distance = overtake_activation_distance;
+    l.regs2026 = regs2026;
     Some(())
 }
 
@@ -144,20 +191,35 @@ pub fn parse_lap_data(payload: &[u8], h: &Header, l: &mut Latest) -> Option<u8> 
         let min = u8_at(payload, base + min_off)? as f32;
         Some((min * 60000.0 + ms) / 1000.0)
     };
-    l.last_lap_time = super::raw::u32_at(payload, base)? as f32 / 1000.0;
-    l.lap_time = super::raw::u32_at(payload, base + 4)? as f32 / 1000.0;
-    l.sector1_time = sector_seconds(8, 10)?;
-    l.sector2_time = sector_seconds(11, 13)?;
+    // All-or-nothing, as in parse_car_telemetry — including m_resultStatus, which
+    // the caller reads as the return value, so a packet that is too short for it
+    // must leave none of the timing fields updated either.
+    let last_lap_time = super::raw::u32_at(payload, base)? as f32 / 1000.0;
+    let lap_time = super::raw::u32_at(payload, base + 4)? as f32 / 1000.0;
+    let sector1_time = sector_seconds(8, 10)?;
+    let sector2_time = sector_seconds(11, 13)?;
     // NB: keep the raw (possibly negative) value — F1 reports m_lapDistance as
     // negative before the S/F line on an out-lap, which the FFB flying-lap release
     // (engine.rs) needs. The UI re-clamps independently in Snapshot::from_latest.
-    l.lap_distance = f32_at(payload, base + 20)?;
-    l.lap_number = u8_at(payload, base + 33)?;
-    l.pit_status = u8_at(payload, base + 34)?;
-    l.current_sector = u8_at(payload, base + 36)?;
-    l.lap_invalid = u8_at(payload, base + 37)?;
-    l.driver_status = u8_at(payload, base + 44)?;
-    u8_at(payload, base + 45) // m_resultStatus
+    let lap_distance = f32_at(payload, base + 20)?;
+    let lap_number = u8_at(payload, base + 33)?;
+    let pit_status = u8_at(payload, base + 34)?;
+    let current_sector = u8_at(payload, base + 36)?;
+    let lap_invalid = u8_at(payload, base + 37)?;
+    let driver_status = u8_at(payload, base + 44)?;
+    let result_status = u8_at(payload, base + 45)?; // m_resultStatus
+
+    l.last_lap_time = last_lap_time;
+    l.lap_time = lap_time;
+    l.sector1_time = sector1_time;
+    l.sector2_time = sector2_time;
+    l.lap_distance = lap_distance;
+    l.lap_number = lap_number;
+    l.pit_status = pit_status;
+    l.current_sector = current_sector;
+    l.lap_invalid = lap_invalid;
+    l.driver_status = driver_status;
+    Some(result_status)
 }
 
 // ── Participants (id 4): m_aiControlled for the player car ──
@@ -190,13 +252,23 @@ pub fn parse_participants_ai(payload: &[u8], h: &Header) -> Option<bool> {
 pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
     // Weather + temps: the Live screen stamps them on each session block of the
     // lap log, so a race review shows the conditions each stint was driven in.
-    l.weather = u8_at(payload, 0)?;
-    l.track_temp = i8_at(payload, 1)?;
-    l.air_temp = i8_at(payload, 2)?;
-    l.track_length = u16_at(payload, 4)?;
-    l.session_type = u8_at(payload, 6)?;
-    l.track_id = i8_at(payload, 7)?;
+    // All-or-nothing, as in parse_car_telemetry: a short Session packet must not
+    // leave the circuit identity half-rewritten (a new track_id beside the
+    // previous track_length would mis-scale every mini-sector for the session).
+    let weather = u8_at(payload, 0)?;
+    let track_temp = i8_at(payload, 1)?;
+    let air_temp = i8_at(payload, 2)?;
+    let track_length = u16_at(payload, 4)?;
+    let session_type = u8_at(payload, 6)?;
+    let track_id = i8_at(payload, 7)?;
     let game_paused = u8_at(payload, 14)? != 0;
+
+    l.weather = weather;
+    l.track_temp = track_temp;
+    l.air_temp = air_temp;
+    l.track_length = track_length;
+    l.session_type = session_type;
+    l.track_id = track_id;
     l.game_paused = game_paused;
     // The sector-2/3 lap-distance starts sit at the very tail of the packet, after
     // the marshal-zone and weather-forecast arrays. Read them relative to the end
@@ -305,6 +377,55 @@ mod tests {
             overall_frame_identifier: 0,
             player_car_index: player,
         }
+    }
+
+    // A packet that is too short must leave `Latest` EXACTLY as it was. The
+    // parsers used to assign field-by-field with `?` between, so a truncated or
+    // spoofed datagram wrote the leading fields and then returned None — and the
+    // caller treats None as "nothing happened", while the next legitimate Motion
+    // Ex copies the whole of `Latest` into the FFB frame. speed_kmh gates the
+    // speed factor and steer feeds the braking damper, so those planted values
+    // reached the wheel. This pins the all-or-nothing contract.
+    #[test]
+    fn a_truncated_packet_leaves_latest_untouched() {
+        let h = hdr(6, 0);
+        let mut l = Latest::default();
+        l.speed_kmh = 211.0;
+        l.steer = -0.25;
+        l.brake = 0.5;
+        let before = (l.speed_kmh, l.steer, l.brake, l.gear, l.rpm);
+
+        // Long enough for speed/throttle/steer (through offset 9) but cut before
+        // brake at +10 — the exact shape that used to plant a value.
+        let short = vec![0u8; 10];
+        assert!(parse_car_telemetry(&short, &h, &mut l).is_none());
+        assert_eq!(
+            (l.speed_kmh, l.steer, l.brake, l.gear, l.rpm),
+            before,
+            "a rejected Car Telemetry packet must not write any field"
+        );
+
+        // Same contract for the other parsers that feed the FFB frame.
+        let mut l2 = Latest::default();
+        l2.front_slip_angle = 0.125;
+        l2.sideslip = 0.5;
+        let before2 = (l2.front_slip_angle, l2.sideslip);
+        assert!(parse_motion_ex(&vec![0u8; 100], &mut l2).is_none());
+        assert_eq!((l2.front_slip_angle, l2.sideslip), before2);
+
+        let mut l3 = Latest::default();
+        l3.track_id = 7;
+        l3.track_length = 5891;
+        let before3 = (l3.track_id, l3.track_length);
+        assert!(parse_session(&vec![0u8; 8], &mut l3).is_none());
+        assert_eq!((l3.track_id, l3.track_length), before3);
+
+        let mut l4 = Latest::default();
+        l4.lap_number = 12;
+        l4.lap_distance = 1234.5;
+        let before4 = (l4.lap_number, l4.lap_distance);
+        assert!(parse_lap_data(&vec![0u8; 40], &hdr(2, 0), &mut l4).is_none());
+        assert_eq!((l4.lap_number, l4.lap_distance), before4);
     }
 
     #[test]
