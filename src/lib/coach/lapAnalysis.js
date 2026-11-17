@@ -26,8 +26,20 @@ function ord(n) { return n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th"
 // brake, steer) are linearly interpolated between the two bracketing samples;
 // discrete ones (gear, ERS mode) snap to the nearer sample — you can't be in gear
 // 4.5. Samples are sorted by dist, so we binary-search the bracket.
+//
+// Returns NULL when `d` lies outside the stretch this lap actually recorded,
+// beyond one bin's worth of slack at either end. It used to clamp to the first /
+// last sample instead — the same bug lapHistory.js's copy had fixed — and the
+// recorder keeps any lap with ≥50% coverage (a mid-lap join still carries the
+// game's full lap time), so a partial lap had ONE frozen sample compared against
+// the reference over the whole missing stretch: a stationary car "losing" seconds
+// in every segment it never drove. The caller already skips a null row. The
+// slack is there because a full lap's first bin rarely lands exactly on 0 m and
+// its last rarely on the line; refusing those would drop real end segments.
+const EDGE_SLACK_M = 15;
 function sampleAt(samples, d) {
   const last = samples.length - 1;
+  if (d < samples[0].dist - EDGE_SLACK_M || d > samples[last].dist + EDGE_SLACK_M) return null;
   if (d <= samples[0].dist) return samples[0];
   if (d >= samples[last].dist) return samples[last];
   let lo = 0, hi = last;

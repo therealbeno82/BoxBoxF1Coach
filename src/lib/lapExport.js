@@ -12,6 +12,7 @@
 // same sector colours, Compare traces and coaching as it did live.
 
 import { tyreCondition } from "./tyres.js";
+import { lapTraceMeta } from "./lapTrace.js";
 import { inTauri, isAndroid } from "./env.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -45,18 +46,18 @@ export async function exportLapToFile(lap, { hideSetup = false } = {}) {
 
   const payload = {
     meta: {
-      driver: lap.meta?.driver || "You",
-      track:  lap.meta?.track  || "Live",
-      sessionType: lap.meta?.sessionType || null, // coarse mode: Time Trial / Qualifying / …
+      // Same meta block the leaderboard upload writes (lib/lapTrace.js), so a
+      // reloaded lap keeps its circuit, sector lines, conditions and invalid flag.
+      ...lapTraceMeta(lap),
+      track: lap.meta?.track || "Live",
       exportedAt: new Date().toISOString(),
       sampleCount: lap.samples.length,
       lapNumber: lap.lapNumber,
-      lapTime: lap.lapTime,
-      sectorTimes: lap.sectorTimes || null,
       source: lap.source || "live",
     },
     setup: hideSetup ? null : (lap.setup || null), // garage setup driven on this lap (null for older laps or when hidden)
     tyre: lap.tyre || null,   // compound worn → preserves the dry/wet split on reload
+    miniSectors: lap.miniSectors || null,
     samples: lap.samples,
   };
 

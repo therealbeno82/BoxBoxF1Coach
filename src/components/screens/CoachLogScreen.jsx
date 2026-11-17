@@ -30,7 +30,7 @@ export default function CoachLogScreen({
   labelFor = (l) => l?.id, lapNotice = null,
   // Manual debrief for the lap on screen. Null when there's no LLM configured or
   // no evidence to ground it in.
-  onAskCoach = null, asking = false,
+  onAskCoach = null, asking = false, llmError = null,
 }) {
   // buildTrends returns a prose block: a header line then "\n- " bullet items.
   // Split off the bullets for a compact recurring-patterns strip.
@@ -122,6 +122,10 @@ export default function CoachLogScreen({
                 fontSize: 11.5, fontWeight: 700, fontFamily: FONT.ui, cursor: asking ? "default" : "pointer" }}>
               {asking ? "Analysing…" : "✦ Ask the coach"}
             </button>
+          )}
+          {llmError && !asking && (
+            <div role="status" style={{ alignSelf: "flex-end", maxWidth: 320, fontSize: 11, lineHeight: 1.45,
+              color: C.orange, paddingBottom: 2 }}>{llmError}</div>
           )}
         </div>
       </div>

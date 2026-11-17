@@ -8,7 +8,7 @@
 import { useMemo, useState, useEffect, useRef, useCallback, memo } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
-import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
+import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey, bestSectorsAt } from "../../lib/driverStats.js";
 import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from "../../lib/tyres.js";
 import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
@@ -460,10 +460,12 @@ export default function LiveScreen({
     ? `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
     : "No reference loaded";
 
-  // Sector cards: the last completed lap's splits vs this driver's best sectors.
+  // Sector cards: the last completed lap's splits vs this driver's best sectors
+  // at the SAME circuit, on the same side of the dry/wet split.
+  const sectorBests = bestSectorsAt(stats, lastLap?.meta?.track || trackName, tyreCondition(lastLap?.tyre) ?? "dry");
   const sectors = [0, 1, 2].map((i) => {
     const t = lastLap?.sectorTimes?.[i];
-    const best = stats.bestSectors[i];
+    const best = sectorBests[i];
     const delta = (typeof t === "number" && typeof best === "number" && best > 0) ? t - best : null;
     return {
       name: `S${i + 1}`,

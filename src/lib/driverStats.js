@@ -113,7 +113,11 @@ export function computeDriverStats(laps = [], opts = {}) {
   for (const l of valid) {
     const track = l.meta?.track || "Unknown";
     let e = trackMap.get(track);
-    if (!e) { e = { track, best: l, bestDry: null, bestWet: null, optimal: [null, null, null] }; trackMap.set(track, e); }
+    if (!e) {
+      e = { track, best: l, bestDry: null, bestWet: null, optimal: [null, null, null],
+        optimalDry: [null, null, null], optimalWet: [null, null, null] };
+      trackMap.set(track, e);
+    }
     if (l.lapTime < e.best.lapTime) e.best = l;
     // Separate dry vs wet personal bests so a lap set on Inters/Wets is ranked
     // against other wet laps, never against a dry PB it could never beat.
@@ -122,9 +126,12 @@ export function computeDriverStats(laps = [], opts = {}) {
       e[cond === "wet" ? "bestWet" : "bestDry"] = l;
     }
     if (Array.isArray(l.sectorTimes)) {
+      const byCond = cond === "wet" ? e.optimalWet : e.optimalDry;
       for (let i = 0; i < 3; i++) {
         const s = l.sectorTimes[i];
-        if (typeof s === "number" && s > 0 && (e.optimal[i] == null || s < e.optimal[i])) e.optimal[i] = s;
+        if (!(typeof s === "number" && s > 0)) continue;
+        if (e.optimal[i] == null || s < e.optimal[i]) e.optimal[i] = s;
+        if (byCond[i] == null || s < byCond[i]) byCond[i] = s;
       }
     }
   }
@@ -166,9 +173,6 @@ export function computeDriverStats(laps = [], opts = {}) {
       return { lap: l, gap };
     });
 
-  // Theoretical-best sectors for the overall-fastest lap's track.
-  const fastTrack = fastestOverall ? trackMap.get(fastestOverall.meta?.track || "Unknown") : null;
-
   return {
     fastestOverall,
     fastestBySessionType,
@@ -176,8 +180,19 @@ export function computeDriverStats(laps = [], opts = {}) {
     perCategoryBest,
     totals,
     recent,
-    bestSectors: fastTrack ? fastTrack.optimal : [null, null, null],
-    bestSectorsTrack: fastTrack?.track || null,
     hasLaps: valid.length > 0,
   };
+}
+
+// The driver's best sector times at ONE circuit, in one condition — the benchmark
+// a just-completed lap's splits are graded against. Keyed on the lap's own track
+// and rubber, never on wherever the driver's overall-fastest lap happens to have
+// been set: that was what `bestSectors` used to return, so at any circuit other
+// than the driver's quickest one the Live sector cards compared a Spa S1 against
+// a Monza one. A wet lap is graded against wet sectors only, for the same reason
+// the PBs split by condition.
+export function bestSectorsAt(stats, track, condition = "dry") {
+  const e = stats?.perTrackBest?.find((t) => t.track === (track || "Unknown"));
+  if (!e) return [null, null, null];
+  return (condition === "wet" ? e.optimalWet : e.optimalDry) || [null, null, null];
 }

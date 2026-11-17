@@ -157,17 +157,6 @@ const LIVE_LEGEND = [
   ["#2979ff", "Boost",  "ers3"],
   ["#6b7280", "None",   "normal"], // visible neutral grey (was near-black #1e1e1e)
 ];
-const DEFAULT_ZONES = [
-  { id:1, name:"T1",          start:0.04, end:0.08, type:"brake", ersMode:0, note:"Heavy braking zone" },
-  { id:2, name:"S1 Straight", start:0.12, end:0.22, type:"ers",   ersMode:3, note:"Main straight — Boost" },
-  { id:3, name:"T3 Entry",    start:0.27, end:0.30, type:"lico",  ersMode:1, note:"Lift and coast into chicane" },
-  { id:4, name:"T3 Apex",     start:0.30, end:0.34, type:"brake", ersMode:1, note:"Brake — chicane entry" },
-  { id:5, name:"T6 Hairpin",  start:0.42, end:0.47, type:"brake", ersMode:0, note:"Max brake — tight hairpin" },
-  { id:6, name:"S2 Deploy",   start:0.52, end:0.62, type:"ers",   ersMode:3, note:"Boost through S2" },
-  { id:7, name:"T10 Entry",   start:0.71, end:0.74, type:"lico",  ersMode:1, note:"Lift early — long entry" },
-  { id:8, name:"T10 Brake",   start:0.74, end:0.78, type:"brake", ersMode:1, note:"Brake zone" },
-  { id:9, name:"S3 Deploy",   start:0.85, end:0.95, type:"ers",   ersMode:2, note:"Hotlap — final sector" },
-];
 
 // ── Derive strategy zones FROM a loaded reference trace ─────────────────────
 // A trace (exported by the Trace Calibrator) carries throttle, brake + ERS
@@ -177,7 +166,13 @@ const DEFAULT_ZONES = [
 //   • ers   — on throttle while the reference is deploying ERS, split BY MODE
 //             (Medium / Hotlap / Boost) so the call IS the ERS mode itself.
 // There is deliberately no separate "deploy" concept — deploying ERS and the
-// ERS mode are one and the same. No trace → DEFAULT_ZONES.
+// ERS mode are one and the same.
+//
+// A trace that yields nothing usable yields NO zones. It used to fall back to a
+// hard-coded set of nine invented zones ("T6 Hairpin" at 42% of the lap…), which
+// the call engine then SPOKE — "Brake" at an arbitrary point on whatever circuit
+// the driver was actually on. Silence is the honest answer to a reference that
+// carries no braking or throttle data.
 function mostCommon(arr) {
   const counts = {};
   let best = arr[0] ?? 0, bestC = 0;
@@ -203,14 +198,14 @@ function smoothChannel(pts, key, win) {
 
 function deriveZonesFromTrace(trace) {
   const raw = trace?.samples;
-  if (!Array.isArray(raw) || raw.length < 8) return DEFAULT_ZONES;
+  if (!Array.isArray(raw) || raw.length < 8) return [];
 
   const pts = raw
     .filter(s => s && typeof s.dist === "number" && typeof s.throttle === "number")
     .sort((a, b) => a.dist - b.dist);
   const N = pts.length;
   const totalDist = N ? pts[N - 1].dist : 0;
-  if (N < 8 || !(totalDist > 0)) return DEFAULT_ZONES;
+  if (N < 8 || !(totalDist > 0)) return [];
 
   // Smooth throttle + brake (~1% of lap window) so noise — an image-extracted trace,
   // or a real one where the brake dips under the threshold mid-zone — can't fragment
@@ -362,7 +357,7 @@ function deriveZonesFromTrace(trace) {
     z.name = `${base} ${seenN[base]}`;
   });
 
-  return zones.length ? zones : DEFAULT_ZONES;
+  return zones;
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -487,6 +482,27 @@ function useAudio(voicePrefs = {}) {
     const prefs = voicePrefsRef.current;
     stateRef.current.current = item;
 
+    // Every engine path arms a watchdog, so a phrase that never reports back can
+    // only ever hold the slot for a bounded time. Each engine has its own way of
+    // going silent — Chrome's Web Speech dropping onend, a Kokoro synth that never
+    // answers, a platform TTS call that never resolves — and before this only the
+    // first one was covered: the other two parked the arbiter's slot for the rest
+    // of the session, and every later same-priority call was queued and replaced
+    // behind a phrase that would never finish. `arm` replaces any earlier timer,
+    // so a path can re-arm once it knows the real duration.
+    const arm = (ms) => {
+      if (stateRef.current.watchdog) clearTimeout(stateRef.current.watchdog);
+      stateRef.current.watchdog = setTimeout(() => {
+        stateRef.current.watchdog = 0;
+        if (stateRef.current.current === item) onDone();
+      }, ms);
+    };
+    // Generous spoken-length estimate at the rate the phrase is actually said
+    // at — dividing by the rate is what keeps a slow voice from being cut off
+    // mid-sentence by its own watchdog.
+    const spokenMs = (rate) =>
+      Math.min(30000, ((item.text.length / 12) * 1000) / (rate > 0 ? rate : 1) + 2500);
+
     // Finish handler: clear the slot and advance the one pending item (unless stale).
     const onDone = () => {
       if (stateRef.current.current !== item) return; // already preempted
@@ -513,11 +529,15 @@ function useAudio(voicePrefs = {}) {
         // matters, and anything still sounding is by definition lower priority.
         flush: true,
       }).then(onDone, onDone);
+      arm(spokenMs(prefs.rate ?? 1.1) + 5000);
       return;
     }
 
     // ── Kokoro path: synth (or cache hit) → play through Web Audio ──
     if (prefs.engine === "kokoro" && isKokoroLoaded()) {
+      // Synthesis budget first (kokoroTTS times the worker out at 20 s itself);
+      // once the clip exists its real length is known, so re-arm on that.
+      arm(25000);
       getBuffer(item.text).then(buf => {
         if (stateRef.current.current !== item) return; // preempted while synthesising
         const ctx = audioCtx();
@@ -527,10 +547,16 @@ function useAudio(voicePrefs = {}) {
         src.connect(ctx.destination);
         src.onended = onDone;
         stateRef.current.source = src;
+        arm(buf.duration * 1000 + 2000);
         try { src.start(); } catch { onDone(); }
       }).catch(() => onDone());
       return;
     }
+    // Kokoro chosen but not loaded — either still loading, or its worker crashed
+    // and was reset (lib/kokoroTTS.js). This phrase goes out on the browser voice;
+    // starting the reload here brings later ones back to Kokoro. loadKokoro()
+    // shares one in-flight promise, so repeated calls cost nothing.
+    if (HAS_KOKORO && prefs.engine === "kokoro") loadKokoro().catch(() => {});
 
     // ── Browser path: Web Speech utterance ──
     if (!window.speechSynthesis) { onDone(); return; }
@@ -539,24 +565,13 @@ function useAudio(voicePrefs = {}) {
     const v = pickVoice(); if (v) u.voice = v;
     u.onend = u.onerror = onDone;
     window.speechSynthesis.speak(u);
-    // Chrome is known to occasionally never fire onend/onerror, which would leave
-    // the arbiter's slot occupied and silently swallow every later phrase. Force
-    // the arbiter forward after a generous estimate so speech can never deadlock.
-    //
-    // The estimate must divide by the RATE this utterance is actually speaking
-    // at, or a driver on a slow voice gets cut off by their own watchdog: at
-    // rate 0.5 a 150-character tip really takes ~27 s, the old fixed estimate
-    // capped at 20 s, and firing early releases the slot MID-SENTENCE — play()
-    // then starts the queued phrase over the top and the arbiter's idea of what
-    // is speaking no longer matches what is audible. The handle is kept so the
-    // normal onend path cancels it (see onDone) rather than leaving a timer to
-    // fire into a torn-down tree.
-    const rate   = u.rate > 0 ? u.rate : 1;
-    const estMs  = Math.min(30000, ((item.text.length / 12) * 1000) / rate + 2500);
-    stateRef.current.watchdog = setTimeout(() => {
-      stateRef.current.watchdog = 0;
-      if (stateRef.current.current === item) onDone();
-    }, estMs);
+    // Chrome is known to occasionally never fire onend/onerror. At rate 0.5 a
+    // 150-character tip really takes ~27 s, which is why the estimate divides by
+    // the rate (see spokenMs) — firing early releases the slot MID-SENTENCE and
+    // play() then starts the queued phrase over the top. The handle is kept so
+    // the normal onend path cancels it (see onDone) rather than leaving a timer
+    // to fire into a torn-down tree.
+    arm(spokenMs(u.rate));
   }, [getBuffer]);
 
   // Stop whatever is currently speaking, on any engine.
@@ -725,8 +740,10 @@ function useAudio(voicePrefs = {}) {
 }
 
 // ─── LLM ENGINE ───────────────────────────────────────────────────────────────
+// The fallback when a failure carries no better description (a network error,
+// say). Provider errors name their own cause — see describeOpenRouterError.
 function providerErr() {
-  return "⚠ OpenRouter not reachable — check your API key in the Setup tab";
+  return "⚠ Couldn't reach OpenRouter — check your connection.";
 }
 
 // The between-lap debrief is the ONLY LLM call the app makes. There used to be a
@@ -762,7 +779,13 @@ function useLLM(llmConfig) {
       });
       let result = validateTip(json);
       if (!result.ok) result = repairTip(text);     // weak model returned non-JSON
-      if (!result.ok) return null;
+      if (!result.ok) {
+        // Say so rather than just stopping the spinner — a driver who pressed
+        // "Ask the coach" otherwise can't tell a refusal from a hang.
+        setLastAdvice({ text: "⚠ The coach's reply couldn't be read — try asking again.",
+          time: Date.now(), error: true, lapId: context.lapId ?? null });
+        return null;
+      }
       // The pace and trend blocks are grounding material too — every figure the
       // model was shown must stay quotable, or enforceGrounding strips the very
       // numbers that make a "you keep doing this" line land.
@@ -781,7 +804,10 @@ function useLLM(llmConfig) {
       setLastAdvice({ text:tip.text, severity:tip.severity, summary:tip.summary, time:Date.now(), lap:true, lapId: lapId ?? null });
       return tip.text || null;
     } catch (e) {
-      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(), time:Date.now(), error:true });
+      if (e.name!=="AbortError") {
+        setLastAdvice({ text: e.userMessage ? `⚠ ${e.userMessage}` : providerErr(),
+          time: Date.now(), error: true, lapId: context.lapId ?? null });
+      }
       return null;
     } finally {
       // Only this request may clear the spinner — a superseded (aborted) request
@@ -844,6 +870,9 @@ const runMeta = (m) => ({
 // that hosts it thirty times a second — see lib/telemetryStore.js.
 function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
+  // Read by the lap freeze on the telemetry edge, which no dep array can reach.
+  const storedLapsRef = useRef(storedLaps);
+  storedLapsRef.current = storedLaps;
   // Bumped whenever the SET of recorded bins changes (a new 10 m bin, or a wipe at
   // a lap/driver boundary) — never when the bin the car is already inside is
   // overwritten. This is what currentLap keys on instead of the telemetry tick.
@@ -955,10 +984,20 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
         // session type changes, restart the count at 1 (see lapNumSessionRef) so the
         // first lap of a fresh session reads "Lap 1", not a continuation of the
         // driver's career total or of the qualifying laps above it.
+        //
+        // On a run change the count CONTINUES from the laps already stored under
+        // that run rather than restarting blindly at 0. The driver-load seed
+        // above runs before the session id and track are known (its run key is
+        // "∅::?::Live"), so the first freeze always lands here — and the game's
+        // session UID survives an app restart, so relaunching mid-session used
+        // to stamp the next lap "Lap 1" while the readout said "Lap 6", leaving
+        // two Lap 1s in one run. A genuinely new run has no stored laps and
+        // starts at 1 exactly as before.
         const run = lapRunKey(runMeta(m));
         if (lapNumSessionRef.current !== run) {
           lapNumSessionRef.current = run;
-          lapNumRef.current = 0;
+          lapNumRef.current = storedLapsRef.current.reduce(
+            (acc, l) => (lapRunKey(l.meta) === run ? Math.max(acc, l.lapNumber || 0) : acc), 0);
         }
         lapNumRef.current += 1;
         // S1/S2 are the game's native splits captured just before the line; S3 is
@@ -1775,8 +1814,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (!nm || list.length <= 1 || !list.some(d => d.name === nm)) return;
     setDrivers(prev => prev.filter(d => d.name !== nm));
     setAvatars(prev => { const next = { ...prev }; delete next[nm]; return next; });
+    // Everything keyed by the driver's name goes with them. Track maps and
+    // downloaded references used to be left behind, so a new profile signed
+    // under the same name later inherited a stranger's saved circuits and refs.
     lapStore.clearLaps(nm);
     lapStore.deleteAvatar(nm);
+    lapStore.clearTrackMaps(nm);
+    lapStore.clearRefTraces(nm);
   }, []);
   // Edit an existing driver profile from the Settings roster. Name, number, team,
   // livery and photo are all editable. Renaming re-files the driver's laps, photo
@@ -1924,6 +1968,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (overwrite) {
       await lapStore.clearLaps(target);
       await lapStore.clearTrackMaps(target);
+      await lapStore.clearRefTraces(target);
       await lapStore.deleteAvatar(target);
     }
     const entry = await importProfileData(payload, { name: target });
@@ -1943,6 +1988,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     else if (overwrite) setAvatars(prev => { const n = { ...prev }; delete n[target]; return n; });
     setActiveDriver(target);
     reloadLaps(target);
+    // The driver-change effect restores downloaded references, but it doesn't
+    // fire when the import overwrote the driver already active — re-read here.
+    // Idempotent with that effect (both replace every leaderboard ref wholesale).
+    lapStore.getRefTraces(target).then(rows => {
+      const restored = rows.map(r => ({ ...r.trace, id: r.key, source: "leaderboard" }));
+      setRefTraces(prev => [...restored, ...prev.filter(t => t.source !== "leaderboard")]);
+    });
     return entry;
   }, [reloadLaps]);
 
@@ -1994,7 +2046,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Strategy zones are DERIVED FROM the active reference — braking, lift-and-coast,
   // and ERS-mode (by-mode) zones detected from its throttle, brake + ERS channels.
   // Select a different reference and the zones (and coaching calls) change. No
-  // reference → generic defaults.
+  // reference, or one with nothing to derive from → no zones and no calls.
   const zones = useMemo(
     () => (activeTrace ? deriveZonesFromTrace(activeTrace) : []),
     [activeTrace]
@@ -2527,9 +2579,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //
   // Either way the driver lands on Analytics, because a reference they can't see
   // applied is indistinguishable from a button that did nothing.
-  const useLeaderboardEntry = useCallback(async (entry) => {
+  const adoptLeaderboardEntry = useCallback(async (entry) => {
     if (!entry) return;
-    const label = `${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`;
 
     // Local: the lap is already in storedLaps, so it already resolves as a
     // reference. Pointing activeTraceId at it is the whole job.
@@ -2540,23 +2591,29 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     }
 
     // Remote: already downloaded once? Re-use it rather than fetching again —
-    // this is what makes a saved reference work with no network at all.
+    // this is what makes a saved reference work with no network at all. But only
+    // while it is still THAT driver's lap: the cache is keyed per board entry,
+    // and an entry is replaced whenever its driver improves, so a copy saved
+    // last week can be a lap the board no longer holds. The row's own time says
+    // which lap it is now; a mismatch re-downloads, and a download that fails
+    // (offline at the track) still falls back to the copy we have.
     const cachedId = `${activeDriver}::${entry.boardId}::${entry.driverId}`;
-    if (refTraces.some(t => t.id === cachedId)) {
-      setActiveTraceId(cachedId);
-      setTab("compare");
-      return;
+    const cached = refTraces.find(t => t.id === cachedId);
+    const adoptCached = () => { setActiveTraceId(cachedId); setTab("compare"); };
+    if (cached) {
+      const cachedMs = Math.round(((cached.meta?.lapTime ?? cached.lapTime) || 0) * 1000);
+      const stale = cachedMs > 0 && entry.lapTimeMs > 0 && Math.abs(cachedMs - entry.lapTimeMs) > 1;
+      if (!stale || !entry.tracePath) return adoptCached();
     }
 
     if (!entry.tracePath) return;
     const json = await fetchTrace(entry.tracePath);
-    if (!json) return;
 
     // traceToReference sanitises the samples. Not optional: this is third-party
     // data heading for the coaching engine and the zone derivation that drives
     // the voice calls.
-    const trace = traceToReference(json, { entry, boardId: entry.boardId });
-    if (!trace) return;
+    const trace = json ? traceToReference(json, { entry, boardId: entry.boardId }) : null;
+    if (!trace) { if (cached) adoptCached(); return; }
 
     // Persisted so it survives a restart — a reference pulled today has to still
     // be there for an offline race weekend.
@@ -2585,13 +2642,17 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const lap = pendingPublish;
     if (!lap) return;
     setPublishing(true);
+    // `enabled` is what makes the Settings switch binding here too: without it
+    // submitLap's own gate defaulted open, so a publish still signed up an
+    // account and uploaded with the feature turned off.
     const res = await submitLap(lap, {
       displayName: activeDriverObj?.name || activeDriver,
       team: activeDriverObj?.team || null,
+      enabled: leaderboardEnabled,
     });
     setPublishing(false);
     setPublishResult(res);
-  }, [pendingPublish, activeDriver, activeDriverObj]);
+  }, [pendingPublish, activeDriver, activeDriverObj, leaderboardEnabled]);
 
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its action
@@ -2846,7 +2907,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
-          onDeleteLap={deleteLap} onExportLap={exportLapToFile} onPublishLap={requestPublish}
+          onDeleteLap={deleteLap} onExportLap={exportLapToFile}
+          onPublishLap={leaderboardEnabled ? requestPublish : undefined}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
             zones={zones} sectorDists={sectorDists} units={units} tempUnits={tempUnits} corners={trackCorners}
@@ -2892,6 +2954,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       {tab==="coach" && (() => {
         const forThisLap = lastAdvice && lastAdvice.lap && !lastAdvice.error
           && (lastAdvice.lapId == null || lastAdvice.lapId === coachLap?.id);
+        // A failed debrief for the lap on screen is shown too, beside the button
+        // that asked for it — otherwise the spinner just stops.
+        const errorForThisLap = lastAdvice?.error
+          && (lastAdvice.lapId == null || lastAdvice.lapId === coachLap?.id);
         return (
         <CoachLogScreen
           coachLog={coachLog} trackName={trackName} sessionLabel={sessionTypeLabel}
@@ -2904,6 +2970,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onAskCoach={aiActive && lapEvidence ? askCoachForLap : null} asking={asking}
           llmFocus={forThisLap ? lastAdvice.text : null}
           llmSummary={forThisLap ? lastAdvice.summary : null}
+          llmError={errorForThisLap ? lastAdvice.text : null}
         />
         );
       })()}
@@ -2917,7 +2984,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
           initialSlug={trackInfo?.slug || null}
           enabled={leaderboardEnabled}
-          onUseReference={useLeaderboardEntry}
+          onUseReference={adoptLeaderboardEntry}
         />
       )}
 
@@ -2932,7 +2999,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           screens' one would blank the screen behind a modal for the frame its
           chunk takes to arrive, and a modal appearing a frame late is invisible. */}
       <Suspense fallback={null}>
-      {publishPrompt && !pendingPublish && (
+      {leaderboardEnabled && publishPrompt && !pendingPublish && (
         <PublishPrompt
           lap={publishPrompt}
           onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}

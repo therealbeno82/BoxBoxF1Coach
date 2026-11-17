@@ -53,8 +53,21 @@ export function validateTip(obj) {
 }
 
 // Fallback for non-JSON output: treat the cleaned raw text as the tip.
+//
+// But never JSON that merely failed to PARSE. The debrief is capped at a few
+// hundred tokens, so a long reply is cut off mid-object — `{"tip": "Brake later
+// into T4…` — and treating that as prose put a JSON fragment on screen and into
+// the driver's ear. Pull the tip string out of a truncated object if it's there
+// (a cut-off string is closed first), and refuse anything else that is
+// structured rather than speak it.
 export function repairTip(rawText) {
-  const tip = cleanOutput(String(rawText ?? ""), TIP_LIMITS);
+  let raw = String(rawText ?? "").trim();
+  if (/^[{[]/.test(raw) || /^```/.test(raw)) {
+    const m = raw.match(/"tip"\s*:\s*"((?:[^"\\]|\\.)*)("?)/);
+    if (!m) return { ok: false };
+    try { raw = JSON.parse(`"${m[1]}"`); } catch { raw = m[1]; }
+  }
+  const tip = cleanOutput(raw, TIP_LIMITS);
   if (!tip) return { ok: false };
   return { ok: true, tip: { tip, severity: "info", zone: null, grounded: false } };
 }

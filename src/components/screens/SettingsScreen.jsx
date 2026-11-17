@@ -120,6 +120,9 @@ export default function SettingsScreen({
   const [pendingImport, setPendingImport] = useState(null); // { payload, name }
 
   const lapWord = (n) => `${n} lap${n === 1 ? "" : "s"}`;
+  const extrasText = (c) =>
+    (c?.trackMaps ? `, ${c.trackMaps} track map${c.trackMaps === 1 ? "" : "s"}` : "")
+    + (c?.refTraces ? `, ${c.refTraces} downloaded reference${c.refTraces === 1 ? "" : "s"}` : "");
 
   const exportActiveProfile = async () => {
     if (!onExportProfile) return;
@@ -127,8 +130,7 @@ export default function SettingsScreen({
     try {
       const c = await onExportProfile();
       if (!c) return; // dialog cancelled — nothing written, no message
-      const maps = c?.trackMaps ? `, ${c.trackMaps} track map${c.trackMaps === 1 ? "" : "s"}` : "";
-      setBackupMsg({ kind: "ok", text: `Exported ${activeDriver} — ${lapWord(c?.laps || 0)}${maps}.` });
+      setBackupMsg({ kind: "ok", text: `Exported ${activeDriver} — ${lapWord(c?.laps || 0)}${extrasText(c)}.` });
     } catch (e) { setBackupMsg({ kind: "err", text: e.message || "Export failed." }); }
     finally { setBackupBusy(false); }
   };
@@ -161,7 +163,7 @@ export default function SettingsScreen({
     try {
       const entry = await onImportProfile(payload, opts);
       const c = entry?.counts || {};
-      setBackupMsg({ kind: "ok", text: `Imported ${opts.name} — ${lapWord(c.laps || 0)}${opts.overwrite ? " (overwrote existing)" : ""}.` });
+      setBackupMsg({ kind: "ok", text: `Imported ${opts.name} — ${lapWord(c.laps || 0)}${extrasText(c)}${opts.overwrite ? " (overwrote existing)" : ""}.` });
     } catch (err) { setBackupMsg({ kind: "err", text: err.message || "Import failed." }); }
     finally { setBackupBusy(false); }
   };

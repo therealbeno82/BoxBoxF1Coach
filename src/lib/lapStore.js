@@ -71,6 +71,11 @@ function openDb() {
       // a DB_VERSION bump: their open fires onblocked, ours never closes, and the
       // retry below just re-rejects.
       db.onversionchange = () => { try { db.close(); } catch { /* already closed */ } dbPromise = null; };
+      // The browser can also close the connection out from under us (storage
+      // pressure, the user clearing site data). Drop the cached promise so the
+      // next call re-opens instead of every later write failing silently on a
+      // dead handle.
+      db.onclose = () => { dbPromise = null; };
       resolve(db);
     };
     req.onerror = () => reject(req.error);
@@ -122,16 +127,46 @@ export async function getLaps(driver) {
 }
 
 // Persist (or overwrite) a single lap. meta.driver must already name the owner.
+// Resolves true once the write has COMMITTED, false if it didn't — best-effort
+// either way (the caller keeps the lap in memory), but a caller that reports
+// what it saved can now tell.
 export async function putLap(lap) {
-  if (!lap?.id || !lap?.meta?.driver) return;
+  if (!lap?.id || !lap?.meta?.driver) return false;
   try {
     const db = await openDb();
     await new Promise((resolve, reject) => {
-      const req = tx(db, "readwrite").put(lap);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      const t = db.transaction(STORE, "readwrite");
+      t.objectStore(STORE).put(lap);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
     });
-  } catch { /* best-effort: keep the lap in memory even if the write failed */ }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Persist many laps in ONE transaction — all of them or none. Resolves to the
+// number actually committed (0 when it failed, e.g. over quota), so a profile
+// import reports what it really wrote rather than the size of the file.
+export async function putLaps(laps) {
+  const valid = (laps || []).filter((l) => l?.id && l?.meta?.driver);
+  if (!valid.length) return 0;
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const t = db.transaction(STORE, "readwrite");
+      const store = t.objectStore(STORE);
+      for (const l of valid) store.put(l);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
+    return valid.length;
+  } catch {
+    return 0;
+  }
 }
 
 export async function deleteLap(id) {

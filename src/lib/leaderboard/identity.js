@@ -26,6 +26,17 @@ const REFRESH_SKEW_S = 60;
 
 let inflight = null; // de-dupes concurrent sign-in/refresh attempts
 
+// Why the last getAccessToken() came back empty, so diagnoseAuthFailure can say
+// so WITHOUT another request. It used to find out by POSTing /signup itself —
+// which, whenever the server was reachable after all, minted a brand-new account
+// that nothing ever used, purely to produce an error message.
+//   "anon-disabled" | "rate" | "server" | "network" | null
+let lastFailure = null;
+const failureOf = (status, json) =>
+  json?.error_code === "anonymous_provider_disabled" ? "anon-disabled"
+  : status === 429 ? "rate"
+  : "server";
+
 function readSession() {
   try {
     const raw = localStorage.getItem(LS_SESSION);
@@ -62,7 +73,7 @@ async function post(path, body, headers = {}) {
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const json = await res.json().catch(() => null);
-  return { ok: res.ok, json };
+  return { ok: res.ok, status: res.status, json };
 }
 
 // The user id this install is publishing under, or null if it has never
@@ -96,20 +107,30 @@ export async function getAccessToken() {
       // Refresh first — keeping the same account is the whole point, since the
       // board entries hang off its id.
       if (session?.refreshToken) {
-        const { ok, json } = await post("/token?grant_type=refresh_token",
+        const { ok, status, json } = await post("/token?grant_type=refresh_token",
           { refresh_token: session.refreshToken });
         const next = ok ? toSession(json) : null;
-        if (next) { writeSession(next); return next.accessToken; }
-        // Refresh failed: the token was revoked or expired past recovery. Fall
-        // through to a fresh account rather than leaving the user unable to
-        // publish — their existing entries stay on the board either way.
+        if (next) { writeSession(next); lastFailure = null; return next.accessToken; }
+        // Only a REJECTED token (400/401/403 — revoked, or expired past
+        // recovery) justifies giving up on this account. A 429 or a 5xx says
+        // nothing about the token: treating those as revoked used to sign the
+        // driver up afresh on any server hiccup, orphaning every entry they had
+        // published — they could no longer replace or delete them, and their
+        // next publish became a SECOND row on the same board. So anything else
+        // fails this attempt and keeps the session for the next one.
+        if (!(status === 400 || status === 401 || status === 403)) {
+          lastFailure = failureOf(status, json);
+          return null;
+        }
       }
-      const { ok, json } = await post("/signup", {});
+      const { ok, status, json } = await post("/signup", {});
       const fresh = ok ? toSession(json) : null;
-      if (!fresh) return null;
+      if (!fresh) { lastFailure = failureOf(status, json); return null; }
       writeSession(fresh);
+      lastFailure = null;
       return fresh.accessToken;
     } catch {
+      lastFailure = "network";
       return null;
     } finally {
       inflight = null;
@@ -128,16 +149,13 @@ export function signOut() {
 
 // Why a publish attempt couldn't authenticate, phrased for the driver. Called
 // only after getAccessToken() has already returned null.
+// Makes no request of its own (see lastFailure).
 export async function diagnoseAuthFailure() {
   if (!configured) return "The leaderboards aren't set up in this build.";
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     return "You're offline — connect to publish a lap.";
   }
-  try {
-    const { json } = await post("/signup", {});
-    if (json?.error_code === "anonymous_provider_disabled") {
-      return "The leaderboard server isn't accepting new drivers yet.";
-    }
-  } catch { /* fall through to the generic message */ }
+  if (lastFailure === "anon-disabled") return "The leaderboard server isn't accepting new drivers yet.";
+  if (lastFailure === "rate") return "The leaderboard server is busy. Try again in a minute.";
   return "Couldn't reach the leaderboard server. Try again later.";
 }

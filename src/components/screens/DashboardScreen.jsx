@@ -14,6 +14,8 @@ import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { getTrackByName } from "../../lib/trackData.js";
 import { openExternal, KOFI_URL } from "../../lib/env.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import { WrenchIcon, TrashIcon } from "../icons.jsx";
+import DeleteLapConfirm from "../DeleteLapConfirm.jsx";
 
 // The swap arrows on the Switch Driver control, drawn at whatever size the
 // placement wants — a 19px glyph in the desktop card's tile, 17px inline in the
@@ -132,9 +134,7 @@ const WrenchBtn = ({ onClick, has }) => (
     cursor: has ? "pointer" : "default", opacity: has ? 1 : 0.5 }}>
     <span style={chrome({ border: `1px solid ${C.line}`, background: C.surface,
       color: has ? "#7ea6e6" : C.textFaintest })}>
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-      </svg>
+      <WrenchIcon size={13} />
     </span>
   </button>
 );
@@ -148,10 +148,7 @@ const TrashBtn = ({ onClick }) => (
     ...hitPad("right", 11),
     cursor: "pointer" }}>
     <span style={chrome({ border: "1px solid #4a2130", background: "rgba(255,71,87,0.08)", color: "#ff6b7d" })}>
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M10 11v6" /><path d="M14 11v6" />
-      </svg>
+      <TrashIcon size={13} />
     </span>
   </button>
 );
@@ -173,16 +170,11 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
   // is irreversible — the point is to purge false times that got recorded and
   // wrongly claimed a personal best, restoring the tallies' integrity. Removing
   // the lap re-derives every board (computeDriverStats), so the next-best real
-  // lap slides in as the new PB.
+  // lap slides in as the new PB. The same dialog guards Analytics' delete buttons.
+  const [pendingDelete, setPendingDelete] = useState(null);
   const confirmDelete = (lap) => {
     if (!onDeleteLap || !lap?.id) return;
-    const where = lap.meta?.track || "this track";
-    const type = lap.meta?.sessionType ? ` · ${lap.meta.sessionType}` : "";
-    const ok = window.confirm(
-      `Delete this lap from the boards?\n\n${where}${type}\n${fmt(lap.lapTime)}\n\n` +
-      `This permanently removes the lap and recalculates your personal bests and tallies. This cannot be undone.`
-    );
-    if (ok) onDeleteLap(lap.id);
+    setPendingDelete(lap);
   };
   const color = driver?.color || "#3671C6";
   const name = driver?.name || "—";
@@ -562,6 +554,10 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
           )}
         </div>
       </div>
+      {pendingDelete && (
+        <DeleteLapConfirm lap={pendingDelete} onCancel={() => setPendingDelete(null)}
+          onConfirm={(lap) => { setPendingDelete(null); onDeleteLap(lap.id); }} />
+      )}
     </div>
   );
 }

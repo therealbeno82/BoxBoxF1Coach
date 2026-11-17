@@ -13,6 +13,9 @@ import { useViewport } from "../../hooks/useViewport.jsx";
 import Hint from "../Hint.jsx";
 import { computeDriverStats, isRankable } from "../../lib/driverStats.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
+import { WrenchIcon, TrashIcon } from "../icons.jsx";
+import ModalShell, { modalBtn } from "../ModalShell.jsx";
+import DeleteLapConfirm from "../DeleteLapConfirm.jsx";
 
 // The `phone` variants are 30px tall rather than 42, because vertical space is
 // the scarce axis there. They keep the `height: 30` but NO LONGER set
@@ -65,9 +68,7 @@ const WrenchBtn = ({ onClick, has }) => (
       display: "flex", alignItems: "center", justifyContent: "center",
       width: 28, height: 28, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface,
       color: has ? "#7ea6e6" : C.textFaintest, opacity: has ? 1 : 0.5 }}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-      </svg>
+      <WrenchIcon size={14} />
     </span>
   </button>
 );
@@ -75,9 +76,17 @@ const WrenchBtn = ({ onClick, has }) => (
 const SetupBtn = ({ onClick, phone = false }) => (
   <button onClick={onClick} title="View car setup"
     style={{ ...actionBtn(C.borderStrong, "#7ea6e6", phone), width: phone ? 44 : 42, padding: 0, justifyContent: "center", gap: 0 }}>
-    <svg width={phone ? 13 : 16} height={phone ? 13 : 16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-    </svg>
+    <WrenchIcon size={phone ? 13 : 16} />
+  </button>
+);
+
+// Delete a recorded lap. A bin rather than the ✕ it used to share with "remove
+// trace": one glyph for a harmless action and an irreversible one is how a lap
+// gets destroyed by accident. The click only opens the confirmation.
+const DeleteBtn = ({ onClick, phone = false }) => (
+  <button onClick={onClick} title="Delete lap" aria-label="Delete lap"
+    style={{ ...actionBtn("#4a2130", "#ff6b7d", phone), width: phone ? 44 : 42, padding: 0, justifyContent: "center", gap: 0 }}>
+    <TrashIcon size={phone ? 13 : 15} />
   </button>
 );
 
@@ -161,6 +170,10 @@ export default function AnalyticsScreen({
     setPendingSave(null);
   };
 
+  // Lap awaiting a delete confirmation. Deleting is irreversible, so these
+  // buttons ask first, in the same words the Dashboard's PB rows use.
+  const [pendingDelete, setPendingDelete] = useState(null);
+
   const stats = useMemo(() => computeDriverStats(laps, { demo: demoMode }), [laps, demoMode]);
 
   const selectedRef = referenceSources.find((s) => s.id === referenceId) || null;
@@ -243,8 +256,12 @@ export default function AnalyticsScreen({
             <button onClick={() => fileRef.current.click()} title="Load a trace JSON from the Calibrator" style={actionBtn(C.borderStrong, "#9aa3b8", phone)}>{phone ? "↧" : "↧ Load"}</button>
             {selectedRef?.setup && <SetupBtn onClick={() => onOpenSetup(selectedRef)} phone={phone} />}
             {selectedRef && (
-              <button onClick={() => (refIsLoaded ? onRemoveTrace(selectedRef.id) : onDeleteLap(selectedRef.id))}
-                title={refIsLoaded ? "Remove trace" : "Delete lap"} style={actionBtn("#3a2400", "#ff9100", phone)}>✕</button>
+              // A loaded trace is only REMOVED from this session (✕, harmless); a
+              // recorded lap picked as the reference is DELETED (bin, confirmed).
+              refIsLoaded
+                ? <button onClick={() => onRemoveTrace(selectedRef.id)} title="Remove trace" aria-label="Remove trace"
+                    style={actionBtn("#3a2400", "#ff9100", phone)}>✕</button>
+                : <DeleteBtn onClick={() => setPendingDelete(selectedRef)} phone={phone} />
             )}
           </div>
         </div>
@@ -268,7 +285,7 @@ export default function AnalyticsScreen({
                 {comparisonLap.setup && <SetupBtn onClick={() => onOpenSetup(comparisonLap)} phone={phone} />}
                 <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" style={actionBtn("#0c3a1c", "#00e676", phone)}>{phone ? "⬇" : "⬇ Save"}</button>
                 {onPublishLap && <PublishBtn lap={comparisonLap} onPublish={onPublishLap} phone={phone} />}
-                <button onClick={() => onDeleteLap(comparisonLap.id)} title="Delete lap" style={actionBtn("#3a2400", "#ff9100", phone)}>✕</button>
+                <DeleteBtn onClick={() => setPendingDelete(comparisonLap)} phone={phone} />
               </>
             )}
           </div>
@@ -439,32 +456,21 @@ export default function AnalyticsScreen({
       </div>
 
       {pendingSave && (
-        <div onClick={() => setPendingSave(null)} style={{
-          position: "fixed", inset: 0, zIndex: 150, background: "rgba(5,7,11,.74)",
-          backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center",
-          fontFamily: FONT.ui, padding: 24 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{
-            width: 420, maxWidth: "100%", background: C.modal, border: `1px solid ${C.borderModal}`,
-            borderRadius: 16, boxShadow: "0 30px 80px rgba(0,0,0,.6)", overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "20px 24px", borderBottom: `1px solid ${C.line}` }}>
-              <div style={{ width: 5, height: 34, borderRadius: 3, background: C.accent }} />
-              <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: .5, color: C.textHi }}>Hide your setup?</div>
-            </div>
-            <div style={{ padding: "20px 24px", fontSize: 13, lineHeight: 1.65, color: C.textMid }}>
-              Do you want to hide your car setup in this saved lap? Choose <b style={{ color: C.textHi }}>Yes</b> to
-              share the telemetry without disclosing your garage loadout.
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, padding: "16px 24px",
-              borderTop: `1px solid ${C.line}`, background: C.bg }}>
-              <button onClick={() => finishSave(false)} style={{ padding: "11px 22px", borderRadius: 9,
-                border: `1px solid ${C.borderStrong}`, background: C.surface, color: C.textMid, fontSize: 12,
-                fontWeight: 800, letterSpacing: .5, cursor: "pointer", fontFamily: FONT.ui }}>No, keep setup</button>
-              <button onClick={() => finishSave(true)} style={{ padding: "11px 22px", borderRadius: 9,
-                border: `1px solid ${C.blue}`, background: C.blue, color: C.onAccent, fontSize: 12,
-                fontWeight: 800, letterSpacing: .5, cursor: "pointer", fontFamily: FONT.ui }}>Yes, hide it</button>
-            </div>
+        <ModalShell title="Hide your setup?" onClose={() => setPendingSave(null)}
+          footer={<>
+            <button onClick={() => finishSave(false)} style={modalBtn("secondary")}>No, keep setup</button>
+            <button onClick={() => finishSave(true)} style={modalBtn("primary")}>Yes, hide it</button>
+          </>}>
+          <div style={{ padding: "20px 24px", fontSize: 13, lineHeight: 1.65, color: C.textMid }}>
+            Do you want to hide your car setup in this saved lap? Choose <b style={{ color: C.textHi }}>Yes</b> to
+            share the telemetry without disclosing your garage loadout.
           </div>
-        </div>
+        </ModalShell>
+      )}
+
+      {pendingDelete && (
+        <DeleteLapConfirm lap={pendingDelete} onCancel={() => setPendingDelete(null)}
+          onConfirm={(lap) => { setPendingDelete(null); onDeleteLap?.(lap.id); }} />
       )}
     </div>
   );

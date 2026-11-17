@@ -13,12 +13,14 @@
 //     your setup?" because a file is something you hand to one person you chose.
 //     A board row is public and permanent, so there is no version of that
 //     question worth asking; the answer is always no.
-//   • meta gains the circuit identity and true lap length the validator needs.
+//   • meta pins the circuit identity and true lap length the validator needs
+//     (the rest of meta is the shared lapTraceMeta block — lib/lapTrace.js).
 //   • fuel is dropped (it says nothing about a push lap) and miniSectors kept
 //     (the Live screen's per-slice comparison can use them).
 
 import { sanitizeTraceSamples } from "../traceSamples.js";
 import { boardIdForLap } from "./boardKey.js";
+import { lapTraceMeta } from "../lapTrace.js";
 
 const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0";
 
@@ -49,22 +51,14 @@ export function buildSubmission(lap) {
 
   return {
     meta: {
-      driver: lap.meta?.driver || "You",
-      track: lap.meta?.track || null,
-      sessionType: lap.meta?.sessionType || null,
+      // The shared block (lib/lapTrace.js) — the same fields a file export
+      // writes — then the three the validator needs pinned: the circuit id as
+      // a definite value, the board's own slug and the lap's true length.
+      ...lapTraceMeta(lap),
       trackId: lap.meta?.trackId ?? null,
       trackSlug: board.slug,
       trackLengthM: lapLengthOf(lap),
-      lapTime: lap.lapTime,
-      sectorTimes: lap.sectorTimes || null,
       sampleCount: samples.length,
-      // Conditions the lap ran in. Useful context on a board row and free to carry.
-      ...(typeof lap.meta?.weather === "number" ? { weather: lap.meta.weather } : {}),
-      ...(typeof lap.meta?.trackTemp === "number" ? { trackTemp: lap.meta.trackTemp } : {}),
-      ...(typeof lap.meta?.airTemp === "number" ? { airTemp: lap.meta.airTemp } : {}),
-      // Sector boundary distances, so a downloaded reference draws its sector
-      // lines on the trace stack exactly as a local lap does.
-      ...(lap.meta?.sectors ? { sectors: lap.meta.sectors } : {}),
       appVersion: APP_VERSION,
       schema: PAYLOAD_SCHEMA,
     },
