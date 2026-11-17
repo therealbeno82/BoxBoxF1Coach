@@ -15,7 +15,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "deploy:functions": "node scripts/deploy-functions.mjs"
+    "deploy:functions": "node scripts/deploy-functions.mjs",
+    "test": "node --test --import ./tests/setup.mjs \"tests/*.test.mjs\""
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

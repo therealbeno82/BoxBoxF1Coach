@@ -678,8 +678,13 @@ impl Engine {
         stats.set_peak_lat_force(0.0);
     }
 
-    /// Zero everything and re-arm the ramps (the safety-release path).
-    fn release(&mut self, stats: &AppStats, steer: f32) {
+    /// Zero the output state and re-arm the ramps — the safety release inside
+    /// `compute`. Deliberately leaves the run-state flags alone: `compute` has
+    /// JUST written `tt_holding` / `ai_run_up_held` to say WHY it is releasing,
+    /// and clearing them here (as this used to, via `release`) wiped that answer
+    /// on the same tick, so the FFB tab's lamp could never show "holding at the
+    /// line" or a placed-car run-up — it read "driving" with no force.
+    fn release_output(&mut self, stats: &AppStats, steer: f32) {
         self.smooth_torque = 0.0;
         self.smooth_torque2 = 0.0;
         self.smooth_friction = 0.0;
@@ -691,6 +696,12 @@ impl Engine {
         self.steer_vel_lp = 0.0;
         self.lat_force_lp = 0.0;
         stats.set_clip_level(0.0);
+    }
+
+    /// Release from OUTSIDE `compute` (master off, no device): zero the output
+    /// and clear the run-state flags too.
+    fn release(&mut self, stats: &AppStats, steer: f32) {
+        self.release_output(stats, steer);
         // The run-state flags are only ever SET inside compute(), which doesn't
         // run on this path — so without clearing them here they latch. Closing
         // the device (or flipping the master off) during an out-lap the car had
@@ -815,7 +826,7 @@ impl Engine {
             stats.tt_holding.store(tt_hold, Ordering::Relaxed);
 
             if frozen || rearming || paused || ai_driving || tt_hold {
-                self.release(stats, s.steer);
+                self.release_output(stats, s.steer);
                 return FfbSignals { torque: 0.0, friction: 0.0, rumble: 0.0, rumble_hz: self.rumble_hz };
             }
         }
@@ -1768,5 +1779,145 @@ mod tests {
         t.brake = 13.0;
         let c = channels(&t);
         assert_eq!(channels(&from_channels(c)), c);
+    }
+}
+
+/// The safety release and the output caps — the paths that decide whether the
+/// wheel is allowed to push at all. Exercised on `Engine::compute` directly with
+/// a hand-set `AppStats`, so no wheel, SDL or telemetry thread is involved.
+#[cfg(test)]
+mod safety_tests {
+    use super::{Engine, FfbSettings, FFB_REARM_MS};
+    use crate::telemetry::state::{AppStats, FfbTelemetry};
+    use std::sync::atomic::Ordering;
+
+    const NOW: i64 = 1_000_000;
+    const DT: f32 = 1.0 / 200.0;
+
+    /// Stats for a car being actively driven: frames advancing, streak old enough
+    /// to be armed, a race session (no AI lap start), nobody else in control.
+    fn driving() -> AppStats {
+        let s = AppStats::default();
+        s.last_frame_advance_ms.store(NOW - 5, Ordering::Relaxed);
+        s.frame_streak_start_ms.store(NOW - FFB_REARM_MS - 5_000, Ordering::Relaxed);
+        s.session_type.store(15, Ordering::Relaxed);
+        s.driver_status.store(1, Ordering::Relaxed);
+        s.track_length_m.store(5000, Ordering::Relaxed);
+        s.set_lap_distance(1200.0);
+        s
+    }
+
+    /// Mid-corner: a big front lateral force at speed.
+    fn cornering() -> FfbTelemetry {
+        FfbTelemetry { front_lat_force: 9000.0, speed_kmh: 180.0, ..Default::default() }
+    }
+
+    /// Run `ticks` of compute (5 ms apart, the physics frame advancing with
+    /// them — a still frame counter IS the "frozen" condition) and return the
+    /// last torque.
+    fn settle(e: &mut Engine, c: &FfbSettings, stats: &AppStats, ticks: usize) -> f32 {
+        let mut t = 0.0;
+        for i in 0..ticks {
+            let now = NOW + i as i64 * 5;
+            stats.last_frame_advance_ms.store(now, Ordering::Relaxed);
+            t = e.compute(&cornering(), c, stats, now, DT).torque;
+        }
+        t
+    }
+
+    /// The time `settle(.., ticks)` ended at, for the tick that follows it.
+    fn after(ticks: usize) -> i64 {
+        NOW + ticks as i64 * 5
+    }
+
+    #[test]
+    fn a_driven_car_produces_force() {
+        let stats = driving();
+        let mut e = Engine::new();
+        let t = settle(&mut e, &FfbSettings::default(), &stats, 400);
+        assert!(t.abs() > 0.2, "expected real force mid-corner, got {t}");
+    }
+
+    #[test]
+    fn every_safety_condition_releases_the_wheel() {
+        type Arm = fn(&AppStats);
+        let cases: [(&str, Arm); 5] = [
+            ("frozen", |s| s.last_frame_advance_ms.store(NOW - 10_000, Ordering::Relaxed)),
+            ("paused", |s| s.game_paused.store(true, Ordering::Relaxed)),
+            ("ai in control", |s| s.ai_in_control.store(true, Ordering::Relaxed)),
+            ("ai controls car", |s| s.ai_controls_car.store(true, Ordering::Relaxed)),
+            ("re-arming", |s| s.frame_streak_start_ms.store(NOW + 1_990, Ordering::Relaxed)),
+        ];
+        for (name, arm) in cases {
+            let stats = driving();
+            let mut e = Engine::new();
+            // Loaded first, so the release has something to drop.
+            assert!(settle(&mut e, &FfbSettings::default(), &stats, 400).abs() > 0.2);
+            stats.last_frame_advance_ms.store(after(400), Ordering::Relaxed);
+            arm(&stats);
+            let out = e.compute(&cornering(), &FfbSettings::default(), &stats, after(400), DT);
+            assert_eq!(out.torque, 0.0, "{name}: torque must be released");
+            assert_eq!(out.friction, 0.0, "{name}: friction must be released");
+            assert_eq!(out.rumble, 0.0, "{name}: rumble must be released");
+        }
+    }
+
+    #[test]
+    fn a_time_trial_start_holds_the_wheel_slack() {
+        let stats = driving();
+        stats.session_type.store(18, Ordering::Relaxed); // Time Trial
+        let c = FfbSettings { tt_start_hold_sec: 3.0, ..FfbSettings::default() };
+        let mut e = Engine::new();
+        let out = e.compute(&cornering(), &c, &stats, NOW, DT);
+        assert_eq!(out.torque, 0.0);
+        // The lamp's answer must survive the release it explains.
+        assert!(stats.tt_holding.load(Ordering::Relaxed), "tt_holding wiped by the release");
+    }
+
+    #[test]
+    fn releasing_from_outside_compute_clears_the_run_state_lamps() {
+        let stats = driving();
+        stats.tt_holding.store(true, Ordering::Relaxed);
+        stats.ai_run_up_held.store(true, Ordering::Relaxed);
+        Engine::new().release(&stats, 0.0);
+        assert!(!stats.tt_holding.load(Ordering::Relaxed));
+        assert!(!stats.ai_run_up_held.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn max_output_caps_force_and_friction() {
+        let stats = driving();
+        let c = FfbSettings { overall_strength: 3.0, max_output: 0.25, ..FfbSettings::default() };
+        let mut e = Engine::new();
+        let mut peak = 0.0f32;
+        for i in 0..600 {
+            let now = NOW + i * 5;
+            stats.last_frame_advance_ms.store(now, Ordering::Relaxed);
+            let out = e.compute(&cornering(), &c, &stats, now, DT);
+            assert!(out.torque.abs() <= 0.25 + 1e-6, "torque {} past the cap", out.torque);
+            assert!(out.friction <= 0.25 + 1e-6);
+            peak = peak.max(out.torque.abs());
+        }
+        assert!(peak > 0.24, "a saturating input should reach the cap, peaked at {peak}");
+    }
+
+    #[test]
+    fn a_test_force_respects_max_output_too() {
+        let stats = driving();
+        let c = FfbSettings { test_force: 0.9, max_output: 0.1, ..FfbSettings::default() };
+        let mut e = Engine::new();
+        assert!((e.compute(&cornering(), &c, &stats, NOW, DT).torque - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn soft_start_ramps_in_after_a_release() {
+        let stats = driving();
+        let c = FfbSettings { soft_start_sec: 0.5, smoothing: 0.0, ..FfbSettings::default() };
+        let mut e = Engine::new();
+        let first = e.compute(&cornering(), &c, &stats, NOW, DT).torque.abs();
+        let steady = settle(&mut e, &c, &stats, 400).abs();
+        assert!(steady > 0.2);
+        // One 5 ms tick of a 0.5 s ramp is 1% of the steady force.
+        assert!(first < steady * 0.05, "first tick {first} vs steady {steady}");
     }
 }
