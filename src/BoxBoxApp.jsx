@@ -70,7 +70,9 @@ const CoachLogScreen    = splitOut(() => import("./components/screens/CoachLogSc
 const LeaderboardScreen = splitOut(() => import("./components/screens/LeaderboardScreen.jsx"));
 // The Analytics Overview's trace stack and its top-down driving-lines panel. The
 // latter owns the shared playback clock that also drives the TelemetryStudio trace
-// cursor (state for both lives here in BoxBoxApp — see anaPlayhead/anaPlaying).
+// cursor. The playhead itself lives in lib/playheadStore.js, NOT here: it moves
+// every frame during playback, and as hub state it re-rendered the whole app to
+// do it. `anaPlaying` (play/pause) is still hub state — it isn't per-frame.
 const TelemetryStudio   = splitOut(() => import("./components/TelemetryStudio.jsx"));
 const DrivingLinesView  = splitOut(() => import("./components/DrivingLinesView.jsx"));
 const PublishPrompt     = splitOut(() => import("./components/PublishPrompt.jsx"));
@@ -1349,11 +1351,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   });
   useEffect(() => { localStorage.setItem("f1coach.visibleTraces", JSON.stringify(visibleTraces)); }, [visibleTraces]);
   // ── Shared Analytics playback timeline ──
-  // One clock for the whole Overview: a 0–1 lap-distance fraction + playing flag,
-  // fed to BOTH the driving-lines panel and the telemetry trace stack so Play /
-  // scrubbing in either moves the cars and the trace cursor together. The rAF
+  // One clock for the whole Overview: the playing flag here, the 0–1 lap-distance
+  // playhead in lib/playheadStore.js (read by the two views that draw it), so Play
+  // / scrubbing in either moves the cars and the trace cursor together. The rAF
   // loop that advances it lives in DrivingLinesView (it owns duration/speed/loop).
-  const [anaPlayhead, setAnaPlayhead] = useState(0);
   const [anaPlaying, setAnaPlaying] = useState(false);
   // Refuse to hide the last visible trace — an all-empty studio is never useful.
   const toggleTrace = (id) => setVisibleTraces((v) => {
@@ -2690,13 +2691,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
             zones={zones} sectorDists={sectorDists} units={units} tempUnits={tempUnits} corners={trackCorners}
-            visibleTraces={visibleTraces} onToggleTrace={toggleTrace} compact
-            playhead={anaPlayhead} playing={anaPlaying} onSeek={setAnaPlayhead} onSetPlaying={setAnaPlaying} />}
+            visibleTraces={visibleTraces} onToggleTrace={toggleTrace}
+            playing={anaPlaying} onSetPlaying={setAnaPlaying} />}
           linesSlot={<DrivingLinesView referenceLap={activeTrace} comparisonLap={comparisonLap}
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
             trackName={trackName} trackSlug={trackInfo?.slug || null}
             zones={zones} corners={trackCorners} lapLength={lapLen}
-            playhead={anaPlayhead} playing={anaPlaying} onSeek={setAnaPlayhead} onSetPlaying={setAnaPlaying} />}
+            playing={anaPlaying} onSetPlaying={setAnaPlaying} />}
         />
         );
       })()}

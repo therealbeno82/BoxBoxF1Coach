@@ -1,33 +1,35 @@
-// ─── TELEMETRY STUDIO (Analytics ▸ Telemetry tab) ───────────────────────────
-// The MoTeC-style trace studio from the cockpit design: stacked channel panels
-// (Throttle/Brake, Speed, Wheel Rotation, Gear, ERS Mode/Used, Tyre Temps)
-// overlaid with sector boundary lines + a white playback cursor, and a right
-// column of live-vs-reference readout cards + a corner-info card. Playback
-// comes in two flavours:
-//   • Controlled (the combined Analytics Overview): `playhead` (0–1 lap-distance
-//     fraction) + `playing` props with onSeek/onSetPlaying callbacks. The clock
-//     itself lives in DrivingLinesView, so the trace cursor, the readouts and
-//     the cars on the driving lines all move on ONE shared timeline — and the
-//     scrubber under that map is the only one, so this component hides its own.
-//   • Standalone: owns its own `cursor` (0–1) and `playing` state, swept by an
-//     internal rAF loop, plus its own bottom scrubber (corner ticks + knob).
+// ─── TELEMETRY STUDIO (Analytics, beside the driving lines) ──────────────────
+// The MoTeC-style trace stack: stacked channel panels (Throttle/Brake, Speed,
+// Wheel Rotation, Gear, ERS Mode/Used, Tyre Temps) overlaid with sector boundary
+// lines and a white playback cursor, each panel reading out both laps at the
+// cursor (or at the pointer, when hovering while paused).
+//
+// Playback is shared: the playhead lives in lib/playheadStore.js and the clock
+// that advances it in DrivingLinesView, so the trace cursor, the read-outs and
+// the cars on the driving lines all move on ONE timeline. `playing` and
+// `onSetPlaying` come in as props; a tap on the stack toggles them.
+//
+// (There used to be a standalone mode as well — its own cursor, rAF sweep,
+// scrubber and a 300px column of readout cards — but the only caller always ran
+// it controlled and compact, so all of that was dead weight, and the readout
+// cards were still rebuilt every frame while hidden. Removed.)
 //
 // Panels are driven by the PANELS registry below — visibility filtering,
-// rendering, chip toggles and the readout cards all derive from it, so adding
-// a channel is one new entry.
+// rendering, chip toggles and the readouts all derive from it, so adding a
+// channel is one new entry.
 //
 // Pure presentation: the driven/reference sample arrays, lap length, sector
 // distances and strategy zones are supplied by BoxBoxApp's existing engine.
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { C, FONT } from "../lib/ui/tokens.js";
 import { toSpeed, speedUnitLabel, toTemp, tempUnitLabel, clamp } from "../lib/format.js";
 import { ERS_MODES } from "../lib/coach/config.js";
 import { cornerLabel } from "../lib/cornerData.js";
 import { useViewport } from "../hooks/useViewport.jsx";
+import { usePlayhead } from "../lib/playheadStore.js";
 
 const W = 1000, VH = 100;          // SVG coordinate system (stretched per panel)
-const SWEEP_SECONDS = 8;           // time for Play to sweep a full lap
 
 // Nearest sample to a lap distance. Binary search, not a scan: the array IS sorted
 // by dist, and this runs twice per playhead or hover move — so during playback the
@@ -76,7 +78,7 @@ function buildPath(samples, key, min, max, { step = false, area = false, d0 = 0,
     const x = clamp(((s.dist || 0) - d0) / span, 0, 1) * W;
     const y = VH - clamp((s[key] - min) / (max - min), 0, 1) * VH;
     // A degenerate scale (max === min) makes the division NaN, and `clamp` is
-    // Math.max/Math.min, which propagates it â€” one NaN anywhere in a `d`
+    // Math.max/Math.min, which propagates it — one NaN anywhere in a `d`
     // attribute drops the WHOLE path with no error, so the channel just
     // silently disappears. Every scale is safe by construction today; this
     // keeps a future `scales` edit from costing an invisible trace.
@@ -112,8 +114,8 @@ const valStyle = (color, size = 12) => ({ fontFamily: FONT.mono, fontSize: size,
 // in channel order). `max`/`min` are literals, or `maxKey`/`minKey` name a
 // dynamic value in the `scales` memo. `values` renders the top-right readout —
 // one `fmt` per channel, called TWICE (driven sample, then reference sample) so
-// the grey ref figure sits directly under its driven counterpart; `readouts`
-// build the right-column cards. `ctx` = { units, uLabel }.
+// the grey ref figure sits directly under its driven counterpart.
+// `ctx` = { units, uLabel, tempUnits, tLabel }.
 const PANELS = [
   {
     id: "inputs", flex: 1.35, chip: { label: "Thr/Brk", color: "#ffffff" },
@@ -127,10 +129,6 @@ const PANELS = [
       { color: "#fff", fmt: (s) => `${r0(s?.throttle)}%` },
       { color: C.red, fmt: (s) => `${r0(s?.brake)}%` },
     ],
-    readouts: [
-      (dS, rS) => ({ label: "Throttle", value: r0(dS?.throttle), unit: "%", color: "#fff", ref: r0(rS?.throttle) + "%" }),
-      (dS, rS) => ({ label: "Brake", value: r0(dS?.brake), unit: "%", color: C.red, ref: r0(rS?.brake) + "%" }),
-    ],
   },
   {
     id: "speed", flex: 1.5, chip: { label: "Speed", color: C.teal },
@@ -141,9 +139,6 @@ const PANELS = [
     ],
     values: [
       { color: C.teal, size: 14, fmt: (s, ctx) => toSpeed(s?.speed, ctx.units) },
-    ],
-    readouts: [
-      (dS, rS, ctx) => ({ label: "Speed", value: toSpeed(dS?.speed, ctx.units), unit: ctx.uLabel, color: C.teal, ref: toSpeed(rS?.speed, ctx.units) + " " + ctx.uLabel }),
     ],
   },
   {
@@ -157,9 +152,6 @@ const PANELS = [
     values: [
       { color: C.green, fmt: (s) => <>{steerMag(s?.steer)} <span style={{ color: C.textDim }}>{steerDir(s?.steer)}</span></> },
     ],
-    readouts: [
-      (dS, rS) => ({ label: "Wheel Rotation", value: steerMag(dS?.steer), unit: steerDir(dS?.steer), color: C.green, ref: steerMag(rS?.steer) + steerDir(rS?.steer) }),
-    ],
   },
   {
     id: "gear", flex: 1, chip: { label: "Gear", color: C.purple },
@@ -170,9 +162,6 @@ const PANELS = [
     ],
     values: [
       { color: C.purple, size: 13, fmt: (s) => s?.gear ?? "—" },
-    ],
-    readouts: [
-      (dS, rS) => ({ label: "Gear", value: dS?.gear ?? "—", unit: "", color: C.purple, ref: rS?.gear ?? "—" }),
     ],
   },
   {
@@ -186,9 +175,6 @@ const PANELS = [
     values: [
       { color: C.red, fmt: (s) => (s ? ersName(s.ersMode) : "—") },
       { color: C.ersYellow, fmt: (s) => r0(s?.ersSpent) },
-    ],
-    readouts: [
-      (dS, rS) => ({ label: "ERS Mode", value: dS ? ersName(dS.ersMode) : "—", unit: "", color: C.red, ref: rS ? ersName(rS.ersMode) : "—" }),
     ],
   },
   {
@@ -209,10 +195,6 @@ const PANELS = [
     values: [
       { color: C.orange, fmt: (s, ctx) => `${r0(toTemp(s?.tyreSurf, ctx.tempUnits))}°` },
       { color: C.cyan, fmt: (s, ctx) => `${r0(toTemp(s?.tyreCarc, ctx.tempUnits))}°` },
-    ],
-    readouts: [
-      (dS, rS, ctx) => ({ label: "Tyre Temps", value: `${r0(toTemp(dS?.tyreSurf, ctx.tempUnits))}/${r0(toTemp(dS?.tyreCarc, ctx.tempUnits))}`, unit: ctx.tLabel, color: C.orange,
-        ref: `${r0(toTemp(rS?.tyreSurf, ctx.tempUnits))}/${r0(toTemp(rS?.tyreCarc, ctx.tempUnits))}` }),
     ],
   },
 ];
@@ -301,30 +283,15 @@ export default function TelemetryStudio({
   compareSamples = [], referenceSamples = [], lapLength = 0,
   zones = [], sectorDists = [], units = "km/h", tempUnits = "°C", corners: cornerDb = [],
   visibleTraces = null, onToggleTrace = null,
-  // Compact mode drops the right-hand readout column so the trace stack can sit
-  // beside another view (the combined Analytics overview) without overflowing.
-  compact = false,
-  // Shared-timeline (controlled) mode — see the header comment.
-  playhead = null, playing: playingProp = null, onSeek = null, onSetPlaying = null,
+  playing = false, onSetPlaying = null,
 }) {
-  const [cursorInt, setCursorInt] = useState(0.5);    // 0–1 across the visible window
-  const [playingInt, setPlayingInt] = useState(false);
+  const playhead = usePlayhead();
   const [zoomSector, setZoomSector] = useState(null); // null = full lap | 0 | 1 | 2
   const [hoverF, setHoverF] = useState(null);         // 0–1 across the visible window, null = not hovering
-  const barRef = useRef(null);
   const stackRef = useRef(null);
-  const rafRef = useRef(0);
-  // Removes the window-level scrub listeners; held so unmounting mid-drag can
-  // detach them (the `up` handler is otherwise the only thing that ever does).
-  const scrubEnd = useRef(null);
   const { phone } = useViewport();
 
-  const controlled = typeof playhead === "number" && typeof onSeek === "function";
-  const playing = controlled ? !!playingProp : playingInt;
-  const setPlaying = (v) => {
-    const next = typeof v === "function" ? v(playing) : v;
-    if (controlled) onSetPlaying?.(next); else setPlayingInt(next);
-  };
+  const setPlaying = (v) => onSetPlaying?.(typeof v === "function" ? v(playing) : v);
 
   const hasData = compareSamples.length > 1 || referenceSamples.length > 1;
   const hasRef = referenceSamples.length > 1;
@@ -354,23 +321,16 @@ export default function TelemetryStudio({
   const [d0, d1] = domainFor(zoomSector);
   const winSpan = (d1 - d0) || 1;
 
-  // The cursor as a window fraction. Controlled mode derives it from the shared
-  // lap-fraction playhead (clamped to the zoom window); standalone owns it.
-  const cursor = controlled
-    ? (lapLength ? clamp((clamp(playhead, 0, 1) * lapLength - d0) / winSpan, 0, 1) : clamp(playhead, 0, 1))
-    : cursorInt;
+  // The cursor as a window fraction: the shared lap-fraction playhead, clamped
+  // to the zoom window.
+  const cursor = lapLength
+    ? clamp((clamp(playhead, 0, 1) * lapLength - d0) / winSpan, 0, 1)
+    : clamp(playhead, 0, 1);
 
-  // Zoom in/out, keeping the cursor at the same absolute lap distance (clamped
-  // to the new window) and pausing so playback can't jump mid-frame. In
-  // controlled mode the cursor re-derives from the playhead, which never moves
-  // on zoom — only the window does.
+  // Zoom in/out, pausing so playback can't jump mid-frame. The cursor
+  // re-derives from the playhead, which never moves on zoom — only the window.
   const zoomTo = (next) => {
     setPlaying(false);
-    if (!controlled) {
-      const oldDist = d0 + cursor * (d1 - d0);
-      const [n0, n1] = domainFor(next);
-      setCursorInt(n1 > n0 ? clamp((oldDist - n0) / (n1 - n0), 0, 1) : 0.5);
-    }
     setZoomSector(next);
   };
 
@@ -405,52 +365,6 @@ export default function TelemetryStudio({
     }
     return out;
   }, [compareSamples, referenceSamples]);
-
-  // ── Playback loop: advance the cursor while playing, looping at the line.
-  // Sweep time scales with the window so playback speed (m/s) stays constant
-  // whether viewing the full lap or one zoomed sector. Standalone only — in
-  // controlled mode the shared clock (DrivingLinesView) advances the playhead. ──
-  useEffect(() => {
-    if (!playing || controlled) return;
-    const sweep = Math.max(2.5, SWEEP_SECONDS * ((d1 - d0) / (lapLength || 1)));
-    let last = performance.now();
-    const tick = (now) => {
-      const dt = (now - last) / 1000; last = now;
-      setCursorInt((c) => { let n = c + dt / sweep; if (n >= 1) n = 0; return n; });
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [playing, controlled, d0, d1, lapLength]);
-
-  // ── Scrubbing: pointer down on the bar seeks + starts a drag (pauses play). ──
-  const scrubFrom = (clientX) => {
-    const el = barRef.current; if (!el) return;
-    const r = el.getBoundingClientRect();
-    const wf = clamp((clientX - r.left) / r.width, 0, 1);
-    // Controlled: window fraction → shared lap fraction, so the driving-line
-    // cars follow the trace scrubber too.
-    if (controlled) onSeek(lapLength ? (d0 + wf * winSpan) / lapLength : wf);
-    else setCursorInt(wf);
-  };
-  const startScrub = (e) => {
-    e.stopPropagation();
-    setPlaying(false);
-    scrubFrom(e.clientX);
-    const move = (ev) => scrubFrom(ev.clientX);
-    const up = () => {
-      scrubEnd.current = null;
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    scrubEnd.current = up;
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-  // A drag that ends by unmount (tab change, lap switch) must not leave the
-  // listeners feeding scrubFrom into a dead tree. Same pattern as
-  // DrivingLinesView's onBarDown / scrubEnd.
-  useEffect(() => () => { scrubEnd.current?.(); }, []);
 
   // ── Hover inspection: while paused, moving the pointer across the trace stack
   // reads out both laps at that point instead of at the playback cursor. Ignored
@@ -586,7 +500,6 @@ export default function TelemetryStudio({
   const cursorPct = `${(cursor * 100).toFixed(2)}%`;
 
   const ctx = { units, uLabel, tempUnits, tLabel };
-  const readouts = visiblePanels.flatMap((pn) => pn.readouts.map((build) => build(dS, rS, ctx)));
 
   if (!hasData) {
     return (
@@ -718,53 +631,7 @@ export default function TelemetryStudio({
               ctx={ctx} noData={!!noData[pn.id]} />
           ))}
         </div>
-
-        {/* Scrubber — standalone only. In controlled mode the shared timeline
-            under the driving-lines map is the single scrubber for both views;
-            a second one here would just be a duplicate of it. */}
-        {!controlled && <div style={{ flex: "none", height: 44, marginTop: 10, display: "flex", alignItems: "center", gap: 16 }}>
-          <div ref={barRef} onPointerDown={startScrub} style={{ flex: 1, position: "relative", height: 32, display: "flex", alignItems: "center", cursor: "pointer" }}>
-            <div style={{ position: "absolute", left: 0, right: 0, height: 6, borderRadius: 3, background: C.line }} />
-            <div style={{ position: "absolute", left: 0, height: 6, borderRadius: 3, background: C.blue, width: cursorPct }} />
-            {corners.map((c, i) => {
-              const wf = toWindowF(c.f); // lap-fraction tick → zoom window
-              if (wf < 0 || wf > 1) return null;
-              return (
-                <div key={i} style={{ position: "absolute", left: `${wf * 100}%`, top: "50%", transform: "translate(-50%,-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                  <div style={{ width: 2, height: 13, background: "#39435a" }} />
-                  <span style={{ fontSize: 8, color: C.textFaint, whiteSpace: "nowrap" }}>{c.name}</span>
-                </div>
-              );
-            })}
-            <div style={{ position: "absolute", left: cursorPct, top: "50%", transform: "translate(-50%,-50%)", width: 16, height: 16, borderRadius: "50%",
-              background: C.blue, border: `3px solid ${C.bg}`, boxShadow: `0 0 0 1px ${C.blue},0 0 12px ${C.blue}` }} />
-          </div>
-        </div>}
       </div>
-
-      {/* ── Right: live-vs-reference readouts + corner info ── */}
-      {!compact && <div style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
-        {readouts.map((k) => (
-          <div key={k.label} style={{ flex: 1, maxHeight: 110, ...cardStyle, padding: "9px 16px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-            <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>{k.label}</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 11, marginTop: 5, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: 30, lineHeight: 1, color: k.color }}>
-                {k.value}{k.unit ? <span style={{ fontSize: 12, color: C.textFaint, marginLeft: 4 }}>{k.unit}</span> : null}
-              </span>
-              <span style={{ fontFamily: FONT.mono, fontWeight: 700, fontSize: 17, lineHeight: 1, color: C.textFaint, whiteSpace: "nowrap" }}>
-                <span style={{ fontSize: 8, letterSpacing: 1, marginRight: 4 }}>REF</span>{k.ref}
-              </span>
-            </div>
-          </div>
-        ))}
-        <div style={{ flex: 1, maxHeight: 110, background: "#0f1420", border: "1px solid #2a3550", borderRadius: 12, padding: "9px 16px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-          <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Corner</div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 11, marginTop: 5 }}>
-            <span style={{ fontFamily: FONT.mono, fontWeight: 800, fontSize: 18, lineHeight: 1, color: C.cyan }}>{nearCorner?.name || "—"}</span>
-            <span style={{ fontWeight: 700, fontSize: 16, lineHeight: 1.2, color: C.textBody2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nearCorner?.note || ""}</span>
-          </div>
-        </div>
-      </div>}
     </div>
   );
 }

@@ -6,13 +6,12 @@
 // widens/tightens the framing, and a bottom-left card steps segment-by-segment
 // with each lap's segment time and the delta between them.
 //
-// Playback is CONTROLLED: `playhead` (0–1 lap-distance fraction) + `playing`
-// come in as props with `onSeek`/`onSetPlaying` callbacks, and the rAF clock
-// that advances the shared timeline lives HERE (it knows lap duration and
-// speed; it plays through once and stops at the lap end). BoxBoxApp owns the
-// state and feeds the same playhead to the
-// TelemetryStudio trace stack, so pressing Play moves the telemetry cursor and
-// the cars along the driving lines together.
+// Playback: the playhead (0–1 lap-distance fraction) lives in lib/playheadStore.js
+// and `playing` comes in as a prop with an `onSetPlaying` callback. The rAF clock
+// that advances the shared timeline lives HERE (it knows lap duration and speed;
+// it plays through once and stops at the lap end). The TelemetryStudio trace
+// stack reads the same store, so pressing Play moves the telemetry cursor and the
+// cars along the driving lines together — and nothing else re-renders per frame.
 //
 // Only laps that carry their own world positions get a line + car (calibrator
 // references have no x/z — their car is hidden with a note). Sync modes:
@@ -31,6 +30,7 @@ import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRo
 import TrackCamView from "./TrackCamView.jsx";
 import TrackOrbitView from "./TrackOrbitView.jsx";
 import { useViewport } from "../hooks/useViewport.jsx";
+import { usePlayhead, setPlayhead } from "../lib/playheadStore.js";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted on the map)
@@ -371,8 +371,12 @@ const fmtSeg = (t) => (typeof t === "number" && isFinite(t) ? t.toFixed(3) : "�
 export default function DrivingLinesView({
   referenceLap, comparisonLap, referenceLabel, comparisonLabel,
   trackName, trackSlug = null, zones = [], corners: cornerDb = [], lapLength = 0,
-  playhead = 0, playing = false, onSeek, onSetPlaying,
+  playing = false, onSetPlaying,
 }) {
+  // Read here, at the top: this component returns early when there are no lines
+  // to draw, and a hook below that return would change the hook count.
+  const playhead = usePlayhead();
+  const onSeek = setPlayhead;
   // `phone` decides LAYOUT (overlays becoming stacked rows); `coarse` decides TAP
   // SIZE. They are not the same question and a landscape phone is exactly where
   // they diverge: at 873×393 it is above the 639px `phone` breakpoint, so it
