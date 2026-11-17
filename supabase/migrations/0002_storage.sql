@@ -1,6 +1,8 @@
 -- ─── TRACE STORAGE ───────────────────────────────────────────────────────────
--- The gzipped { meta, tyre, samples } blob behind each entry, one object per
--- entry at `<board_id>/<driver_id>.json.gz`. Keeping the trace out of Postgres
+-- The gzipped { meta, tyre, samples } blob behind each entry. Originally one
+-- object per entry at `<board_id>/<driver_id>.json.gz`; since 0003 each upload
+-- gets a unique `<board_id>/<driver_id>/<uuid>.json.gz` (see 0004 for how the
+-- one an improvement replaces is cleaned up). Keeping the trace out of Postgres
 -- means a board page fetches ~50 small rows instead of 50 x 80KB of telemetry.
 --
 -- Public read, no client write — same rule as the entries table, and for the

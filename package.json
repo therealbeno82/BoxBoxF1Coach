@@ -14,7 +14,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "deploy:functions": "node scripts/deploy-functions.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

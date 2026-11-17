@@ -43,8 +43,13 @@ const BANNER = (rel) => `// GENERATED FILE — DO NOT EDIT.
 `;
 
 // Relative specifiers only — a bare specifier would be a real dependency and
-// this whole set is deliberately dependency-free.
-const IMPORT_RE = /(?:^|\n)\s*(?:import|export)[\s\S]*?from\s+["'](\.[^"']+)["']/g;
+// this whole set is deliberately dependency-free. The `from` clause is optional
+// so a bare side-effect import (`import "./x.js"`) is followed too.
+const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s*(?:[\s\S]*?from\s*)?["'](\.[^"']+)["']/g;
+
+// Start from empty. Copies are only ever ADDED otherwise, so a module the shared
+// set stopped importing would linger in _shared/ and still be deployable.
+fs.rmSync(path.join(OUT, "lib"), { recursive: true, force: true });
 
 const seen = new Set();
 const queue = [...ENTRY_POINTS];

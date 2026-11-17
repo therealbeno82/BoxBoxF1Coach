@@ -12,9 +12,9 @@
 --   2. ONE ENTRY PER DRIVER PER BOARD, enforced structurally by the primary key
 --      rather than by a query somebody might forget. An upload is a single
 --      upsert that only lands when it beats what's already there. Boards stay
---      readable (nobody occupies the top ten), storage is bounded by drivers x
---      boards entered rather than by upload count, and there's no orphan sweep
---      to write.
+--      readable (nobody occupies the top ten), and storage is bounded by
+--      drivers x boards entered rather than by upload count — provided the
+--      trace an improvement replaces is deleted, which 0004 makes possible.
 --
 -- Compound is stored but is NOT part of the board key. A board is "the fastest
 -- lap set here in this session type"; qualifying and time trial are both
@@ -112,10 +112,10 @@ create or replace view public.boards as
   group by board_id, track_slug, session_group;
 
 -- ─── config ──────────────────────────────────────────────────────────────────
--- Server-tunable overrides for the validator's thresholds, so a bad one can be
--- corrected without redeploying the function. The committed constants in
--- src/lib/leaderboard/limits.js remain the working default: an empty or missing
--- row here must never DISABLE a check, only adjust it.
+-- Server-side switches. Only `paused` is read today (submit-lap refuses new
+-- publishes while it is true). It was meant to hold threshold overrides as well,
+-- but the validator runs the committed constants in src/lib/leaderboard/limits.js
+-- and nothing reads overrides from here — change limits.js and redeploy.
 create table if not exists public.config (
   key   text primary key,
   value jsonb not null
@@ -160,6 +160,7 @@ create policy drivers_self_read on public.drivers
 
 -- config is function-only: no policies at all, so RLS denies every client read.
 
--- The `boards` view inherits the underlying table's RLS, so it is readable by
--- anyone exactly as entries is.
+-- The `boards` view is readable by anyone exactly as entries is. (A view runs
+-- with its owner's rights unless it is `security_invoker`; 0004 sets that, so it
+-- obeys entries' RLS by construction.)
 grant select on public.boards to anon, authenticated;

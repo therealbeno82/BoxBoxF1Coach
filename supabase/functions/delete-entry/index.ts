@@ -68,5 +68,17 @@ Deno.serve(async (req) => {
     .eq("board_id", boardId).eq("driver_id", user.id);
   if (error) return json({ ok: false, reason: "Couldn't remove that lap." }, 500);
 
+  // Then sweep the rest of this driver's folder on the board. Older laps the
+  // driver later beat were never deleted before migration 0004, and two first
+  // publishes racing can still leave one behind — all of them sit under
+  // `<board>/<driver>/`, still publicly readable. Taking a lap down should take
+  // ALL of them down. Best-effort: the entry itself is already gone.
+  try {
+    const folder = `${boardId}/${user.id}`;
+    const { data: leftovers } = await admin.storage.from("traces").list(folder, { limit: 1000 });
+    const paths = (leftovers ?? []).map((o: { name: string }) => `${folder}/${o.name}`);
+    if (paths.length) await admin.storage.from("traces").remove(paths);
+  } catch { /* leftovers stay; nothing points at them */ }
+
   return json({ ok: true });
 });

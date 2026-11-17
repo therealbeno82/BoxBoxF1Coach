@@ -1,0 +1,16 @@
+# Supabase CLI configuration — only what this project needs to pin.
+#
+# Both Edge Functions authenticate the caller themselves (auth.getUser() on the
+# bearer token), and the gateway's own JWT check has to be OFF: it rejects the
+# CORS preflight, which carries no Authorization header, so the app's fetch dies
+# before the function ever runs. Pinning it here means a deploy typed without
+# `--no-verify-jwt` is still correct. Prefer `node scripts/deploy-functions.mjs`,
+# which also syncs the shared validation modules first.
+
+project_id = "f1-coach"
+
+[functions.submit-lap]
+verify_jwt = false
+
+[functions.delete-entry]
+verify_jwt = false

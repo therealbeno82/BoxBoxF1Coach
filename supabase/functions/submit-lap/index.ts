@@ -182,10 +182,15 @@ Deno.serve(async (req) => {
   // the collision: the loser (below) deletes only its own object. Re-serialised
   // from the parsed-and-sanitised object rather than the client's blob, so what
   // is served later is exactly what was checked here.
+  //
+  // `meta` is REBUILT from an allow-list rather than spread. The spread copied
+  // whatever the client sent into a public, downloadable file: the raw `team`
+  // (the row gets the sanitised one), free-text fields of any length, and any
+  // extra keys at all. Only fields the app reads are kept, each type-checked.
   const canonical = {
-    meta: { ...payload.meta, driver: displayName },
-    tyre: payload.tyre ?? null,
-    miniSectors: payload.miniSectors ?? null,
+    meta: canonicalMeta(payload.meta, { displayName, teamName, slug: board.slug, sampleCount: samples.length }),
+    tyre: canonicalTyre(payload.tyre),
+    miniSectors: numArray(payload.miniSectors, 18),
     samples,
   };
   const gz = await gzipJson(canonical);
@@ -279,6 +284,15 @@ Deno.serve(async (req) => {
     });
   }
 
+  // The improvement displaced an older trace (migration 0004 reports which).
+  // Delete it: no row points at it any more, but the bucket is public-read, so
+  // a superseded lap would otherwise stay downloadable — and keep spending the
+  // storage quota — forever. Best-effort, like dropBlob: the publish has landed.
+  if (outcome.replaced_trace_path) {
+    try { await admin.storage.from("traces").remove([outcome.replaced_trace_path]); }
+    catch { /* orphan — delete-entry's folder sweep still reaches it */ }
+  }
+
   await countPublish();
 
   const rank = await rankOf(admin, board.boardId, lapTimeMs);
@@ -289,6 +303,52 @@ Deno.serve(async (req) => {
 });
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+const numArray = (v: unknown, max: number) =>
+  Array.isArray(v) && v.length <= max && v.every((x) => x == null || Number.isFinite(x)) ? v : null;
+// Short display text: control and bidi characters out, length capped. Not the
+// display-name filter — a track or session label is not a name, and refusing
+// one would refuse the lap.
+const text = (v: unknown, max: number) =>
+  typeof v === "string"
+    ? v.replace(/[\u0000-\u001F\u007F\u200B-\u200F\u2028\u2029\u202A-\u202E\uFEFF]/g, "").trim().slice(0, max) || undefined
+    : undefined;
+
+// The published trace's meta: exactly the fields a downloaded reference uses.
+function canonicalMeta(m: any, { displayName, teamName, slug, sampleCount }:
+  { displayName: string; teamName: string | null; slug: string; sampleCount: number }) {
+  const out: Record<string, unknown> = {
+    driver: displayName,
+    team: teamName ?? undefined,
+    track: text(m?.track, 64),
+    sessionType: text(m?.sessionType, 32),
+    trackId: num(m?.trackId),
+    trackSlug: slug,
+    trackLengthM: num(m?.trackLengthM),
+    lapTime: num(m?.lapTime),
+    sectorTimes: numArray(m?.sectorTimes, 3),
+    sectors: numArray(m?.sectors, 2),
+    weather: num(m?.weather),
+    trackTemp: num(m?.trackTemp),
+    airTemp: num(m?.airTemp),
+    sampleCount,
+    appVersion: text(m?.appVersion, 32),
+    schema: num(m?.schema),
+  };
+  for (const k of Object.keys(out)) if (out[k] === undefined || out[k] === null) delete out[k];
+  return out;
+}
+
+// Tyre block — numbers only (compound ids, age, per-wheel wear).
+function canonicalTyre(t: any) {
+  if (!t || typeof t !== "object") return null;
+  const out: Record<string, unknown> = {};
+  for (const k of ["visual", "actual", "age"]) { const v = num(t[k]); if (v !== undefined) out[k] = v; }
+  const wear = numArray(t.wear, 4);
+  if (wear) out.wear = wear;
+  return Object.keys(out).length ? out : null;
+}
 
 const msOf = (s: number | null | undefined) =>
   (typeof s === "number" && s > 0 ? Math.round(s * 1000) : null);
