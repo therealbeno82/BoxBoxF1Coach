@@ -118,9 +118,21 @@ export function useFfbEngine() {
   profilesRef.current = profiles;
   const [activeProfile, setActiveProfile] = useState(() => localStorage.getItem(ACTIVE_KEY) || "");
 
+  // ffb_status is emitted on CHANGE only, and the engine starts before this page
+  // listens — an "SDL init failed" raised at startup went out to nobody. Ask for
+  // the current value on mount too; an event that has already arrived wins.
+  const sawStatusRef = useRef(false);
   useTauriEvents({
-    ffb_status: (e) => setStatus(e.payload),
+    ffb_status: (e) => { sawStatusRef.current = true; setStatus(e.payload); },
   });
+  useEffect(() => {
+    if (!ffbAvailable) return;
+    let cancelled = false;
+    invoke("get_ffb_status")
+      .then((st) => { if (!cancelled && st && !sawStatusRef.current) setStatus(st); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const refreshDevices = useCallback(async () => {
     if (!ffbAvailable) { setDevices([]); return; }

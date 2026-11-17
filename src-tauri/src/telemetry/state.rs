@@ -521,6 +521,14 @@ pub struct SharedTelemetry {
     pub got_packet: AtomicBool,
     /// UDP port the core is currently bound to (for the Settings readout).
     pub udp_port: AtomicU16,
+    /// Why the listener has no socket right now (another program holding the
+    /// port, usually), or None while bound. Surfaced in `core_status` — a bind
+    /// failure used to reach only the log, so the UI just said "waiting".
+    pub bind_error: Mutex<Option<String>>,
+    /// The packet format of the last datagram dropped for being unsupported
+    /// (e.g. 2024 when the game's UDP Format is set wrong), and when. 0 = none.
+    pub unsupported_format: AtomicU16,
+    pub unsupported_ms: AtomicI64,
     /// When the UI snapshot was last built, and whether packets have landed
     /// since — publish() throttles builds to ~30 Hz and flush_ui() catches the
     /// trailing update when the stream goes quiet.
@@ -537,6 +545,9 @@ impl SharedTelemetry {
             stats: AppStats::default(),
             got_packet: AtomicBool::new(false),
             udp_port: AtomicU16::new(port),
+            bind_error: Mutex::new(None),
+            unsupported_format: AtomicU16::new(0),
+            unsupported_ms: AtomicI64::new(0),
             // Seeded a full interval in the past so the FIRST publish always
             // builds. `now_ms` is monotonic from process start, so 0 is a real
             // recent timestamp — seeding to 0 would throttle the first snapshot
@@ -581,6 +592,61 @@ impl SharedTelemetry {
         }));
     }
 
+    /// Forget everything the demo replay left behind. Entering demo starts from a
+    /// clean `Latest`; leaving it used to keep the replay's Singapore track id,
+    /// setup, lap data, fuel and wear in the snapshot until real packets happened
+    /// to overwrite each field — the Session and Setup packets only come every
+    /// ~500 ms, so the first live snapshots mixed the two. The FFB-facing stats go
+    /// back to their defaults for the same reason (the frame stops advancing
+    /// anyway, which the engine already treats as frozen).
+    pub fn reset_after_demo(&self) {
+        let fresh = Latest::default();
+        self.got_packet.store(false, Ordering::Relaxed);
+        let s = &self.stats;
+        s.game_paused.store(false, Ordering::Relaxed);
+        s.ai_in_control.store(false, Ordering::Relaxed);
+        s.ai_run_up.store(false, Ordering::Relaxed);
+        s.ai_controls_car.store(false, Ordering::Relaxed);
+        s.session_type.store(0, Ordering::Relaxed);
+        s.track_length_m.store(0, Ordering::Relaxed);
+        s.driver_status.store(0xFF, Ordering::Relaxed);
+        s.pit_status.store(0, Ordering::Relaxed);
+        s.set_lap_distance(0.0);
+        self.ffb_frame.store(Arc::new(FfbFrame::default()));
+        self.build_ui(&fresh, now_ms());
+    }
+
+    /// Record a datagram dropped for an unsupported packet format.
+    pub fn note_unsupported(&self, format: u16) {
+        self.unsupported_format.store(format, Ordering::Relaxed);
+        self.unsupported_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    pub fn set_bind_error(&self, err: Option<String>) {
+        *self.bind_error.lock().unwrap_or_else(|e| e.into_inner()) = err;
+    }
+
+    /// What the UI's connection pill and Settings readout need. Compared by value
+    /// in the emitter (it is only emitted when it changes) and returned as-is by
+    /// the `get_core_status` command, so a page that subscribes AFTER the change
+    /// can still ask.
+    pub fn core_status(&self, now: i64) -> CoreStatus {
+        let receiving = self.stats.receiving(now, 1500);
+        let fmt = self.unsupported_format.load(Ordering::Relaxed);
+        // Only report a wrong format while it is actually what's arriving: once
+        // supported packets flow, the stale note means nothing.
+        let wrong_format = (fmt != 0
+            && !receiving
+            && now - self.unsupported_ms.load(Ordering::Relaxed) < 3000)
+            .then_some(fmt);
+        CoreStatus {
+            receiving,
+            udp_port: self.udp_port.load(Ordering::Relaxed),
+            bind_error: self.bind_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            wrong_format,
+        }
+    }
+
     /// Build the UI snapshot from any packets the throttle skipped — called when
     /// the receive loop goes idle, so the final state of a burst (e.g. the
     /// lap-complete packet right before a pause) always reaches the UI.
@@ -595,6 +661,17 @@ impl SharedTelemetry {
         self.ui_dirty.store(false, Ordering::Relaxed);
         self.ui.store(Arc::new(Snapshot::from_latest(l)));
     }
+}
+
+/// The core's connection state, as the UI receives it (`core_status` event and
+/// `get_core_status` command). camelCase is the wire contract.
+#[derive(Clone, Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreStatus {
+    pub receiving: bool,
+    pub udp_port: u16,
+    pub bind_error: Option<String>,
+    pub wrong_format: Option<u16>,
 }
 
 /// Milliseconds on a monotonic clock anchored at first use. Deliberately NOT
@@ -613,6 +690,8 @@ pub fn now_secs() -> f64 {
 }
 
 /// Convert an `Instant` on the monotonic clock into seconds since its anchor.
+/// Only the FFB engine (desktop) reads it.
+#[cfg_attr(mobile, allow(dead_code))]
 pub fn mono_secs(t: Instant) -> f64 {
     t.saturating_duration_since(mono_start()).as_secs_f64()
 }
@@ -621,4 +700,54 @@ fn mono_start() -> Instant {
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
     *START.get_or_init(Instant::now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_status_names_a_wrong_packet_format_only_while_nothing_else_arrives() {
+        let shared = SharedTelemetry::new(20777);
+        let now = now_ms();
+        assert_eq!(shared.core_status(now).wrong_format, None);
+
+        shared.note_unsupported(2024);
+        let st = shared.core_status(now_ms());
+        assert!(!st.receiving);
+        assert_eq!(st.wrong_format, Some(2024));
+
+        // Supported packets flowing again → the stale note means nothing.
+        shared.stats.last_udp_ms.store(now_ms().max(1), Ordering::Relaxed);
+        assert_eq!(shared.core_status(now_ms()).wrong_format, None);
+    }
+
+    #[test]
+    fn a_bind_error_is_reported_until_cleared() {
+        let shared = SharedTelemetry::new(20777);
+        shared.set_bind_error(Some("in use".into()));
+        assert_eq!(shared.core_status(now_ms()).bind_error.as_deref(), Some("in use"));
+        shared.set_bind_error(None);
+        assert_eq!(shared.core_status(now_ms()).bind_error, None);
+    }
+
+    #[test]
+    fn leaving_demo_clears_the_replayed_session() {
+        let shared = SharedTelemetry::new(20777);
+        let mut l = Latest::default();
+        l.track_id = 12;
+        l.track_length = 4940;
+        l.lap_distance = 2000.0;
+        shared.publish(&l);
+        shared.stats.session_type.store(13, Ordering::Relaxed);
+        assert_eq!(shared.ui.load().trackId, 12);
+
+        shared.reset_after_demo();
+        let snap = shared.ui.load();
+        assert_eq!(snap.trackId, Latest::default().track_id as i32);
+        assert_eq!(snap.lapDistance, 0.0);
+        assert!(!shared.got_packet.load(Ordering::Relaxed));
+        assert_eq!(shared.stats.session_type.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.stats.track_length_m.load(Ordering::Relaxed), 0);
+    }
 }

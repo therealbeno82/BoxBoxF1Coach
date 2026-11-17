@@ -1868,6 +1868,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // times a session, and the Shell, the auto-tab effect and useAndroidDevice all
   // read it.
   const [wsConnected,  setWsConnected]  = useState(false);
+  // The core's whole status — Settings reads bindError / wrongFormat from it to
+  // explain WHY nothing is arriving, rather than only that nothing is.
+  const [coreStatus,   setCoreStatus]   = useState(null);
   // A drive "session": a fresh id minted each time live telemetry connects, so
   // laps recorded during one connection share it and the dashboard can count
   // distinct sessions per driver.
@@ -2469,6 +2472,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   useTelemetry({
     onSnapshot: publishTelemetry,
     onReceivingChange: setWsConnected,
+    onStatus: setCoreStatus,
   });
 
   // Drive-session identity is minted from the GAME's per-session UID (in every UDP
@@ -2928,7 +2932,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         <SettingsScreen
           openRouterKey={openRouterKey} setOpenRouterKey={setOpenRouterKey}
           openRouterModel={openRouterModel} setOpenRouterModel={setOpenRouterModel}
-          wsConnected={wsConnected}
+          wsConnected={wsConnected} coreStatus={coreStatus}
           udpPort={udpPort} setUdpPort={setUdpPort}
           fakeMode={fakeMode} setFakeMode={setFakeMode}
           units={units} setUnits={setUnits}

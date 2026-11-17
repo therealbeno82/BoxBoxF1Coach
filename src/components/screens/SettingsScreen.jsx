@@ -28,7 +28,7 @@ const input = { background: C.inset, border: `1px solid ${C.borderInput}`, borde
 
 export default function SettingsScreen({
   openRouterKey, setOpenRouterKey, openRouterModel, setOpenRouterModel,
-  wsConnected,
+  wsConnected, coreStatus = null,
   udpPort, setUdpPort,
   fakeMode, setFakeMode,
   units, setUnits,
@@ -211,6 +211,14 @@ export default function SettingsScreen({
   // arriving on that port at all.
   const coreColor = fakeMode ? C.yellow : wsConnected ? C.green : C.red;
   const coreLabel = fakeMode ? "DEMO TELEMETRY" : wsConnected ? "TELEMETRY LIVE" : "NO TELEMETRY";
+  // Why nothing is arriving, when the core knows. Both used to be invisible:
+  // a port another tool already holds only reached the log, and packets in the
+  // wrong UDP format were dropped before being counted, so either way this
+  // panel said "waiting" forever.
+  const coreProblem = fakeMode || wsConnected ? null
+    : coreStatus?.bindError ? `${coreStatus.bindError} — is another telemetry app using it?`
+    : coreStatus?.wrongFormat ? `The game is sending UDP format ${coreStatus.wrongFormat}. Set UDP Format to 2026 in its telemetry settings.`
+    : null;
 
   return (
     <div style={{ flex: 1, minHeight: 0, background: C.bg, padding: "16px var(--screen-px) 22px",
@@ -286,9 +294,10 @@ export default function SettingsScreen({
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: coreColor, boxShadow: `0 0 8px ${coreColor}`, flex: "none" }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: .5, color: "#fff" }}>{coreLabel}</div>
-                <div style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}>{
-                  fakeMode ? "Synthetic lap — the game is not being read"
+                <div style={{ fontSize: 11, color: coreProblem ? C.orange : C.textDim, fontFamily: FONT.mono, lineHeight: 1.45 }}>{
+                  fakeMode ? "Replaying a recorded race — the game is not being read"
                   : wsConnected ? `Receiving on UDP ${udpPort}`
+                  : coreProblem ? coreProblem
                   : inTauri ? "Waiting for the game's UDP stream"
                   : "Telemetry needs the native app (tauri dev)"}</div>
               </div>

@@ -140,10 +140,13 @@ fn run_loop(shared: Arc<SharedTelemetry>, control: Arc<CoreControl>) {
             continue;
         }
         if was_fake {
-            // Leaving demo mode: the latched "got a packet" no longer holds — the
-            // UI should idle until real telemetry actually arrives.
+            // Leaving demo mode: none of the replay's state applies to the game
+            // that comes next, and the UI should idle until real telemetry
+            // actually arrives. See SharedTelemetry::reset_after_demo.
             was_fake = false;
-            shared.got_packet.store(false, Ordering::Relaxed);
+            latest = Latest::default();
+            ls = LoopState::default();
+            shared.reset_after_demo();
         }
 
         // (Re)bind if the desired port changed or we don't have a socket.
@@ -154,10 +157,13 @@ fn run_loop(shared: Arc<SharedTelemetry>, control: Arc<CoreControl>) {
                     socket = Some(s);
                     bound_port = want;
                     shared.udp_port.store(want, Ordering::Relaxed);
+                    shared.set_bind_error(None);
                     log::info!("[core] listening for F1 telemetry on UDP {want}");
                 }
                 Err(e) => {
                     log::warn!("[core] could not bind UDP {want}: {e}");
+                    // Usually another telemetry tool already holds the port.
+                    shared.set_bind_error(Some(format!("Couldn't listen on UDP port {want}: {e}")));
                     if socket.is_none() {
                         // Nothing to fall back on — wait and retry.
                         std::thread::sleep(Duration::from_millis(500));
@@ -197,9 +203,15 @@ fn bind(port: u16) -> std::io::Result<UdpSocket> {
 
 fn handle_datagram(buf: &[u8], latest: &mut Latest, ls: &mut LoopState, shared: &Arc<SharedTelemetry>) {
     let hdr = match Header::parse(buf) {
-        Some(h) if h.is_supported() => h,
-        _ => return,
+        Some(h) => h,
+        None => return,
     };
+    if !hdr.is_supported() {
+        // Dropped — but noted, so the UI can say "the game is sending 2024
+        // format" instead of waiting forever for packets it will never accept.
+        shared.note_unsupported(hdr.packet_format);
+        return;
+    }
     let stats = &shared.stats;
     let now = now_ms();
     stats.udp_packets.fetch_add(1, Ordering::Relaxed);

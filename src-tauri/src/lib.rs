@@ -17,7 +17,7 @@ mod telemetry;
 
 #[cfg(desktop)]
 use ffb::{DeviceInfo, FfbCommand, FfbGauges, FfbHandle, FfbSettings, FfbStatus, FfbSystem};
-use telemetry::{now_ms, TelemetryCore};
+use telemetry::{now_ms, CoreStatus, TelemetryCore};
 
 // Default UDP port the game broadcasts telemetry on.
 const DEFAULT_UDP_PORT: u16 = 20777;
@@ -103,6 +103,18 @@ fn set_fake_mode(enabled: bool, state: tauri::State<CoreState>) {
     }
 }
 
+/// The core's connection state — the same value the `core_status` event carries.
+/// That event is only emitted when the state CHANGES, and the emitter starts in
+/// `setup`, before the page has loaded and subscribed: with the game already
+/// streaming at launch (or `F1_FAKE=1`), "receiving" went out to nobody, the UDP
+/// pill sat on "waiting", the auto-switch to Live never fired and Android never
+/// took its keep-awake. The page asks for the current value on mount instead.
+#[tauri::command]
+fn get_core_status(state: tauri::State<CoreState>) -> Option<CoreStatus> {
+    let core = state.core.lock().ok()?;
+    Some(core.shared.core_status(now_ms()))
+}
+
 /// Current synthetic-telemetry state. The Settings toggle reads this once on
 /// boot so an `F1_FAKE=1` launch is reflected in the UI rather than being
 /// silently overwritten by the saved preference.
@@ -145,6 +157,15 @@ fn close_ffb_device(handle: tauri::State<Arc<FfbHandle>>) {
 #[tauri::command]
 fn set_ffb_settings(settings: FfbSettings, handle: tauri::State<Arc<FfbHandle>>) {
     handle.settings.store(Arc::new(settings));
+}
+
+/// The FFB status as it stands — `ffb_status` has the same emit-on-change gap as
+/// `core_status` (see get_core_status), so an "SDL init failed" raised at startup
+/// was lost before the page could listen.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ffb_status(handle: tauri::State<Arc<FfbHandle>>) -> FfbStatus {
+    handle.status.load().as_ref().clone()
 }
 
 /// The engine's default tuning — the single source of truth the UI seeds its
@@ -270,25 +291,16 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let mut ffb = FfbEmit::new(&app);
 
     std::thread::spawn(move || {
-        let mut last_core: Option<(bool, u16)> = None;
+        let mut last_core: Option<CoreStatus> = None;
         let mut last_snap = None;
         while running.load(Ordering::Relaxed) {
             let tick_start = std::time::Instant::now();
             let now = now_ms();
             let got_packet = shared.got_packet.load(Ordering::Relaxed);
-            let core = (
-                shared.stats.receiving(now, 1500),
-                shared.udp_port.load(Ordering::Relaxed),
-            );
-            if last_core != Some(core) {
+            let core = shared.core_status(now);
+            if last_core.as_ref() != Some(&core) {
+                let _ = app.emit("core_status", &core);
                 last_core = Some(core);
-                let _ = app.emit(
-                    "core_status",
-                    serde_json::json!({
-                        "receiving": core.0,
-                        "udpPort": core.1,
-                    }),
-                );
             }
             if got_packet {
                 let snap = shared.ui.load_full();
@@ -342,6 +354,8 @@ pub fn run() {
             get_local_ips,
             set_fake_mode,
             get_fake_mode,
+            get_core_status,
+            get_ffb_status,
             get_ffb_devices,
             open_ffb_device,
             close_ffb_device,
@@ -363,6 +377,7 @@ pub fn run() {
             get_local_ips,
             set_fake_mode,
             get_fake_mode,
+            get_core_status,
             write_text_file,
         ]);
 

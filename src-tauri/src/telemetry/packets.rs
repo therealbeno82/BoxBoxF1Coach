@@ -32,15 +32,22 @@ fn is26(h: &Header) -> bool {
 pub fn parse_motion(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
     let stride = if is26(h) { MOTION_STRIDE_2026 } else { MOTION_STRIDE_2025 };
     let base = h.player_car_index as usize * stride;
-    l.world_x = Some(f32_at(payload, base)?);
-    l.world_y = Some(f32_at(payload, base + 4)?);
-    l.world_z = Some(f32_at(payload, base + 8)?);
+    // All-or-nothing like every other parser: read into locals, commit after the
+    // last `?`. This one used to write the position first, so a datagram cut
+    // short before the lateral-g field still moved the car.
+    let x = f32_at(payload, base)?;
+    let y = f32_at(payload, base + 4)?;
+    let z = f32_at(payload, base + 8)?;
     // gForceLateral @36: int16/1000 in 2026, float in 2025.
-    l.lateral_g = if is26(h) {
+    let lat_g = if is26(h) {
         i16_at(payload, base + 36)? as f32 / 1000.0
     } else {
         f32_at(payload, base + 36)?
     };
+    l.world_x = Some(x);
+    l.world_y = Some(y);
+    l.world_z = Some(z);
+    l.lateral_g = lat_g;
     Some(())
 }
 
@@ -426,6 +433,37 @@ mod tests {
         let before4 = (l4.lap_number, l4.lap_distance);
         assert!(parse_lap_data(&vec![0u8; 40], &hdr(2, 0), &mut l4).is_none());
         assert_eq!((l4.lap_number, l4.lap_distance), before4);
+
+        // Motion: long enough for the position (offsets 0-11) but cut before the
+        // lateral-g field at +36 — the position must not move either.
+        let mut l5 = Latest::default();
+        l5.world_x = Some(10.0);
+        l5.world_z = Some(-4.0);
+        l5.lateral_g = 1.5;
+        let before5 = (l5.world_x, l5.world_y, l5.world_z, l5.lateral_g);
+        assert!(parse_motion(&vec![0u8; 20], &hdr(0, 0), &mut l5).is_none());
+        assert_eq!((l5.world_x, l5.world_y, l5.world_z, l5.lateral_g), before5);
+    }
+
+    #[test]
+    fn motion_reads_2026_and_2025_lateral_g() {
+        // 2026: int16 thousandths at +36.
+        let mut b = vec![0u8; MOTION_STRIDE_2026];
+        put_f32(&mut b, 0, 12.5);
+        b[36..38].copy_from_slice(&(-2350i16).to_le_bytes());
+        let mut l = Latest::default();
+        assert!(parse_motion(&b, &hdr(0, 0), &mut l).is_some());
+        assert_eq!(l.world_x, Some(12.5));
+        assert!((l.lateral_g + 2.35).abs() < 1e-6);
+
+        // 2025: f32 at +36, on the wider stride.
+        let mut b = vec![0u8; MOTION_STRIDE_2025];
+        put_f32(&mut b, 36, 1.75);
+        let mut h = hdr(0, 0);
+        h.packet_format = 2025;
+        let mut l = Latest::default();
+        assert!(parse_motion(&b, &h, &mut l).is_some());
+        assert!((l.lateral_g - 1.75).abs() < 1e-6);
     }
 
     #[test]

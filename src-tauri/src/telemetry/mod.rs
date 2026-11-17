@@ -13,4 +13,5 @@ pub mod udp;
 // on mobile nothing in the crate names it, so the re-export reads as unused.
 #[cfg_attr(mobile, allow(unused_imports))]
 pub use state::{now_ms, SharedTelemetry};
+pub use state::CoreStatus;
 pub use udp::TelemetryCore;
