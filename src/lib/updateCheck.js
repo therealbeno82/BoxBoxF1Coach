@@ -17,22 +17,57 @@ const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 // context where the define isn't applied.
 export const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0";
 
-// Compare two dotted numeric versions (a leading "v" is tolerated). Returns 1
-// when a > b, -1 when a < b, 0 when equal. Any pre-release/build suffix is
-// ignored — this only needs to answer "is a newer stable out?".
+// Compare two semver-style versions (a leading "v" is tolerated). Returns 1 when
+// a > b, -1 when a < b, 0 when equal. A pre-release sorts BEFORE its own release
+// (4.2.0-beta.1 < 4.2.0), so someone running a beta is told when the final
+// version ships. Splitting the whole string on "." used to read "4.2.0-beta.1"
+// as 4.2.0.1 — newer than 4.2.0 — and the banner never came. Build metadata
+// ("+…") is ignored.
 export function compareVersions(a, b) {
-  const parse = (v) => String(v).replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
+  const split = (v) => {
+    const s = String(v).trim().replace(/^v/i, "").split("+")[0];
+    const dash = s.indexOf("-");
+    return {
+      core: (dash < 0 ? s : s.slice(0, dash)).split(".").map((n) => parseInt(n, 10) || 0),
+      pre: dash < 0 ? [] : s.slice(dash + 1).split("."),
+    };
+  };
+  const pa = split(a);
+  const pb = split(b);
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const diff = (pa.core[i] || 0) - (pb.core[i] || 0);
     if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  // Same release number: the release itself outranks any of its pre-releases.
+  if (!pa.pre.length || !pb.pre.length) {
+    return pa.pre.length === pb.pre.length ? 0 : pa.pre.length ? -1 : 1;
+  }
+  // Both pre-releases: identifier by identifier, numbers numerically (beta.10 >
+  // beta.9), a number below a word, and a shorter list below a longer one.
+  for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i++) {
+    const x = pa.pre[i];
+    const y = pb.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x);
+    const ny = /^\d+$/.test(y);
+    if (nx && ny) {
+      if (Number(x) !== Number(y)) return Number(x) > Number(y) ? 1 : -1;
+    } else if (nx !== ny) {
+      return nx ? -1 : 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
   }
   return 0;
 }
 
 // Resolves to { latestVersion, url, notes } when a newer, published (non-draft,
 // non-prerelease) release exists; otherwise null. Never throws.
+//
+// `/releases/latest` never returns a GitHub pre-release, so a beta is opt-in:
+// nobody on a stable build is nudged onto it, and a beta build hears nothing
+// until the next STABLE release — which compareVersions ranks above the beta.
 //
 // On Android the release must also SHIP AN APK. Every release so far carries one
 // asset — a Windows NSIS installer — and announcing "4.1.0 is out" to a phone

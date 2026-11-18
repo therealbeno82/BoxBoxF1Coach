@@ -29,3 +29,17 @@ test("compareVersions orders dotted versions and ignores a leading v", () => {
   assert.equal(compareVersions("v4.1", "4.1.0"), 0);
   assert.equal(compareVersions("4.1.0", "4.10.0"), -1);
 });
+
+test("compareVersions puts a beta after the last release and before its own", () => {
+  // A beta of the next version is newer than the last stable: no banner for it.
+  assert.equal(compareVersions("v4.1.0", "4.2.0-beta.1"), -1);
+  // The final release is newer than its beta: the banner does come.
+  assert.equal(compareVersions("v4.2.0", "4.2.0-beta.1"), 1);
+  assert.equal(compareVersions("4.2.0-beta.1", "4.2.0"), -1);
+  assert.equal(compareVersions("4.2.0-beta.1", "4.2.0-beta.1"), 0);
+  // Pre-release identifiers compare numerically, not as text.
+  assert.equal(compareVersions("4.2.0-beta.10", "4.2.0-beta.9"), 1);
+  assert.equal(compareVersions("4.2.0-rc.1", "4.2.0-beta.3"), 1);
+  assert.equal(compareVersions("4.2.0-beta", "4.2.0-beta.1"), -1);
+  assert.equal(compareVersions("4.2.0+build.7", "4.2.0"), 0);
+});
