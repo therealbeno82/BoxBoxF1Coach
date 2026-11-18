@@ -14,6 +14,7 @@ import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
 import { WrenchIcon } from "../icons.jsx";
+import { lapClockAxis, timeAtDist } from "../../lib/timeAxis.js";
 import Hint from "../Hint.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -455,6 +456,19 @@ export default function LiveScreen({
   const refLapTime = activeTrace ? (activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null) : null;
   const lapDelta = (!refMismatch && lastLap && typeof refLapTime === "number")
     ? lastLap.lapTime - refLapTime : null;
+  // Running delta: where the reference was on ITS lap clock at the distance the car
+  // is at now, against the live lap clock. The figure that tells a driver mid-lap
+  // whether the lap is coming together — the box above only ever compared the
+  // LAST completed lap. The reference's time axis is built once per reference
+  // (lib/timeAxis.js: the game's own clock when the lap carries it, else the
+  // reconstruction rescaled to its real lap time); each tick is a binary search.
+  // Same gate as everything else measured against the reference: blank when it
+  // isn't comparable, and blank off the stretch the reference recorded.
+  const refAxis = useMemo(() => (activeTrace ? lapClockAxis(activeTrace) : null), [activeTrace]);
+  const refAtHere = (!refMismatch && refAxis && tel.lapDistance > 0)
+    ? timeAtDist(activeTrace.samples, refAxis, tel.lapDistance) : null;
+  const liveDelta = refAtHere != null && tel.lapTime > 0 ? tel.lapTime - refAtHere : null;
+
   // An automatic reference (no lap chosen — the hub picked the driver's own best
   // comparable lap) says so, with the lap it is.
   const refLabel = activeTrace
@@ -574,12 +588,29 @@ export default function LiveScreen({
             <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Lap {liveLapNumber ?? "—"}</div>
             <div style={{ fontFamily: FONT.mono, fontSize: 36, fontWeight: 800, lineHeight: 1, marginTop: 3 }}>{formatLapTime(tel.lapTime, 3)}</div>
           </div>
-          <div style={{ background: "#2a1f08", border: "1px solid #6b5410", borderRadius: 8, padding: "7px 13px" }}>
-            <div style={{ fontSize: 9, letterSpacing: 1, color: "#9a8330", textTransform: "uppercase" }}>vs Reference</div>
-            <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
-              color: lapDelta == null ? C.textFaint : lapDelta <= 0 ? C.green : C.yellow }}>
-              {lapDelta == null ? "—" : (lapDelta <= 0 ? "" : "+") + lapDelta.toFixed(3)}
+          <div style={{ background: "#2a1f08", border: "1px solid #6b5410", borderRadius: 8, padding: "7px 13px" }}
+            title="Live: this lap against the reference at the same point on track. Last: the previous lap's total.">
+            <div style={{ fontSize: 9, letterSpacing: 1, color: "#9a8330", textTransform: "uppercase" }}>
+              {liveDelta != null ? "Live Δ vs Ref" : "vs Reference"}
             </div>
+            {liveDelta != null ? (
+              <>
+                <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
+                  color: liveDelta <= 0 ? C.green : C.yellow }}>
+                  {(liveDelta <= 0 ? "−" : "+") + Math.abs(liveDelta).toFixed(2)}
+                </div>
+                {lapDelta != null && (
+                  <div style={{ fontFamily: FONT.mono, fontSize: 10, color: C.textDim, marginTop: 2 }}>
+                    last {(lapDelta <= 0 ? "−" : "+") + Math.abs(lapDelta).toFixed(3)}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
+                color: lapDelta == null ? C.textFaint : lapDelta <= 0 ? C.green : C.yellow }}>
+                {lapDelta == null ? "—" : (lapDelta <= 0 ? "" : "+") + lapDelta.toFixed(3)}
+              </div>
+            )}
           </div>
         </div>
         {!phone && <div style={{ flex: 1 }} />}
