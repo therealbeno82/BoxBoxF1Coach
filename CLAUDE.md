@@ -23,7 +23,7 @@ npm run dev:android                      # browser dev server WITH the Android b
 
 npm test                                 # pure JS modules under src/lib (node --test, no deps)
 npm run deploy:functions                 # sync the shared leaderboard modules, THEN deploy both Edge Functions
-npx supabase db push                     # migrations — a separate, deliberate step
+npx supabase@3 db push --remote=<ref>    # migrations — a separate, deliberate step (bare `db push` targets LOCAL Docker since CLI v3)
 ```
 
 - No game running? Set `F1_FAKE=1` (or the Settings toggle) — the Rust core replays a real recorded 25-lap race (`src-tauri/demo/session.json`).

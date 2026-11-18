@@ -18,9 +18,18 @@
 //   node scripts/deploy-functions.mjs submit-lap      # just one
 //   SUPABASE_PROJECT_REF=abc node scripts/deploy-functions.mjs
 //
-// Migrations are NOT applied here — `supabase db push` (or the SQL editor) is a
-// separate, deliberate step, since a schema change can't be rolled back the way
-// a function deploy can.
+// Migrations are NOT applied here — they are a separate, deliberate step, since a
+// schema change can't be rolled back the way a function deploy can:
+//
+//   npx supabase@3 db push --remote=<ref> --dry-run   # what would be applied
+//   npx supabase@3 db push --remote=<ref>
+//
+// The --remote is not optional: since CLI v3, a bare `db push` targets the LOCAL
+// Docker stack and fails with "connect ECONNREFUSED 127.0.0.1:54322".
+//
+// The CLI is pinned to major 3 because nothing in this repo installs it — npx
+// fetches whatever is latest, and v3 already moved one default from under us
+// (and drops --project-ref, which this script used to pass, in v4).
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -39,9 +48,16 @@ function projectRef() {
   return m[1];
 }
 
+// On Windows `npx` is a .cmd, which Node only spawns through a shell — and a
+// shell given an argument ARRAY just concatenates it (DEP0190). Hand it the one
+// command line instead; every argument here is a fixed word, a function name off
+// the allow-list or a [a-z0-9] project ref, so there is nothing to quote.
 function run(cmd, args) {
-  console.log(`\n$ ${cmd} ${args.join(" ")}`);
-  const r = spawnSync(cmd, args, { cwd: repo, stdio: "inherit", shell: process.platform === "win32" });
+  const line = `${cmd} ${args.join(" ")}`;
+  console.log(`\n$ ${line}`);
+  const r = process.platform === "win32"
+    ? spawnSync(line, { cwd: repo, stdio: "inherit", shell: true })
+    : spawnSync(cmd, args, { cwd: repo, stdio: "inherit" });
   if (r.status !== 0) {
     console.error(`\n✗ ${cmd} exited with ${r.status}`);
     process.exit(r.status || 1);
@@ -58,8 +74,12 @@ for (const t of targets) {
 }
 
 const ref = projectRef();
+if (!/^[a-z0-9]+$/.test(ref)) {
+  console.error(`✗ "${ref}" doesn't look like a Supabase project ref`);
+  process.exit(1);
+}
 run("node", ["scripts/sync-leaderboard-shared.mjs"]);
 for (const fn of targets) {
-  run("npx", ["supabase", "functions", "deploy", fn, "--project-ref", ref, "--no-verify-jwt"]);
+  run("npx", ["supabase@3", "functions", "deploy", fn, `--remote=${ref}`, "--no-verify-jwt"]);
 }
 console.log(`\n✓ deployed ${targets.join(", ")} to ${ref}`);
