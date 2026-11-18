@@ -145,9 +145,9 @@ export default function CoachLogScreen({
           would be an artefact of that difference rather than of the driving, so
           the coach withholds the analysis and names what's wrong instead. */}
       {refMismatch ? (
-        <div style={{ flex: 1, ...card, borderColor: C.red || "#ff4d5e", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "48px 24px" }}>
+        <div style={{ flex: 1, ...card, borderColor: C.red, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 30, marginBottom: 12 }}>⚠️</div>
-          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10, color: C.red || "#ff4d5e" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10, color: C.red }}>
             Reference isn't comparable with your lap
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 520, width: "100%", marginBottom: 12 }}>
@@ -292,7 +292,7 @@ export default function CoachLogScreen({
           {trendItems.length > 0 && (
             <div style={{ flex: "none", ...card, padding: "13px 16px 15px", display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
-                <span style={{ width: 24, height: 24, flex: "none", borderRadius: 7, background: "#34c8ff22", border: `1px solid ${C.ers || "#34c8ff"}`, display: "flex", alignItems: "center", justifyContent: "center", color: "#34c8ff", fontSize: 12 }}>↻</span>
+                <span style={{ width: 24, height: 24, flex: "none", borderRadius: 7, background: "#34c8ff22", border: `1px solid #34c8ff`, display: "flex", alignItems: "center", justifyContent: "center", color: "#34c8ff", fontSize: 12 }}>↻</span>
                 <span style={{ fontSize: 11, letterSpacing: 2, color: C.textMuted, textTransform: "uppercase", fontWeight: 700 }}>Recurring Across Your Laps</span>
                 <span style={{ fontSize: 10, color: C.textDim, letterSpacing: .5 }}>Patterns on most laps · not just this one</span>
               </div>
@@ -336,7 +336,7 @@ export default function CoachLogScreen({
                 </div>
               )}
               {coachingSet?.outlierSubject && (
-                <div style={{ fontSize: 10.5, color: C.yellow || "#ffd54f", lineHeight: 1.5 }}>
+                <div style={{ fontSize: 10.5, color: C.yellow, lineHeight: 1.5 }}>
                   The lap being analysed is itself off the pace of this set — it's still analysed (it's the lap you asked for), but read the cross-lap figures with that in mind.
                 </div>
               )}

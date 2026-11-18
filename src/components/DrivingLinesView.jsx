@@ -1,10 +1,11 @@
-// ─── DRIVING LINES VIEW (Analytics ▸ Overview) ────────────────────────────────
-// Top-down 2D "segment focus" view of both laps' racing lines — replaces the old
-// 3D chase-cam scene. The viewport auto-frames the segment (or sector) the
-// playhead is in and glides between segments as playback crosses a boundary;
-// a mini-map inset shows where on the circuit that segment sits, a zoom slider
-// widens/tightens the framing, and a bottom-left card steps segment-by-segment
-// with each lap's segment time and the delta between them.
+// ─── DRIVING LINES VIEW (Analytics) ──────────────────────────────────────────
+// Both laps' racing lines in ONE scene, seen through four cameras picked by the
+// pills at the top: Map (top-down SVG that auto-frames the segment the playhead
+// is in and glides between segments), 3D (free orbit — TrackOrbitView), and the
+// T-Cam / Compare onboard views (TrackCamView). Around them: a mini-map inset
+// showing where on the circuit the segment sits, a zoom slider, and a card that
+// steps segment-by-segment with each lap's time and the delta between them. On a
+// phone those overlays become rows above and below the viewport (see CLAUDE.md).
 //
 // Playback: the playhead (0–1 lap-distance fraction) lives in lib/playheadStore.js
 // and `playing` comes in as a prop with an `onSetPlaying` callback. The rAF clock
@@ -849,6 +850,24 @@ export default function DrivingLinesView({
     const r = el.getBoundingClientRect();
     onSeek?.(clamp((clientX - r.left) / r.width, 0, 1));
   };
+  const onBarKey = (e) => {
+    const step = e.shiftKey ? 0.05 : 0.01;
+    let next = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = playhead + step;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = playhead - step;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = 1;
+    else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      if (!playing && playhead >= 0.999) onSeek?.(0);
+      onSetPlaying?.(!playing);
+      return;
+    }
+    if (next == null) return;
+    e.preventDefault();
+    onSetPlaying?.(false);
+    onSeek?.(clamp(next, 0, 1));
+  };
   // ── Pinch to zoom the MAP. The 3D view does its own (it owns a camera, not a
   // viewBox) and the T-cam has no zoom at all, so this is map-only. Same `zoom`
   // state either way, so the slider tracks a pinch exactly as it tracks a scroll.
@@ -875,6 +894,22 @@ export default function DrivingLinesView({
     pinchPts.current.delete(e.pointerId);
     if (pinchPts.current.size < 2) pinchGap.current = 0;
   };
+
+  // Mouse-wheel zoom on the map, the same state pinch and the slider write (the 3D
+  // view already zooms on the wheel; the map only took a pinch). Native and
+  // non-passive for the same reason TrackOrbitView's is: React's onWheel is
+  // passive, so preventDefault there can't stop the page scrolling instead.
+  const mapViewportRef = useRef(null);
+  useEffect(() => {
+    const el = mapViewportRef.current;
+    if (!el || camMode !== "map") return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0016), MIN_ZOOM, MAX_ZOOM));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [camMode, lines.length]);
 
   const onBarDown = (e) => { onSetPlaying?.(false); scrubFrom(e.clientX);
     const move = ev => scrubFrom(ev.clientX);
@@ -1077,7 +1112,7 @@ export default function DrivingLinesView({
       {/* Where you are. Desktop stacks name, corner and distance; a phone puts all
           three on one line — they are one sentence, not three facts. */}
       <div style={{display:"flex",alignItems:"center",gap:8}}>
-        {!phone && <button style={{...navBtn,...tapSquare}} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Previous segment" aria-label="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
         <div style={{flex:1,minWidth:0,textAlign:"center",display:"flex",alignItems:"baseline",justifyContent:"center",gap:phone?6:8}}>
           <span style={{fontFamily:FONT.mono,fontSize:phone?11:13,fontWeight:800,color:"#e8edf5",whiteSpace:"nowrap"}}>{seg.name}</span>
           {phone && seg.sub && (
@@ -1092,7 +1127,7 @@ export default function DrivingLinesView({
               color:segDelta < 0 ? C.green : segDelta > 0 ? C.red : C.textMid}}>{fmtd(segDelta)}</span>
           )}
         </div>
-        {!phone && <button style={{...navBtn,...tapSquare}} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Next segment" aria-label="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
       </div>
       {!phone && seg.sub && (
         <div style={{textAlign:"center",fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",marginTop:2}}>{seg.sub}</div>
@@ -1128,16 +1163,16 @@ export default function DrivingLinesView({
       {/* 44 square on any touch screen, against 18×18 before — the smallest
           targets in the app, and sitting either side of a slider that swallows a
           stray drag. The slider itself stays 18 (below). */}
-      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom out"
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom out" aria-label="Zoom out"
         onClick={()=>setZoom(z=>clamp(z/1.25,MIN_ZOOM,MAX_ZOOM))}>−</button>
-      <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom"
+      <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom" aria-label="Zoom"
         onChange={(e)=>setZoom(Number(e.target.value))}
         style={{width:phone?"100%":110,
           // 18px, not the 44px tap floor: the thumb is the target here and it is
           // full size either way, while the track's height buys nothing.
           ...(phone&&{flex:"1 1 0",minWidth:0,minHeight:0,height:18}),
           accentColor:COMP_COLOR}} />
-      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom in"
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom in" aria-label="Zoom in"
         onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
     </>
   );
@@ -1176,7 +1211,7 @@ export default function DrivingLinesView({
           there is a mouse — keyed on the pointer, because a landscape phone
           takes the desktop 38px path and would otherwise keep the opt-out with
           it, immune to the floor. */}
-      <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"}
+      <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"} aria-label={playing?"Pause":"Play"}
         style={{width:38,height:38,...(coarse?tapSquare:{minHeight:0}),borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
           fontSize:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
         {playing?"❚❚":"▶"}</button>
@@ -1211,7 +1246,15 @@ export default function DrivingLinesView({
           scrubbing is the only thing it does, so a drag that started on it can
           only have meant the playhead. Without it the browser claims the gesture
           as a page scroll and cancels the drag mid-lap. */}
-      <div ref={barRef} onPointerDown={onBarDown} style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
+      {/* Also a keyboard slider: it was a div with only a pointer handler, so
+          playback could not be reached without a mouse or a finger. Arrows step
+          1% of the lap (Shift: 5%), Home/End jump to the ends, Space plays. */}
+      <div ref={barRef} onPointerDown={onBarDown}
+        role="slider" tabIndex={0} aria-label="Playback position"
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(playhead * 100)}
+        aria-valuetext={distText}
+        onKeyDown={onBarKey}
+        style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
         touchAction:"none",
         ...(phone ? {flex:"1 1 100%",minWidth:0} : {flex:1})}}>
         <div style={{position:"absolute",left:0,right:0,height:6,borderRadius:3,background:"#1c2230"}} />
@@ -1253,7 +1296,7 @@ export default function DrivingLinesView({
           to zoom with, while a one-finger vertical drag still scrolls the screen
           this panel sits in — on a phone the map is most of the viewport, so
           trapping the scroll would strand the page. */}
-      <div
+      <div ref={mapViewportRef}
         {...(camMode === "map" ? {
           onPointerDown: onMapDown, onPointerMove: onMapMove,
           onPointerUp: onMapUp, onPointerCancel: onMapUp,

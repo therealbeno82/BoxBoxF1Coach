@@ -251,7 +251,7 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
 
   return (
     <div ref={wrapRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
-      <canvas ref={canvasRef} style={{ display: "block" }} />
+      <canvas ref={canvasRef} role="img" aria-label="Onboard camera view of the selected laps" style={{ display: "block" }} />
     </div>
   );
 }

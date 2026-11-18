@@ -79,20 +79,9 @@ fn get_local_ips() -> Vec<LocalAddr> {
             _ => None,
         })
         .collect();
-    out.sort_by_key(|a| !is_private_v4(&a.ip));
+    // RFC-1918 private ranges first — the addresses a LAN device would use.
+    out.sort_by_key(|a| !a.ip.parse::<std::net::Ipv4Addr>().is_ok_and(|v4| v4.is_private()));
     out
-}
-
-/// True for RFC-1918 private ranges — the addresses a LAN device would use.
-fn is_private_v4(ip: &str) -> bool {
-    ip.starts_with("192.168.")
-        || ip.starts_with("10.")
-        // 172.16.0.0–172.31.255.255
-        || ip
-            .strip_prefix("172.")
-            .and_then(|rest| rest.split('.').next())
-            .and_then(|oct| oct.parse::<u8>().ok())
-            .is_some_and(|second| (16..=31).contains(&second))
 }
 
 /// Toggle synthetic-telemetry mode (a fake lap for testing with no game).
@@ -160,7 +149,9 @@ fn close_ffb_device(handle: tauri::State<Arc<FfbHandle>>) {
 #[cfg(desktop)]
 #[tauri::command]
 fn set_ffb_settings(settings: FfbSettings, handle: tauri::State<Arc<FfbHandle>>) {
-    handle.settings.store(Arc::new(settings));
+    // Clamped on the way in — see FfbSettings::sanitized for why the UI's own
+    // slider ranges aren't enough (imported and stale profiles).
+    handle.settings.store(Arc::new(settings.sanitized()));
 }
 
 /// The FFB status as it stands — `ffb_status` has the same emit-on-change gap as

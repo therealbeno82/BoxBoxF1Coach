@@ -101,6 +101,7 @@ const PublishBtn = ({ lap, onPublish, phone = false }) => {
       onClick={() => elig.ok && onPublish(lap)}
       disabled={!elig.ok}
       title={elig.ok ? "Publish this lap to the leaderboard" : elig.reason}
+      aria-label={elig.ok ? "Publish this lap to the leaderboard" : `Can't publish: ${elig.reason}`}
       style={{
         ...actionBtn(elig.ok ? "#2c2150" : C.line, elig.ok ? "#b98cff" : C.textFaintest, phone),
         cursor: elig.ok ? "pointer" : "default",
@@ -253,7 +254,7 @@ export default function AnalyticsScreen({
             </div>
             <input ref={fileRef} type="file" accept=".json" multiple style={{ display: "none" }}
               onChange={(e) => { Array.from(e.target.files).forEach(onLoadTrace); e.target.value = ""; }} />
-            <button onClick={() => fileRef.current.click()} title="Load a trace JSON from the Calibrator" style={actionBtn(C.borderStrong, "#9aa3b8", phone)}>{phone ? "↧" : "↧ Load"}</button>
+            <button onClick={() => fileRef.current.click()} title="Load a trace JSON from the Calibrator" aria-label="Load a trace file" style={actionBtn(C.borderStrong, "#9aa3b8", phone)}>{phone ? "↧" : "↧ Load"}</button>
             {selectedRef?.setup && <SetupBtn onClick={() => onOpenSetup(selectedRef)} phone={phone} />}
             {selectedRef && (
               // A loaded trace is only REMOVED from this session (✕, harmless); a
@@ -283,7 +284,7 @@ export default function AnalyticsScreen({
             {selectedComparisonIsLap && (
               <>
                 {comparisonLap.setup && <SetupBtn onClick={() => onOpenSetup(comparisonLap)} phone={phone} />}
-                <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" style={actionBtn("#0c3a1c", "#00e676", phone)}>{phone ? "⬇" : "⬇ Save"}</button>
+                <button onClick={() => requestSave(comparisonLap)} title="Save lap to a .json file" aria-label="Save lap to a file" style={actionBtn("#0c3a1c", "#00e676", phone)}>{phone ? "⬇" : "⬇ Save"}</button>
                 {onPublishLap && <PublishBtn lap={comparisonLap} onPublish={onPublishLap} phone={phone} />}
                 <DeleteBtn onClick={() => setPendingDelete(comparisonLap)} phone={phone} />
               </>

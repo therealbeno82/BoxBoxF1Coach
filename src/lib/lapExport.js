@@ -1,7 +1,6 @@
 // ─── LAP EXPORT ───────────────────────────────────────────────────────────────
-// Recorded laps live in memory only for the duration of a session. This helper
-// lets the user explicitly save ONE chosen lap to a .json file they can keep or
-// share. The file uses the same { meta, samples } shape the Trace Calibrator
+// Recorded laps persist in IndexedDB (lib/lapStore.js); this lets the driver
+// save ONE chosen lap to a .json file to keep outside the app or share. The file uses the same { meta, samples } shape the Trace Calibrator
 // exports, so an exported lap re-imports through Setup → "Load trace JSON" and
 // shows up as a comparison source — no special import path needed.
 //

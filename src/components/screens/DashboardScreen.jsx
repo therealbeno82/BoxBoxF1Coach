@@ -16,6 +16,7 @@ import { openExternal, KOFI_URL } from "../../lib/env.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
 import { WrenchIcon, TrashIcon } from "../icons.jsx";
 import DeleteLapConfirm from "../DeleteLapConfirm.jsx";
+import TyreChip from "../TyreChip.jsx";
 
 // The swap arrows on the Switch Driver control, drawn at whatever size the
 // placement wants — a 19px glyph in the desktop card's tile, 17px inline in the
@@ -84,24 +85,6 @@ const fmt = (t) => formatLapTime(t, 3);
 const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
 const gapCol = (g) => (g == null ? C.textFaint : g <= 1e-6 ? C.green : g < 0.4 ? C.yellow : C.textMid);
 const gapText = (g) => (g == null ? "" : g <= 1e-6 ? "PB" : `+${g.toFixed(3)}`);
-
-// Compound chip for a PB row. Wet/Inter laps get a blue chip, dry laps a neutral
-// one; falls back to the dry/wet word when a lap predates compound tagging.
-const TyreChip = ({ lap }) => {
-  const label = tyreLabel(lap?.tyre);
-  const cond = tyreCondition(lap?.tyre);
-  // Always render a condition: laps with no compound data fold into "dry" (the
-  // default racing condition), matching computeDriverStats' bucketing.
-  const wet = cond === "wet";
-  return (
-    <span style={{ fontSize: 9, letterSpacing: 0.5, fontWeight: 700, textTransform: "uppercase",
-      fontFamily: FONT.mono, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap",
-      color: wet ? "#bcdcff" : C.textDim, background: wet ? "rgba(68,145,210,0.18)" : C.surface,
-      border: `1px solid ${wet ? "rgba(68,145,210,0.5)" : C.line}` }}>
-      {label || (wet ? "Wet" : "Dry")}
-    </span>
-  );
-};
 
 // A PB row's two buttons sit at its right end, 26px of chrome each. On a touch
 // screen the coarse-pointer floor lifts them to 44 TALL but never wider, and the
@@ -210,7 +193,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
   );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px 28px 26px",
+    <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px var(--screen-px) 26px",
       display: "flex", flexDirection: "column", fontFamily: FONT.ui }}>
       <UpdateBanner update={update} />
       {/* `alignContent: flex-start` on a phone. The two columns WRAP onto
@@ -368,7 +351,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               <div style={{ fontSize: 30, marginBottom: 10 }}>📊</div>
               <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6 }}>No laps yet for {name}</div>
               <div style={{ fontSize: 12, color: C.textMid, maxWidth: 400, lineHeight: 1.55 }}>
-                Start the game (or fake mode) and drive a lap — completed laps are saved to this driver's
+                Start the game (or Demo Mode in Settings) and drive a lap — completed laps are saved to this driver's
                 profile and their stats appear here.
               </div>
             </div>
@@ -534,7 +517,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                                     {country ? (
                                       <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.5, fontFamily: FONT.mono, color: C.textFaint, flex: "none" }}>{country}</span>
                                     ) : null}
-                                    <TyreChip lap={lap} />
+                                    <TyreChip tyre={lap?.tyre} />
                                     <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
                                       <WrenchBtn onClick={() => onOpenSetup?.(lap)} has={!!lap.setup} />
                                       {onDeleteLap && <TrashBtn onClick={() => confirmDelete(lap)} />}

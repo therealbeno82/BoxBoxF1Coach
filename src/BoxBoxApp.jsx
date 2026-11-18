@@ -171,7 +171,7 @@ const LS_CALL_LEAD = "f1coach.callLead";
 //   • "kokoro"  — neural Kokoro model run locally (natural, but must SYNTHESISE
 //                 audio first). To keep on-the-mark corner calls instant we
 //                 pre-synthesise the known call phrases (see `prewarm`) and cache
-//                 the decoded AudioBuffers; only novel text (AI tips, chat) is
+//                 the decoded AudioBuffers; only novel text (AI debrief tips) is
 //                 synthesised on demand.
 //   • native    — Android's own TextToSpeech, through the f1android plugin. It is
 //                 the ONLY engine in that build (Kokoro is stripped from the
@@ -235,7 +235,7 @@ function useAudio(voicePrefs = {}) {
     const hit = bufCache.current.get(key);
     if (hit) {
       // Touch (re-insert at the end) so repeatedly-played corner calls stay warm
-      // while one-shot AI tips/chat replies age out under the LRU cap below.
+      // while one-shot AI debrief tips age out under the LRU cap below.
       bufCache.current.delete(key);
       bufCache.current.set(key, hit);
       return hit;
@@ -245,7 +245,7 @@ function useAudio(voicePrefs = {}) {
     const buf = ctx.createBuffer(1, audio.length, sampleRate);
     buf.copyToChannel(audio, 0);
     bufCache.current.set(key, buf);
-    // Bound memory: evict the least-recently-used entries. Novel text (tips, chat)
+    // Bound memory: evict the least-recently-used entries. Novel text (debrief tips)
     // is each unique, so without a cap the decoded-buffer cache grows unbounded.
     const CACHE_CAP = 64;
     while (bufCache.current.size > CACHE_CAP) {
@@ -524,7 +524,7 @@ function providerErr() {
 
 // The between-lap debrief is the ONLY LLM call the app makes. There used to be a
 // second one — an on-track one-shot tip grounded in the live telemetry point vs the
-// reference sample — but its only entry point was the Race Engineer chat panel, so
+// reference sample — but its only entry point was the Race Engineer chat panel (since removed), so
 // it was orphaned when that was removed. The deterministic rule engine owns
 // everything that happens mid-corner; the LLM only ever speaks between laps.
 function useLLM(llmConfig) {
@@ -1972,12 +1972,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   useEffect(() => { setComparisonLapId("live"); }, [sessionId]);
 
   // The two sample arrays the Analytics panels read, and the lap length derived
-  // from them. All three were computed INLINE in the Analytics branch of the JSX,
-  // which runs on every render — i.e. 30x/s while the game is sending, since
-  // liveTel is state on this component. The length reduce alone walked ~1,400
-  // samples a tick for a value that changes only when the selected lap or
-  // reference changes; both arrays are already sorted by `dist`, so the max is
-  // simply the last element.
+  // from them — memoised on the selected lap and reference, the only things they
+  // depend on (they used to be computed inline in the JSX). Both arrays are
+  // sorted by `dist`, so the length is simply the last element.
   const compareSamples = useMemo(() => comparisonLap?.samples || [], [comparisonLap]);
   const referenceSamples = useMemo(() => activeTrace?.samples || [], [activeTrace]);
   const lapLenFromSamples = useMemo(() => {
@@ -2013,10 +2010,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     return max + 1;
   }, [storedLaps, sessionId]);
 
-  // Lap-wide evidence for the coach: your most recent COMPLETED lap vs the loaded
-  // reference. Recomputed only when a lap finishes or the reference changes (not
-  // per telemetry tick), so it's cheap. Falls back to null → coach uses the
-  // instantaneous at-this-point comparison.
   // One labeler the coach uses everywhere a track distance would otherwise be
   // read out: corner/zone name inside a named zone, else the sector. Bound to the
   // active zones + the trace's sector boundaries (meta.sectors) when present.
@@ -2591,9 +2584,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     color: activeDriverObj?.color || "#3671C6", setup: lap?.setup || null,
   }), [trackName, activeDriverObj?.color]);
 
-  // The track-map legend chips. Was an inline map in the JSX, so seven objects and
-  // seven closures were allocated per render — i.e. per telemetry tick — for a set
-  // that only changes when a cue is toggled.
+  // The track-map legend chips, memoised on the one thing they depend on: which
+  // cues are toggled on.
   const legendChips = useMemo(
     () => LIVE_LEGEND.map(([color, label, key]) => ({ color, label,
       on: liveCues[key] !== false,

@@ -15,12 +15,7 @@ import { formatLapTime } from "../../lib/format.js";
 import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { boardLabel } from "../../lib/leaderboard/boardKey.js";
 import { eligibility } from "../../lib/leaderboard/eligibility.js";
-import { useAndroidBack } from "../../hooks/useAndroidBack.js";
-
-const btn = (border, bg, color) => ({
-  padding: "11px 22px", borderRadius: 9, border: `1px solid ${border}`, background: bg,
-  color, fontSize: 12, fontWeight: 800, letterSpacing: 0.5, cursor: "pointer", fontFamily: FONT.ui,
-});
+import ModalShell, { modalBtn } from "../ModalShell.jsx";
 
 const Row = ({ label, children }) => (
   <div style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "7px 0" }}>
@@ -31,13 +26,6 @@ const Row = ({ label, children }) => (
 );
 
 export default function PublishLapModal({ lap, driver, busy, result, onConfirm, onClose }) {
-  // Back dismisses the dialog, exactly as the backdrop does — and like the
-  // backdrop it goes inert mid-upload. Note it still CONSUMES the press there:
-  // swallowing back during a publish is the point, since the alternative is the
-  // activity dying halfway through one. Called before the early return below,
-  // because a hook cannot be conditional.
-  useAndroidBack(() => { if (!busy) onClose(); }, !!lap);
-
   if (!lap) return null;
 
   const elig = eligibility(lap);
@@ -45,107 +33,88 @@ export default function PublishLapModal({ lap, driver, busy, result, onConfirm, 
   const compound = tyreLabel(lap.tyre);
   const wet = tyreCondition(lap.tyre) === "wet";
 
+  // Every way out — backdrop, Escape, Android back — goes inert mid-upload
+  // (`dismissable`). Back still CONSUMES the press then: swallowing it during a
+  // publish is the point, since the alternative is the activity dying halfway
+  // through one. Escape used to do nothing here at all.
   return (
-    <div onClick={busy ? undefined : onClose} style={{
-      position: "fixed", inset: 0, zIndex: 150, background: "rgba(5,7,11,.74)",
-      backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center",
-      fontFamily: FONT.ui, padding: 24,
-    }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width: 480, maxWidth: "100%", background: C.modal, border: `1px solid ${C.borderModal}`,
-        borderRadius: 16, boxShadow: "0 30px 80px rgba(0,0,0,.6)", overflow: "hidden",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "20px 24px",
-          borderBottom: `1px solid ${C.line}` }}>
-          <div style={{ width: 5, height: 34, borderRadius: 3, background: C.accent }} />
-          <div>
-            <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: 0.5, color: C.textHi }}>
-              {result ? (result.ok ? "Published" : "Not published") : "Publish this lap?"}
+    <ModalShell onClose={onClose} dismissable={!busy} width={480}
+      title={result ? (result.ok ? "Published" : "Not published") : "Publish this lap?"}
+      subtitle={board ? boardLabel(board.boardId) : null}
+      footer={<>
+        <button onClick={onClose} disabled={busy}
+          style={{ ...modalBtn("secondary"), opacity: busy ? 0.5 : 1 }}>
+          {result ? "Close" : "Cancel"}
+        </button>
+        {elig.ok && !result && (
+          <button onClick={onConfirm} disabled={busy}
+            style={{ ...modalBtn("primary"), opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Publishing…" : "Publish"}
+          </button>
+        )}
+      </>}>
+      <div style={{ padding: "16px 24px" }}>
+        {/* ── Refused before it left the machine ── */}
+        {!elig.ok && !result && (
+          <div style={{ fontSize: 13, lineHeight: 1.65, color: C.orange }}>{elig.reason}</div>
+        )}
+
+        {/* ── What's about to be sent ── */}
+        {elig.ok && !result && (
+          <>
+            <Row label="Lap">
+              <span style={{ fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: "#fff" }}>
+                {formatLapTime(lap.lapTime, 3)}
+              </span>
+              {compound && (
+                <span style={{ marginLeft: 10, fontSize: 11, color: wet ? "#7fb4e8" : C.textFaint }}>
+                  {compound}
+                </span>
+              )}
+            </Row>
+            <Row label="Published as">{driver?.name || lap.meta?.driver || "You"}</Row>
+            <Row label="Includes">
+              Speed, throttle, brake, gear, steering and ERS traces, plus your racing line.
+            </Row>
+            <Row label="Excludes">
+              <span style={{ color: C.green }}>Your car setup.</span>{" "}
+              <span style={{ color: C.textMuted }}>Never sent to a board.</span>
+            </Row>
+            <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: 9,
+              background: C.inset, border: `1px solid ${C.line}`,
+              fontSize: 12, lineHeight: 1.6, color: C.textMuted }}>
+              Anyone can see this lap and download it as their reference. You can only hold one
+              lap per board — publishing a faster one later replaces this.
             </div>
-            {board && (
-              <div style={{ fontSize: 10, letterSpacing: 1.4, color: C.textDim,
-                textTransform: "uppercase", marginTop: 3 }}>{boardLabel(board.boardId)}</div>
+          </>
+        )}
+
+        {/* ── Outcome ── */}
+        {result?.ok && (
+          <div style={{ fontSize: 13, lineHeight: 1.7, color: C.textMid }}>
+            {result.improved ? (
+              <>
+                <div style={{ fontFamily: FONT.mono, fontSize: 30, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
+                  P{result.pos}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  of {result.total} {result.total === 1 ? "lap" : "laps"} on this board.
+                </div>
+                {result.verdict === "flagged" && (
+                  <div style={{ marginTop: 12, fontSize: 12, color: C.orange }}>
+                    One validation check was borderline, so the entry is marked. It still ranks.
+                  </div>
+                )}
+              </>
+            ) : (
+              <>{result.reason} You're currently P{result.pos} of {result.total}.</>
             )}
           </div>
-        </div>
-
-        <div style={{ padding: "16px 24px" }}>
-          {/* ── Refused before it left the machine ── */}
-          {!elig.ok && !result && (
-            <div style={{ fontSize: 13, lineHeight: 1.65, color: C.orange }}>{elig.reason}</div>
-          )}
-
-          {/* ── What's about to be sent ── */}
-          {elig.ok && !result && (
-            <>
-              <Row label="Lap">
-                <span style={{ fontFamily: FONT.mono, fontSize: 17, fontWeight: 800, color: "#fff" }}>
-                  {formatLapTime(lap.lapTime, 3)}
-                </span>
-                {compound && (
-                  <span style={{ marginLeft: 10, fontSize: 11, color: wet ? "#7fb4e8" : C.textFaint }}>
-                    {compound}
-                  </span>
-                )}
-              </Row>
-              <Row label="Published as">{driver?.name || lap.meta?.driver || "You"}</Row>
-              <Row label="Includes">
-                Speed, throttle, brake, gear, steering and ERS traces, plus your racing line.
-              </Row>
-              <Row label="Excludes">
-                <span style={{ color: C.green }}>Your car setup.</span>{" "}
-                <span style={{ color: C.textMuted }}>Never sent to a board.</span>
-              </Row>
-              <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: 9,
-                background: C.inset, border: `1px solid ${C.line}`,
-                fontSize: 12, lineHeight: 1.6, color: C.textMuted }}>
-                Anyone can see this lap and download it as their reference. You can only hold one
-                lap per board — publishing a faster one later replaces this.
-              </div>
-            </>
-          )}
-
-          {/* ── Outcome ── */}
-          {result?.ok && (
-            <div style={{ fontSize: 13, lineHeight: 1.7, color: C.textMid }}>
-              {result.improved ? (
-                <>
-                  <div style={{ fontFamily: FONT.mono, fontSize: 30, fontWeight: 800, color: C.purple, lineHeight: 1 }}>
-                    P{result.pos}
-                  </div>
-                  <div style={{ marginTop: 8 }}>
-                    of {result.total} {result.total === 1 ? "lap" : "laps"} on this board.
-                  </div>
-                  {result.verdict === "flagged" && (
-                    <div style={{ marginTop: 12, fontSize: 12, color: C.orange }}>
-                      One validation check was borderline, so the entry is marked. It still ranks.
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>{result.reason} You're currently P{result.pos} of {result.total}.</>
-              )}
-            </div>
-          )}
-          {result && !result.ok && (
-            <div style={{ fontSize: 13, lineHeight: 1.65, color: C.orange }}>{result.reason}</div>
-          )}
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, padding: "16px 24px",
-          borderTop: `1px solid ${C.line}`, background: C.bg }}>
-          <button onClick={onClose} disabled={busy}
-            style={{ ...btn(C.borderStrong, C.surface, C.textMid), opacity: busy ? 0.5 : 1 }}>
-            {result ? "Close" : "Cancel"}
-          </button>
-          {elig.ok && !result && (
-            <button onClick={onConfirm} disabled={busy}
-              style={{ ...btn(C.blue, C.blue, C.onAccent), opacity: busy ? 0.6 : 1 }}>
-              {busy ? "Publishing…" : "Publish"}
-            </button>
-          )}
-        </div>
+        )}
+        {result && !result.ok && (
+          <div style={{ fontSize: 13, lineHeight: 1.65, color: C.orange }}>{result.reason}</div>
+        )}
       </div>
-    </div>
+    </ModalShell>
   );
 }

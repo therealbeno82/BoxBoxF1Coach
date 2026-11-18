@@ -20,7 +20,7 @@
 //! missing half: it asks the device whether the effect is really playing, and
 //! re-arms it when it isn't.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::time::{Duration, Instant};
 
 use sdl2::sys as sys;
@@ -174,9 +174,7 @@ impl WheelOutput {
     pub fn init(&mut self) -> bool {
         unsafe {
             sys::SDL_SetMainReady();
-            let hint = CString::new("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS").unwrap();
-            let one = CString::new("1").unwrap();
-            sys::SDL_SetHint(hint.as_ptr(), one.as_ptr());
+            sys::SDL_SetHint(c"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS".as_ptr(), c"1".as_ptr());
 
             if sys::SDL_Init(sys::SDL_INIT_JOYSTICK | sys::SDL_INIT_HAPTIC) != 0 {
                 self.error = format!("SDL_Init failed: {}", sdl_error());

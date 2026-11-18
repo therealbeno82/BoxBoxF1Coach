@@ -391,10 +391,10 @@ References you've already downloaded keep working offline.
 
 ## Security notes
 
-A full review lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
+The standing summary lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
-- The Tauri attack surface is minimal — capabilities grant only `core:default` and
-  `opener:default`, and the CSP is tightly scoped (`object-src 'none'`, `frame-src 'none'`,
+- The Tauri attack surface is minimal — capabilities grant only `core:default`,
+  `opener:default` and `dialog:default`, and the CSP is tightly scoped (`object-src 'none'`, `frame-src 'none'`,
   `base-uri 'self'`).
 - The LLM layer has real prompt-injection defenses (grounding, scope rule, `<< >>` data
   wrapping, output sanitization).
@@ -420,8 +420,8 @@ Known limitations worth stating plainly:
 - On console, the coach's audio comes out of the PC, not the console (see
   [Playing on console](#playing-on-console-ps5--xbox)).
 
-See [CODE_REVIEW.md](CODE_REVIEW.md) for hardening items and the issue tracker for the
-roadmap.
+See [CODE_REVIEW.md](CODE_REVIEW.md) for the attack surface and known limits, and the issue
+tracker for the roadmap.
 
 ---
 

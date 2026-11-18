@@ -50,6 +50,10 @@ export default function TrackOrbitView({
   const targetRef = useRef(null);   // smoothed look-at point, in world units
   const trackRef  = useRef({});     // last inputs the static geometry was built from
   const [failed, setFailed] = useState(false);
+  // True until the three.js chunk (~560 kB) has loaded and the scene exists. The
+  // first open of 3D used to show an empty gradient for that whole time — only a
+  // failure ever got a note.
+  const [loading, setLoading] = useState(true);
 
   // Orbit pose. `az` starts null and is seeded from the car's heading on the first
   // frame, so the view opens looking up the road rather than at an arbitrary compass
@@ -160,6 +164,7 @@ export default function TrackOrbitView({
       // onReady fires when the car model lands, which is after this — the loop may
       // well have settled by then, so it forces one more frame.
       const scene = createOrbitScene(canvas, () => { keyRef.current = null; start(); });
+      setLoading(false);
       if (!scene) { setFailed(true); return; }   // no WebGL — say so, don't fail silently
       sceneRef.current = scene;
       // A new scene has an empty world, so the record of what was built into the last
@@ -169,7 +174,7 @@ export default function TrackOrbitView({
       resize();
       keyRef.current = null;
       start();
-    }).catch(() => { if (!cancelled) setFailed(true); });
+    }).catch(() => { if (!cancelled) { setLoading(false); setFailed(true); } });
 
     const ro = new ResizeObserver(() => { if (resize()) { keyRef.current = null; start(); } });
     ro.observe(wrap);
@@ -318,7 +323,14 @@ export default function TrackOrbitView({
       title="Drag to orbit · scroll to zoom · double-click to reset"
       style={{ position: "absolute", inset: 0, overflow: "hidden", touchAction: "none",
         cursor: failed ? "default" : "grab" }}>
-      <canvas ref={canvasRef} style={{ display: "block" }} />
+      <canvas ref={canvasRef} role="img" aria-label="3D view of both racing lines; drag to orbit, wheel to zoom" style={{ display: "block" }} />
+      {loading && !failed && (
+        <div role="status" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: "center", pointerEvents: "none",
+          fontFamily: FONT.mono, fontSize: 11, letterSpacing: 1, color: "#5b6478" }}>
+          Loading 3D view…
+        </div>
+      )}
       {failed && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center",
           justifyContent: "center", textAlign: "center", padding: 24, lineHeight: 1.6,

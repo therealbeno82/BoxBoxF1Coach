@@ -593,6 +593,11 @@ export default function TelemetryStudio({
           onPointerDown={onStackDown} onPointerMove={onStackMove}
           onPointerUp={onStackUp} onPointerCancel={() => { tapRef.current = null; }}
           onPointerLeave={onStackLeave}
+          role="button" tabIndex={0} aria-label={playing ? "Pause playback" : "Play playback"}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;   // a sector button inside handles its own keys
+            if (e.key === " " || e.key === "Enter") { e.preventDefault(); setPlaying((pl) => !pl); }
+          }}
           title="Click to play / pause · hover to read both laps"
           style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column", gap: 6,
             cursor: "pointer", touchAction: "pan-y" }}>

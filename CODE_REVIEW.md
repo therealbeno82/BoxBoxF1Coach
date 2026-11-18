@@ -1,81 +1,64 @@
-# Box, Box — Code Review
+# F1 Coach — Security & Code Review Notes
 
-Scope: Tauri shell + in-process Rust core (`src-tauri/src/telemetry`, `src-tauri/src/ffb`),
-React frontend (`src/`), build scripts. Dependencies and build artifacts excluded.
+What a reviewer should know about this codebase's attack surface and its known
+limits. The history of individual fixes lives in the git log (each review pass
+landed as commits that explain the failure they fixed); this file is the
+standing summary, not a changelog.
 
-> Architecture note: the old Node telemetry bridge (`bridge/f1-bridge.cjs`) has been
-> removed. A single UDP listener now lives in-process in Rust and pushes snapshots to the
-> webview via Tauri events (`telemetry`, `core_status`, `ffb_gauges`, `ffb_status`). The
-> LLM path is OpenRouter-only.
+## Attack surface
 
-**Overall:** Well-structured and unusually well-commented. The Tauri attack surface is
-minimal, Rust UDP parsing is fully bounds-checked, the FFB engine has genuine safety-release
-gating, and the LLM layer has real prompt-injection guardrails. Findings are hardening and
-polish — nothing critical. Items marked ✅ were fixed in the review pass.
+- **Tauri capabilities** grant `core:default`, `opener:default` and
+  `dialog:default` on desktop (`src-tauri/capabilities/default.json`), plus the
+  `f1android` plugin on Android only (`capabilities/android.json`).
+- **CSP** (`tauri.conf.json`) is tightly scoped: `object-src 'none'`,
+  `frame-src 'none'`, `base-uri 'self'`, and `connect-src` lists only
+  OpenRouter, the GitHub release API and the Supabase project. `devCsp` is
+  looser (it allows the jsdelivr CDN and `unsafe-eval` for Vite) and never
+  reaches a packaged build.
+- **The UDP listener binds all interfaces** on the game port so a console on the
+  LAN can reach it. It only receives; every reader in `telemetry/raw.rs` is
+  bounds-checked and every packet parser is all-or-nothing, so a short or
+  spoofed datagram is dropped without writing a field. A LAN host can still
+  send fake telemetry — and through it drive the wheel — within the FFB
+  engine's own output caps (`max_output`, slew, soft-start, the safety release).
+- **`write_text_file`** writes to any path it is given. Deliberately: the path
+  comes from the native Save dialog the user just answered, and the command
+  avoids opening a filesystem scope for the whole app.
+- **FFB settings** are clamped to the tab's own ranges on the way in
+  (`FfbSettings::sanitized`), so an imported profile can't reverse the steering
+  force or defeat the output cap.
 
----
+## Data the app holds
 
-## Security
+- **The OpenRouter API key is stored in plaintext** in `localStorage` (the
+  WebView's app-data directory). It only ever travels to OpenRouter. Moving it to
+  the OS keychain is an open follow-up.
+- Laps, avatars, track maps and downloaded references live in IndexedDB. A
+  profile export carries all of them except the API key.
 
-### S1. OpenRouter API key stored in plaintext — *Moderate*
-`src/BoxBoxApp.jsx` persists the key in `localStorage` (`f1coach.openRouterKey`). In the
-Tauri WebView this is written unencrypted to the app data directory, readable by any local
-process. The `type="password"` input only masks display, not storage.
+## LLM guardrails (`src/lib/coach/`)
 
-✅ Partially addressed: the Setup tab now states the key is kept locally in cleartext.
-Recommended follow-up: move it to the OS keychain (a keyring/stronghold Tauri plugin).
+The debrief is the only LLM call. Untrusted text (driver, track and zone names
+from imported traces) is sanitised before it enters a prompt and wrapped in
+`<< >>`; the model may only cite numbers present in the lap evidence
+(`enforceGrounding`); replies are shaped and length-capped, and a reply cut off
+mid-JSON is never shown or spoken as JSON. Covered by `npm test`.
 
-### S2. Derived strings interpolated into prompts without sanitization — *Low (hardening)*
-`prompts.js` runs the clearly-untrusted fields (driver/track/zone names) through
-`sanitizeUntrusted`, but `evidence`, `lapLog`, `trends`, and `cornerProfiles` are
-interpolated raw. They are app-computed from numeric telemetry, but a corner/zone label
-originating in a loaded trace can pass through. `SCOPE_RULE` + `<< >>` data-wrapping already
-mitigate; sanitizing these too would be defense-in-depth.
+## Online leaderboards (`lib/leaderboard/`, `supabase/`)
 
-### S3. UDP listener binds all interfaces — *Informational*
-`src-tauri/src/telemetry/udp.rs` binds `0.0.0.0` on the game port. Inherent to receiving
-telemetry, and every accessor in `raw.rs` is bounds-checked so a malformed/short datagram
-bails via `?` rather than panicking — no memory-safety risk. A LAN host could still inject
-fake telemetry / drive the FFB; acceptable for this app.
+- Clients never write: RLS is read-only everywhere, and the `submit-lap` Edge
+  Function (service role) is the only writer. It re-derives the board, validates
+  the trace (`validate.js`, shared byte-for-byte with the app), stores the exact
+  bytes it validated, writes atomically, and deletes the trace an improvement
+  replaces. Published meta is rebuilt from an allow-list.
+- **Known limit:** validation cannot catch a genuinely driven lap with assists
+  on unless the client reports them — and anything the client reports is an
+  honesty check, not anti-tamper.
+- The anonymous-auth session lives in `localStorage`; losing it loses the ability
+  to replace or delete your own entries (they stay on the board).
 
-### Positives worth keeping
-- CSP is tightly scoped: `object-src 'none'`, `frame-src 'none'`, `base-uri 'self'`
-  (`tauri.conf.json`).
-- Capabilities grant only `core:default` + `opener:default` (`capabilities/default.json`).
-- Prompt-injection defense is genuine: `sanitizeUntrusted`, `<< >>` wrapping, `SCOPE_RULE`.
-- Trace JSON is validated + clamped (`sanitizeTraceSamples`) on import.
-- Rust readers are `Option`-returning and bounds-checked end to end.
+## Testing
 
----
-
-## Bugs
-
-### B1. Chat spinner race in `useCoachChat.js` — *fixed* ✅
-On rapid `send()` calls the new call aborts the previous one and sets `thinking=true`; the
-aborted call's `finally` then cleared it while the new request was still in flight. Guarded
-with `if (abortRef.current === ctrl) setThinking(false)`.
-
-### B2. `clearLaps` resolved before deletes completed — *fixed* ✅
-`lapStore.js` resolved inside `getAllKeys.onsuccess`, before the delete writes landed.
-Now resolves on `transaction.oncomplete` (and rejects on `transaction.onerror`).
-
-### B3. Timestamp-based IDs could collide — *fixed* ✅
-`lap-${Date.now()}` and the trace id `Date.now().toString()` collided when two items were
-created in the same millisecond. Both now use `crypto.randomUUID()`.
-
-### B4. `useTauriEvents` subscribes to the handler keys present at mount — *documented* ✅
-The effect's empty dep array means the event *names* are read once. All callers pass a fixed
-key set, so it is not a live bug; the constraint is now documented in the hook.
-
----
-
-## Cleanup / maintainability
-
-- **`BoxBoxApp.jsx` is a ~2,400-line monolith** holding the root component, lap recorder,
-  telemetry wiring, and screen orchestration. Consider extracting `useLapRecorder`.
-- **`lib.rs` uses `.lock().unwrap()`** in `spawn_emitter` — safe today (runs once at setup,
-  before any thread could poison the mutex), but `if let Ok(..)` would be more defensive.
-- **No automated tests.** The pure guardrail functions (`cleanOutput`, `enforceGrounding`,
-  `sanitizeUntrusted`, `compareVersions`) are ideal, cheap unit-test targets.
-- **`devCsp`** allows `'unsafe-inline'`/`'unsafe-eval'` for scripts — fine, dev-only; it
-  never reaches the production CSP.
+`npm test` (pure JS modules, `node --test`, no dependencies) and
+`cargo test --lib` in `src-tauri/` (parsers, FFB reconstruction and safety
+gates, core status). UI paths are verified by running the app — see CLAUDE.md.

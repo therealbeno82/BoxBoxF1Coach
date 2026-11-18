@@ -1,8 +1,8 @@
 // ─── COACH GUARDRAILS ─────────────────────────────────────────────────────────
-// Input gating, output shaping, prompt-injection sanitization, and numeric
-// grounding — the deterministic guardrails that wrap every LLM call so the small
-// local model can't coach on garbage telemetry, leak markdown/preamble, follow
-// instructions hidden in a trace file, or cite figures the data doesn't support.
+// Output shaping, prompt-injection sanitization, and numeric grounding — the
+// deterministic guardrails around the between-lap debrief, so the model can't leak
+// markdown/preamble, follow instructions hidden in a trace file, or cite figures
+// the lap evidence doesn't support.
 
 // ── Output shaping ──
 const LEAD_FILLER =

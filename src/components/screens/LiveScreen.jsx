@@ -13,6 +13,7 @@ import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from
 import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import { WrenchIcon } from "../icons.jsx";
 import Hint from "../Hint.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -209,9 +210,7 @@ const LapRow = memo(function LapRow({ lap: l, best, sectorColor, onOpenSetup }) 
           <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
             borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
             opacity: l.setup ? 1 : 0.5 }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-            </svg>
+            <WrenchIcon size={14} />
           </span>
         </button>
       </span>
@@ -593,11 +592,11 @@ export default function LiveScreen({
           (BoxBoxApp's liveCalls gate). Say so explicitly — a coach that just goes
           quiet mid-session reads as a broken app, not a deliberate decision. */}
       {refMismatch && (
-        <div style={{ flex: "none", background: "#2a1113", border: `1px solid ${C.red || "#ff4d5e"}`,
+        <div style={{ flex: "none", background: "#2a1113", border: `1px solid ${C.red}`,
           borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "flex-start", gap: 11 }}>
           <span style={{ fontSize: 15, lineHeight: 1.2 }}>⚠️</span>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.red || "#ff4d5e" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.red }}>
               Corner calls muted — reference isn't comparable
             </div>
             <div style={{ fontSize: 11, color: C.textMid, marginTop: 3, lineHeight: 1.5 }}>
@@ -710,8 +709,16 @@ export default function LiveScreen({
                 (minWidth 0) rather than wrap. */}
             <div style={{ display: "flex", gap: phone ? 3 : 7, flexWrap: phone ? "nowrap" : "wrap",
               ...(phone && { minWidth: 0, justifyContent: "space-between" }) }}>
+              {/* Real buttons (they were clickable divs, unreachable by keyboard
+                  and silent to a screen reader). `minHeight: 0` keeps them exactly
+                  the size they were: seven of them share one line on a phone, the
+                  case CLAUDE.md lists for opting a line-of-text control out of the
+                  coarse-pointer tap floor. */}
               {legendChips.map((l) => (
-                <div key={l.label} onClick={l.onToggle || undefined} style={{
+                <button key={l.label} type="button" onClick={l.onToggle || undefined}
+                  aria-pressed={l.on} disabled={!l.onToggle}
+                  title={`${l.on ? "Mute" : "Unmute"} ${l.label} cues and markings`} style={{
+                  font: "inherit", color: "inherit", minHeight: 0,
                   display: "flex", alignItems: "center", gap: phone ? 3 : 8,
                   padding: phone ? "4px 5px" : "6px 10px", borderRadius: phone ? 6 : 8,
                   // Sized to their own label, not forced equal: equal widths make the
@@ -726,7 +733,7 @@ export default function LiveScreen({
                   <span style={{ fontSize: phone ? 8.5 : 11, fontWeight: 600, letterSpacing: phone ? 0 : .3,
                     color: l.on ? C.textBody2 : C.textDim,
                     ...(phone && { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }) }}>{l.label}</span>
-                </div>
+                </button>
               ))}
               {onSaveMap && (
                 <button onClick={onSaveMap} title="Save this map as a PNG" style={{
@@ -745,7 +752,11 @@ export default function LiveScreen({
           {!phone && leadControl}
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{mapSlot}</div>
-            <div onClick={onToggleAudio} title="Toggle track audio cues" style={{
+            {/* A button, so it takes the coarse-pointer tap floor: as a div the
+                phone's "CUES ON" pill was ~25px tall. It floats over the map, so
+                the extra height costs no layout. */}
+            <button type="button" onClick={onToggleAudio} title="Toggle track audio cues" aria-pressed={!!audioOn} style={{
+              font: "inherit", color: "inherit",
               position: "absolute", right: 8, bottom: 8, zIndex: 5, display: "flex", alignItems: "center",
               gap: phone ? 5 : 9,
               background: audioOn ? C.elevated : C.inset, border: `1px solid ${audioOn ? C.blue : C.line}`,
@@ -755,7 +766,7 @@ export default function LiveScreen({
               <span style={{ fontSize: phone ? 9 : 11, fontWeight: 700, letterSpacing: 1, color: audioOn ? C.textBody2 : C.textDim }}>
                 {phone ? (audioOn ? "CUES ON" : "CUES OFF") : (audioOn ? "AUDIO CUES ON" : "AUDIO CUES OFF")}
               </span>
-            </div>
+            </button>
           </div>
         </div>
 
@@ -865,17 +876,18 @@ export default function LiveScreen({
               <span style={{ width: 22, height: 22, borderRadius: 6, background: "#b45bff22", border: `1px solid ${C.purple}`,
                 display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>✦</span>
               <span style={{ fontSize: 10, letterSpacing: 2, color: "#c39bff", textTransform: "uppercase", fontWeight: 700 }}>Next Lap Focus</span>
-              <div
-                onClick={onToggleFocusAudio}
+              <button type="button"
+                onClick={onToggleFocusAudio} disabled={!onToggleFocusAudio} aria-pressed={!!focusAudioOn}
                 title={focusAudioOn ? "Audio hints on — read through your headset. Click to mute." : "Audio hints off. Click to read hints aloud."}
-                style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
+                style={{ font: "inherit", color: "inherit",
+                  marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
                   background: focusAudioOn ? "#b45bff1f" : C.inset, border: `1px solid ${focusAudioOn ? C.purple : C.line}`,
                   cursor: onToggleFocusAudio ? "pointer" : "default" }}>
                 <span style={{ fontSize: 12 }}>{focusAudioOn ? "🎧" : "🔇"}</span>
                 <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1, color: focusAudioOn ? "#c39bff" : C.textDim }}>
                   {focusAudioOn ? "AUDIO ON" : "AUDIO OFF"}
                 </span>
-              </div>
+              </button>
             </div>
             <div style={{ fontSize: 14, lineHeight: 1.55, color: focus ? C.textBody : C.textDim }}>
               {focus ? focus.text : "Drive a lap with a reference loaded — the coach's per-lap focus appears here."}

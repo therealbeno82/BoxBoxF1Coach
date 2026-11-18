@@ -35,14 +35,12 @@
         --bg:             #0b0e14;  /* app background */
         --glow:           #131a2b;  /* radial glow behind the body content */
         --surface:        #11151d;  /* primary card */
-        --panel:          #0d1119;  /* inset / well / nested tile (legacy alias of --inset) */
         --inset:          #0d1119;  /* inset / well / nested tile */
         --elevated:       #16243f;  /* active / selected (accent-tinted) */
         --modal:          #0e121b;  /* overlay cards */
 
         /* Borders (skinnable) */
         --line:           #1c2230;  /* hairline card border */
-        --border:         #1c2230;
         --border-input:   #232a3a;
         --border-strong:  #2b3346;
         --border-modal:   #262c3a;  /* floating nav / switcher bar */
@@ -57,7 +55,6 @@
 
         /* Brand accent (skinnable) */
         --accent:         #3671C6;  /* brand blue — CTAs, active nav, accent bars */
-        --accent-contrast:#ffffff;
         --on-accent:      #ffffff;  /* foreground on top of --accent fills */
         --accent-glow:    rgba(54,113,198,.33);
         --accent-0d:      rgba(54,113,198,.05);
@@ -66,14 +63,10 @@
         --accent-44:      rgba(54,113,198,.27);
         --accent-55:      rgba(54,113,198,.33);
         --secondary:      #b45bff;  /* reference / coach purple */
-        --logo-bar:       #3671C6;
-        --livery-mix:     85%;
-        --tint-mix:       10%;
 
         /* Dashboard hero treatment (skinnable; Default keeps today's soft look) */
         --hero-border:    #1c2230;
         --pb-border:      #2c2150;  /* personal-best highlighted row */
-        --mark:           #3671C6;  /* decorative hero speed-mark accent */
         --num-italic:     normal;   /* italicised race numerals for some liveries */
         --r-lg:           16px;     /* radius scale — team skins flatten to 8px */
         --r-md:           14px;
@@ -126,7 +119,6 @@
              phone, and at ~53px per cell the values still clear their widest case
              ("300 km/h") — so the strip costs one row instead of three. */
           --grid-live-tiles:  repeat(6, 1fr);
-          --grid-live-sectors: repeat(3, 1fr);
           /* Five columns; .lb-secondary hides the four cells that fall outside,
              so the cell count and the column count stay in step — a grid with
              more children than columns spills into implicit ROWS rather than

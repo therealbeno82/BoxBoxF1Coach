@@ -118,11 +118,16 @@ function PanelTitle({ children, right, rightColor = C.textMuted }) {
   );
 }
 
-function Toggle({ on, onClick }) {
+// A real switch (role="switch" on a button). It was a span with an onClick — the
+// master FFB enable among them — so none of these could be reached by keyboard or
+// read as a switch. `label` names it for a screen reader; minHeight 0 keeps the
+// 19px track from being stretched by the coarse-pointer tap floor.
+function Toggle({ on, onClick, label }) {
   return (
-    <span onClick={onClick} style={{ width: 34, height: 19, flex: "none", borderRadius: 11, background: on ? C.blue : C.borderInput, position: "relative", transition: "background .15s", display: "inline-block", cursor: "pointer" }}>
+    <button type="button" role="switch" aria-checked={!!on} aria-label={label} onClick={onClick}
+      style={{ width: 34, height: 19, minHeight: 0, padding: 0, border: "none", flex: "none", borderRadius: 11, background: on ? C.blue : C.borderInput, position: "relative", transition: "background .15s", display: "inline-block", cursor: "pointer" }}>
       <span style={{ position: "absolute", top: 2, left: on ? 17 : 2, width: 15, height: 15, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
-    </span>
+    </button>
   );
 }
 
@@ -252,7 +257,7 @@ function ParamRow({ row, settings, setSetting }) {
     return (
       <div title={row.hint} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "3px 0" }}>
         <span style={{ fontSize: 12, color: C.textBody }}>{row.label}</span>
-        <Toggle on={!!settings[row.k]} onClick={() => setSetting(row.k, !settings[row.k])} />
+        <Toggle on={!!settings[row.k]} onClick={() => setSetting(row.k, !settings[row.k])} label={row.label} />
       </div>
     );
   }
@@ -413,7 +418,7 @@ export default function FfbScreen({ ffb }) {
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 9, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 13px" }}>
           <span style={{ fontSize: 11, color: C.textMid, fontWeight: 700, letterSpacing: 1 }}>FFB</span>
-          <Toggle on={enabled} onClick={() => setEnabled(!enabled)} />
+          <Toggle on={enabled} onClick={() => setEnabled(!enabled)} label="Force feedback enabled" />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 13px" }}>
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: stateColor, boxShadow: `0 0 8px ${stateColor}` }} />

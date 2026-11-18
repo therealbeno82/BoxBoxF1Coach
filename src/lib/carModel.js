@@ -94,14 +94,14 @@ export function loadCarTemplate() {
 // recompile — so it is decided once, here, from whether this car will ever need to
 // blend. `opacity` is a plain uniform and can be rewritten every frame for free.
 //
-// `depthWrite` is the caller's call because the two views want opposite things from
-// it. The T-cam's ghost keeps it ON: the model occludes its own far side and reads as
-// a shell rather than an x-ray of its own suspension. The orbit view turns it OFF, on
-// purpose — there the whole point is that two cars on the same piece of road stay
-// visible through each other.
-export function instanceCar(template, { color, opacity = 1, depthWrite = true } = {}) {
+// Both views keep depth writes ON for a translucent car: the model occludes its own
+// far side (a shell, not an x-ray of its suspension) and hides what it stands on.
+// The orbit view still shows two coincident cars through each other — three draws
+// its transparent queue back to front, so the far car is already in the buffer when
+// the near one blends over it (see orbitScene.js).
+export function instanceCar(template, { color, opacity = 1 } = {}) {
   const root = template.clone(true);
-  const blends = opacity < 1 || !depthWrite;
+  const blends = opacity < 1;
   const mats = [];
   root.traverse((o) => {
     if (!o.isMesh || !o.material) return;
@@ -109,7 +109,7 @@ export function instanceCar(template, { color, opacity = 1, depthWrite = true } 
     o.material = Array.isArray(o.material) ? src.map((m) => m.clone()) : src[0].clone();
     for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
       if (color && m.name === BODY_MATERIAL) m.color.set(color);
-      if (blends) { m.transparent = true; m.opacity = opacity; m.depthWrite = depthWrite; }
+      if (blends) { m.transparent = true; m.opacity = opacity; m.depthWrite = true; }
       mats.push(m);
     }
   });

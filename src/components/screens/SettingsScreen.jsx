@@ -460,7 +460,9 @@ export default function SettingsScreen({
             {engine === "kokoro" && kokoro.status !== "ready" && (
               <div>
                 <button onClick={kokoro.load} disabled={kokoro.status === "loading"} style={{ ...testBtn, width: "100%" }}>
-                  {kokoro.status === "loading" ? `⏳ Downloading… ${Math.round(kokoro.progress)}%` : kokoro.status === "error" ? "⚠ Download failed — retry" : "⬇ Download voice model (~90 MB, once)"}
+                  {/* The weights ship with the app (public/kokoro/) — this LOADS them;
+                      nothing is downloaded, and it works offline. */}
+                  {kokoro.status === "loading" ? `⏳ Loading voice model… ${Math.round(kokoro.progress)}%` : kokoro.status === "error" ? "⚠ Couldn't load the voice model — retry" : "Load voice model (bundled, works offline)"}
                 </button>
                 {kokoro.status === "loading" && (
                   <div style={{ height: 5, background: C.line, borderRadius: 3, marginTop: 8, overflow: "hidden" }}>

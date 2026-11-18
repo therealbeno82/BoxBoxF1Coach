@@ -281,8 +281,8 @@ fn pchip_at_with(b: &PchipBasis, ys: &[f32]) -> f32 {
 /// The hot path uses `PchipBasis::build` once and `pchip_at_with` per channel
 /// instead, so nothing in the engine calls this — but it composes exactly those
 /// two pieces, which is what lets the unit tests exercise the real reconstruction
-/// without reproducing the per-tick plumbing.
-#[allow(dead_code)]
+/// without reproducing the per-tick plumbing. Test-only, so it isn't compiled in.
+#[cfg(test)]
 fn pchip_at(ts: &[f32], ys: &[f32], t: f32) -> f32 {
     match PchipBasis::build(ts, t) {
         None => {
@@ -1219,8 +1219,10 @@ pub fn ffb_thread(
         // pushing every concurrent settings write onto arc-swap's slower path.
         let settings = handle.settings.load_full();
         let hz = {
-            let h = settings.ffb_update_hz;
-            if h < FFB_MIN_HZ { FfbSettings::default().ffb_update_hz } else { h.min(FFB_MAX_HZ) }
+            // Clamped, not reset: set_ffb_settings sanitizes now, but a rate below
+            // the floor used to jump to the 200 Hz DEFAULT rather than the 30 Hz
+            // floor — the opposite end of the range from what was asked for.
+            settings.ffb_update_hz.clamp(FFB_MIN_HZ, FFB_MAX_HZ)
         };
         let interval = Duration::from_nanos((1_000_000_000i64 / hz as i64) as u64);
         let t0 = Instant::now();
@@ -1908,6 +1910,28 @@ mod safety_tests {
         let c = FfbSettings { test_force: 0.9, max_output: 0.1, ..FfbSettings::default() };
         let mut e = Engine::new();
         assert!((e.compute(&cornering(), &c, &stats, NOW, DT).torque - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sanitized_settings_cannot_reverse_or_uncap_the_wheel() {
+        let wild = FfbSettings {
+            load_sensitivity: 3.0, max_output: -0.5, overall_strength: f32::NAN,
+            ffb_update_hz: 5, smoothing: 9.0, ..FfbSettings::default()
+        }.sanitized();
+        assert_eq!(wild.load_sensitivity, 1.0);
+        assert_eq!(wild.max_output, 0.0);
+        assert_eq!(wild.overall_strength, FfbSettings::default().overall_strength);
+        assert_eq!(wild.ffb_update_hz, super::FFB_MIN_HZ);
+        assert_eq!(wild.smoothing, 0.5);
+        // The defaults themselves are untouched.
+        assert_eq!(FfbSettings::default().sanitized(), FfbSettings::default());
+
+        // At the clamped maximum the load multiplier still pushes the right way.
+        let stats = driving();
+        let c = FfbSettings { load_sensitivity: 3.0, ..FfbSettings::default() }.sanitized();
+        let mut e = Engine::new();
+        let t = settle(&mut e, &c, &stats, 400);
+        assert!(t > 0.0, "positive lateral force must give positive torque, got {t}");
     }
 
     #[test]
