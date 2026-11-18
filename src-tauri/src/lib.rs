@@ -304,7 +304,11 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
                 let _ = app.emit("core_status", &core);
                 last_core = Some(core);
             }
-            if got_packet {
+            // Once anything has been emitted, keep emitting on change even with no
+            // packets — that is how the cleared snapshot reset_after_demo builds
+            // reaches the screen when demo mode is switched off, instead of the
+            // replay's last frame staying up until the game starts sending.
+            if got_packet || last_snap.is_some() {
                 let snap = shared.ui.load_full();
                 if changed(&mut last_snap, &snap) {
                     let _ = app.emit("telemetry", snap.as_ref());
