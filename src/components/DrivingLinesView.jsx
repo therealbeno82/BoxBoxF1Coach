@@ -712,9 +712,19 @@ export default function DrivingLinesView({
   // Glide the live viewBox toward the target. The target moves continuously while
   // the cars run (camera-follow pan), so this is per-frame exponential smoothing
   // rather than a one-shot tween — segment jumps ease in with the same motion.
-  const [vb, setVb] = useState(null);
+  //
+  // The glide writes the map SVG's viewBox attribute DIRECTLY (mapSvgRef) and
+  // commits to React state only once it settles. It used to setState every
+  // frame, which during playback was a SECOND full render of this whole view per
+  // frame on top of the playhead's — re-reconciling the transport, the segment
+  // card and both car markers just to move a viewBox. vbRef is the live value;
+  // `vb` (state) is the last committed one, which React's own viewBox prop reads
+  // — and since that prop is unchanged between commits, React never writes over
+  // the glide.
+  const [vb, setVbState] = useState(null);
   const vbRef = useRef(null);
-  vbRef.current = vb;
+  const setVb = useCallback((v) => { vbRef.current = v; setVbState(v); }, []);
+  const mapSvgRef = useRef(null);
   const targetVbRef = useRef(null);
   targetVbRef.current = targetVb;
 
@@ -738,12 +748,18 @@ export default function DrivingLinesView({
       if (!cur) { camRafRef.current = 0; setVb(to); return; }
       const diff = Math.max(Math.abs(to.x - cur.x), Math.abs(to.y - cur.y),
         Math.abs(to.w - cur.w), Math.abs(to.h - cur.h));
-      if (diff < 0.05) { camRafRef.current = 0; return; } // settled — sleep until the target moves
+      // Settled — commit where the glide ended to state, then sleep until the
+      // target moves. (React bails out if it is already the committed object.)
+      if (diff < 0.05) { camRafRef.current = 0; setVbState(cur); return; }
       const k = 1 - Math.exp(-dt / TAU);
-      setVb({
+      const next = {
         x: cur.x + (to.x - cur.x) * k, y: cur.y + (to.y - cur.y) * k,
         w: cur.w + (to.w - cur.w) * k, h: cur.h + (to.h - cur.h) * k,
-      });
+      };
+      vbRef.current = next;
+      const svg = mapSvgRef.current;
+      if (svg) svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.w} ${next.h}`);
+      else setVbState(next);   // no map on screen (another camera): keep state current for when it mounts
       camRafRef.current = requestAnimationFrame(step);
     };
     camRafRef.current = requestAnimationFrame(step);
@@ -904,7 +920,12 @@ export default function DrivingLinesView({
   }
 
   const vbox = vb || targetVb;
-  const sc = vbox ? (vbox.w + vbox.h) / 1100 : 1; // world-units-per-pixel-ish overlay scale
+  // World-units-per-pixel-ish overlay scale, from the TARGET box: that only
+  // changes on a segment or zoom change (pans keep its size), so the overlays
+  // don't need the per-frame glide to reach React — see vbRef above. During a
+  // zoom glide the labels take their final size at its start, ~0.5 s early.
+  const scBox = targetVb || vbox;
+  const sc = scBox ? (scBox.w + scBox.h) / 1100 : 1;
   // Car marker size. Overlays like corner labels are scaled by `sc` to stay a
   // CONSTANT on-screen size — but a car that never changes size looks huge over a
   // zoomed-out track and tiny in a zoomed-in corner. So size the cars in REAL-WORLD
@@ -1258,7 +1279,7 @@ export default function DrivingLinesView({
             onZoomBy={(f) => setZoom((z) => clamp(z * f, MIN_ZOOM, MAX_ZOOM))} />
         )}
         {camMode === "map" && vbox && (
-          <svg viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
+          <svg ref={mapSvgRef} viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
             style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block"}}>
             {road && (
               <>
