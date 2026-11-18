@@ -144,6 +144,9 @@ export default function AnalyticsScreen({
   trackName, sessionLabel, laps = [],
   comparisonLap,
   referenceSources = [], referenceId, onSelectReference, onLoadTrace, onRemoveTrace,
+  // The lap the hub picked when no reference was chosen (your fastest comparable
+  // lap here), or null. Shown in the "Auto" option so it's clear what is running.
+  autoReference = null,
   comparisonSources = [], comparisonId, onSelectComparison, onDeleteLap, onExportLap, onPublishLap,
   labelFor = (s) => s?.id, onOpenSetup,
   tracesSlot, linesSlot,
@@ -246,8 +249,11 @@ export default function AnalyticsScreen({
           <label style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Reference Lap</label>
           <div style={{ display: "flex", gap: phone ? 5 : 8 }}>
             <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <select value={referenceId || ""} onChange={(e) => onSelectReference(e.target.value || null)} style={selectStyle("#ffffff", phone)}>
-                <option value="">None — no reference</option>
+              {/* "" = AUTO (null in the hub), "none" = deliberately no reference. */}
+              <select value={referenceId || ""} onChange={(e) => onSelectReference(e.target.value || null)} style={selectStyle("#ffffff", phone)}
+                aria-label="Reference lap">
+                <option value="">{autoReference ? `Auto · your best — ${labelFor(autoReference)}` : "Auto · your best (none yet)"}</option>
+                <option value="none">None — no reference</option>
                 {referenceSources.map((s) => <option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               </select>
               <span style={phone ? caretPhone : caret}>▾</span>
@@ -275,7 +281,8 @@ export default function AnalyticsScreen({
           <label style={{ fontSize: phone ? 8 : 9, letterSpacing: phone ? 1 : 2, color: C.textDim, textTransform: "uppercase", fontWeight: 600 }}>Driven Lap</label>
           <div style={{ display: "flex", gap: phone ? 5 : 8 }}>
             <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <select value={comparisonId} onChange={(e) => onSelectComparison(e.target.value)} style={selectStyle(C.cyan, phone)}>
+              <select value={comparisonId} onChange={(e) => onSelectComparison(e.target.value)} style={selectStyle(C.cyan, phone)}
+                aria-label="Driven lap">
                 <option value="live">Live lap</option>
                 {comparisonSources.map((s) => <option key={s.id} value={s.id}>{labelFor(s)}</option>)}
               </select>

@@ -247,7 +247,7 @@ const PHONE_LAP_LIST_MAX =
 
 export default function LiveScreen({
   tel, units = "km/h", trackName, sessionLabel, liveLapNumber,
-  laps = [], sessionId, activeTrace, lastAdvice, refMismatch = null,
+  laps = [], sessionId, activeTrace, refIsAuto = false, lastAdvice, refMismatch = null,
   liveMini = { durations: [], current: -1, tyre: null },
   mapSlot, legendChips = [], audioOn, onToggleAudio,
   // Call lead: seconds of warning on every cue the legend chips above govern.
@@ -455,8 +455,12 @@ export default function LiveScreen({
   const refLapTime = activeTrace ? (activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null) : null;
   const lapDelta = (!refMismatch && lastLap && typeof refLapTime === "number")
     ? lastLap.lapTime - refLapTime : null;
+  // An automatic reference (no lap chosen — the hub picked the driver's own best
+  // comparable lap) says so, with the lap it is.
   const refLabel = activeTrace
-    ? `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
+    ? (refIsAuto
+      ? `AUTO REF · your lap ${activeTrace.lapNumber ?? ""}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
+      : `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`)
     : "No reference loaded";
 
   // Sector cards: the last completed lap's splits vs this driver's best sectors

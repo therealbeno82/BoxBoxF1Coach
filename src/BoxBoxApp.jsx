@@ -1791,10 +1791,95 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     }
   }, [wsConnected, tab]);
 
-  // Resolve the active reference from loaded traces + this session's driven laps.
-  const activeTrace = useMemo(
-    () => [...refTraces, ...storedLaps].find(t=>t.id===activeTraceId)||null,
+  const [comparisonLapId, setComparisonLapId] = useState("live");
+
+  // The circuit the driver's current laps belong to — the anchor for scoping every
+  // coaching input to ONE track (compare apples with apples). Prefer the live-
+  // identified circuit; fall back to the newest saved lap's own track. Deliberately
+  // NOT trackName, which falls back to the reference's track — that would let a
+  // wrong-track reference redefine "the driven track" and hide a real mismatch.
+  const drivenTrackName = useMemo(() => {
+    if (trackInfo?.name) return trackInfo.name;
+    // The NEWEST lap by recording time, not the last array element — a session
+    // file load appends older laps at the end.
+    let newest = null;
+    for (const l of storedLaps) {
+      if (l.meta?.track && (newest == null || (l.recordedAt || 0) > (newest.recordedAt || 0))) newest = l;
+    }
+    return newest?.meta?.track || null;
+  }, [trackInfo, storedLaps]);
+
+  // Laps the coach is allowed to reason about:
+  //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
+  //     another track (mixed history produced nonsense cross-track claims);
+  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
+  //   • the same side of the demo line (isDemoLap). Demo Mode replays somebody
+  //     else's real race, so its laps must never become the benchmark a driven lap
+  //     is measured against — and, replaying, the driver should be compared with
+  //     the replay's own laps rather than their real history at this circuit.
+  const trackLaps = useMemo(
+    () => storedLaps.filter((l) =>
+      isRankable(l) && isDemoLap(l) === !!fakeMode && sameTrack(l.meta?.track, drivenTrackName)),
+    [storedLaps, drivenTrackName, fakeMode]);
+
+  // The newest lap on this circuit — what the driver is being coached on AS THEY
+  // DRIVE, and the default subject of the Coach Log.
+  const latestTrackLap = trackLaps.length ? trackLaps[trackLaps.length - 1] : null;
+
+  // ── The lap the COACH LOG is analysing ────────────────────────────────────
+  // Shared with the Analytics "Driven Lap" selector, so choosing a lap on either
+  // screen moves both. Analytics' "live" option is the lap IN PROGRESS: it has no
+  // lap time and only partial samples, so it can't be analysed — for the coach it
+  // means "follow the newest completed lap", which is the pre-selector behaviour.
+  // Anything else resolves within trackLaps, so a stale id can never point the
+  // coach at another circuit's lap.
+  const coachLap = useMemo(() => {
+    if (comparisonLapId === "live") return latestTrackLap;
+    return trackLaps.find((l) => l.id === comparisonLapId) || latestTrackLap;
+  }, [comparisonLapId, trackLaps, latestTrackLap]);
+  // Is the Coach Log pinned to an earlier lap rather than following the newest?
+  const coachLapPinned = !!coachLap && !!latestTrackLap && coachLap.id !== latestTrackLap.id;
+
+  // The car on track right now, as a lap-shaped profile for matchReference — see
+  // the live/coach verdicts further down for why it's read off telemetry.
+  const liveProfileLap = useMemo(() => ({
+    tyre: { visual: telId.tyreVisual },
+    meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
+  }), [telId.tyreVisual, drivenTrackName, sessionTypeLabel]);
+
+  // ── The reference ────────────────────────────────────────────────────────
+  // `activeTraceId` is the driver's explicit choice: a trace or lap id, the string
+  // "none" (no reference, on purpose), or null — AUTO, the default.
+  //
+  // Auto picks the driver's own fastest COMPARABLE lap here: this circuit, the same
+  // side of the demo line, game-valid (all via trackLaps), with a real trace, and
+  // passing matchReference against what's being driven or analysed (same dry/wet,
+  // session type and compound). Without it, nothing was coached until a reference
+  // had been loaded by hand: no corner calls, an empty Coach Log, no debrief — on
+  // exactly the laps where the driver's own best is the obvious benchmark.
+  //
+  // It skips the lap under analysis, since a lap measured against itself finds
+  // nothing; so when the newest lap is a new best, the previous best becomes the
+  // reference for it. An explicit choice always wins, "none" included.
+  const explicitTrace = useMemo(
+    () => (activeTraceId && activeTraceId !== "none"
+      ? [...refTraces, ...storedLaps].find(t=>t.id===activeTraceId)||null : null),
     [refTraces, storedLaps, activeTraceId]);
+  const autoTrace = useMemo(() => {
+    if (activeTraceId != null) return null;
+    const subject = coachLap || liveProfileLap;
+    let best = null;
+    for (const l of trackLaps) {
+      if (l.id === coachLap?.id || !(l.lapTime > 0)) continue;
+      if (!Array.isArray(l.samples) || l.samples.length < 50) continue;
+      if (best && l.lapTime >= best.lapTime) continue;
+      const m = matchReference(subject, l, { drivenTrack: drivenTrackName });
+      if (m && !m.ok) continue;
+      best = l;
+    }
+    return best;
+  }, [activeTraceId, trackLaps, coachLap, liveProfileLap, drivenTrackName]);
+  const activeTrace = explicitTrace || autoTrace;
 
   // Strategy zones are DERIVED FROM the active reference — braking, lift-and-coast,
   // and ERS-mode (by-mode) zones detected from its throttle, brake + ERS channels.
@@ -1952,8 +2037,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   };
 
   // Comparison lap for the Compare screen — defaults to the live lap; can also be
-  // any lap driven this session. (The reference/benchmark side is activeTrace.)
-  const [comparisonLapId, setComparisonLapId] = useState("live");
+  // any lap driven this session. (The id state itself is declared further up,
+  // beside the reference: the auto-reference needs to know the coached lap.)
   const comparisonLap = useMemo(
     () => comparisonLapId === "live" ? currentLap : (storedLaps.find(s => s.id === comparisonLapId) || null),
     [comparisonLapId, currentLap, storedLaps]);
@@ -2014,52 +2099,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     [zones, activeTrace, trackCorners]
   );
 
-  // The circuit the driver's current laps belong to — the anchor for scoping every
-  // coaching input to ONE track (compare apples with apples). Prefer the live-
-  // identified circuit; fall back to the newest saved lap's own track. Deliberately
-  // NOT trackName, which falls back to the reference's track — that would let a
-  // wrong-track reference redefine "the driven track" and hide a real mismatch.
-  const drivenTrackName = useMemo(() => {
-    if (trackInfo?.name) return trackInfo.name;
-    // The NEWEST lap by recording time, not the last array element — a session
-    // file load appends older laps at the end.
-    let newest = null;
-    for (const l of storedLaps) {
-      if (l.meta?.track && (newest == null || (l.recordedAt || 0) > (newest.recordedAt || 0))) newest = l;
-    }
-    return newest?.meta?.track || null;
-  }, [trackInfo, storedLaps]);
-
-  // Laps the coach is allowed to reason about:
-  //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
-  //     another track (mixed history produced nonsense cross-track claims);
-  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
-  //   • the same side of the demo line (isDemoLap). Demo Mode replays somebody
-  //     else's real race, so its laps must never become the benchmark a driven lap
-  //     is measured against — and, replaying, the driver should be compared with
-  //     the replay's own laps rather than their real history at this circuit.
-  const trackLaps = useMemo(
-    () => storedLaps.filter((l) =>
-      isRankable(l) && isDemoLap(l) === !!fakeMode && sameTrack(l.meta?.track, drivenTrackName)),
-    [storedLaps, drivenTrackName, fakeMode]);
-
-  // The newest lap on this circuit — what the driver is being coached on AS THEY
-  // DRIVE, and the default subject of the Coach Log.
-  const latestTrackLap = trackLaps.length ? trackLaps[trackLaps.length - 1] : null;
-
-  // ── The lap the COACH LOG is analysing ────────────────────────────────────
-  // Shared with the Analytics "Driven Lap" selector, so choosing a lap on either
-  // screen moves both. Analytics' "live" option is the lap IN PROGRESS: it has no
-  // lap time and only partial samples, so it can't be analysed — for the coach it
-  // means "follow the newest completed lap", which is the pre-selector behaviour.
-  // Anything else resolves within trackLaps, so a stale id can never point the
-  // coach at another circuit's lap.
-  const coachLap = useMemo(() => {
-    if (comparisonLapId === "live") return latestTrackLap;
-    return trackLaps.find((l) => l.id === comparisonLapId) || latestTrackLap;
-  }, [comparisonLapId, trackLaps, latestTrackLap]);
-  // Is the Coach Log pinned to an earlier lap rather than following the newest?
-  const coachLapPinned = !!coachLap && !!latestTrackLap && coachLap.id !== latestTrackLap.id;
 
   // The selector is shared with Analytics, which happily lists laps the coach
   // cannot work with — an invalidated lap is still worth overlaying as a trace,
@@ -2098,10 +2137,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //     muted" against a race lap the driver hadn't asked about. Idle, every field
   //     below is null, every rule fails open, and only a wrong-circuit reference
   //     can still flag — which is exactly what should flag with no lap running.
-  const liveProfileLap = useMemo(() => ({
-    tyre: { visual: telId.tyreVisual },
-    meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
-  }), [telId.tyreVisual, drivenTrackName, sessionTypeLabel]);
+  // (liveProfileLap — the live car's profile — is declared up with the reference,
+  // which the auto-reference needs it for.)
 
   const liveRefMatch = useMemo(
     () => matchReference(liveProfileLap, activeTrace, { drivenTrack: drivenTrackName }),
@@ -2628,7 +2665,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           sessionLabel={sessionTypeLabel}
           liveLapNumber={liveLapNumber}
           laps={storedLaps} sessionId={sessionId} liveMini={readLiveMini()} demoMode={fakeMode}
-          activeTrace={activeTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
+          activeTrace={activeTrace} refIsAuto={!explicitTrace && !!autoTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
           focusAudioOn={focusAudioOn} onToggleFocusAudio={()=>setFocusAudioOn(a=>!a)}
           onOpenSetup={openSetupForLap} onResetSessionLaps={resetSessionLaps}
@@ -2651,7 +2688,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           trackName={trackName} sessionLabel={sessionTypeLabel} demoMode={fakeMode}
           laps={sessionLaps} comparisonLap={comparisonLap}
           referenceSources={referenceSources}
-          referenceId={activeTraceId} onSelectReference={setActiveTraceId}
+          referenceId={activeTraceId} onSelectReference={setActiveTraceId} autoReference={autoTrace}
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
