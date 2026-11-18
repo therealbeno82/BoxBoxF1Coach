@@ -22,6 +22,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTauriEvents } from "./useTauriEvents.js";
 import { inTauri } from "../lib/env.js";
+import { publishCarSetup } from "../lib/telemetryStore.js";
 
 export function useTelemetry({ onSnapshot, onReceivingChange, onStatus }) {
   const cbRef = useRef({ onSnapshot, onReceivingChange, onStatus });
@@ -47,6 +48,9 @@ export function useTelemetry({ onSnapshot, onReceivingChange, onStatus }) {
       sawEventRef.current = true;
       applyStatus(e.payload);
     },
+    // Sent on change and re-sent every few seconds by the core (lib.rs), so a
+    // page that subscribes late still gets it.
+    car_setup: (e) => publishCarSetup(e.payload),
   });
 
   useEffect(() => {

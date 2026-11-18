@@ -1398,7 +1398,10 @@ pub fn ffb_thread(
             // What the DEVICE says, logged only when it changes: the belief and
             // the driver's answer diverging is the whole bug, so print the
             // answer rather than the belief.
-            if wheel.is_open() {
+            // Only when Info is actually being logged: diag() is two DirectInput
+            // status queries on this TIME_CRITICAL thread, and in a release build
+            // (Warn and above) the line it feeds is never written.
+            if wheel.is_open() && log::log_enabled!(log::Level::Info) {
                 let d = wheel.diag();
                 if last_diag != Some(d) {
                     last_diag = Some(d);

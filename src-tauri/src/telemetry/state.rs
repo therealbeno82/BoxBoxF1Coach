@@ -186,7 +186,7 @@ impl Default for Latest {
 /// Raw player car setup — field names mirror the F1 UDP spec (and the old
 /// bridge's forwarded object) so the existing CarSetupModal keeps working.
 /// `Deserialize` so the demo session's recorded setup loads straight into it.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[allow(non_snake_case)]
 pub struct CarSetup {
     pub m_frontWing: u8,
@@ -261,6 +261,10 @@ pub struct Snapshot {
     pub sessionType: u8,
     pub lapPct: f32,
     pub lapDistance: f32,
+    /// The circuit's length (m) from the Session packet. The UI used to recover
+    /// it three separate ways as lapDistance / lapPct — rounded to the metre and
+    /// noisy at small lapPct — although the core always had the exact value.
+    pub trackLength: u16,
     pub throttle: i32,
     pub brake: i32,
     pub steer: i32,
@@ -313,7 +317,9 @@ pub struct Snapshot {
     pub worldX: Option<f32>,
     pub worldY: Option<f32>,
     pub worldZ: Option<f32>,
-    pub setup: Option<CarSetup>,
+    // The car setup is NOT here: it was ~35% of every 30 Hz emit while changing
+    // a handful of times a session. It goes out as its own `car_setup` event —
+    // see SharedTelemetry::setup and the emitter in lib.rs.
 }
 
 #[allow(non_snake_case)]
@@ -333,6 +339,7 @@ impl Snapshot {
             sessionType: l.session_type,
             lapPct: lap_pct,
             lapDistance: l.lap_distance.max(0.0).round(),
+            trackLength: l.track_length,
             throttle: (clamp(l.throttle, 0.0, 1.0) * 100.0).round() as i32,
             brake: (clamp(l.brake, 0.0, 1.0) * 100.0).round() as i32,
             steer: (clamp(l.steer, -1.0, 1.0) * 100.0).round() as i32,
@@ -386,7 +393,6 @@ impl Snapshot {
             worldX: l.world_x,
             worldY: l.world_y,
             worldZ: l.world_z,
-            setup: l.setup.clone(),
         }
     }
 
@@ -515,6 +521,9 @@ impl AppStats {
 /// The handle shared across threads: the latest snapshot (UI + FFB) and stats.
 pub struct SharedTelemetry {
     pub ui: ArcSwap<Snapshot>,
+    /// The player's car setup, republished only when it changes (compared on
+    /// every UI build). The emitter sends it as `car_setup`.
+    pub setup: ArcSwap<Option<CarSetup>>,
     pub ffb_frame: ArcSwap<FfbFrame>,
     pub stats: AppStats,
     /// Whether any real packet has been seen (the UI keeps its own simulator
@@ -542,6 +551,7 @@ impl SharedTelemetry {
         let seed = Latest::default();
         Arc::new(SharedTelemetry {
             ui: ArcSwap::from_pointee(Snapshot::from_latest(&seed)),
+            setup: ArcSwap::from_pointee(None),
             ffb_frame: ArcSwap::from_pointee(FfbFrame::default()),
             stats: AppStats::default(),
             got_packet: AtomicBool::new(false),
@@ -667,6 +677,9 @@ impl SharedTelemetry {
         self.last_ui_build_ms.store(now, Ordering::Relaxed);
         self.ui_dirty.store(false, Ordering::Relaxed);
         self.ui.store(Arc::new(Snapshot::from_latest(l)));
+        if **self.setup.load() != l.setup {
+            self.setup.store(Arc::new(l.setup.clone()));
+        }
     }
 }
 

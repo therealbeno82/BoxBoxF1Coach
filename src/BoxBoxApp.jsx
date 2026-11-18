@@ -17,6 +17,7 @@ import {
   HAS_NATIVE_TTS, isNativeTtsReady, loadNativeTts, speakNative, stopNative,
 } from "./lib/tts/index.js";
 import { buildCoachLog } from "./lib/coach/coachLog.js";
+import { analyzeLap } from "./lib/coach/lapAnalysis.js";
 import { deriveZonesFromTrace } from "./lib/coach/zones.js";
 import { matchReference, profileLabel } from "./lib/coach/refMatch.js";
 import { buildDebriefPrompt } from "./lib/coach/prompts.js";
@@ -713,7 +714,7 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
             setup, tyreVisual, tyreActual, tyreAge, tyreWear, fuelInTank, fuelRemainingLaps,
             weather, trackTemp, airTemp,
             worldX, worldY, worldZ,
-            sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
+            sector2Pct, sector3Pct, overtakeActive, activeAeroMode, trackLength,
             tyreSurfaceTemps, tyreInnerTemps } = getTelemetry();
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
     const buf = bufRef.current;
@@ -951,17 +952,17 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
     if (typeof fuelRemainingLaps === "number" && isFinite(fuelRemainingLaps)) {
       buf.lastFuelDelta = fuelRemainingLaps;
     }
-    // Running estimate of the circuit's length, from distance ÷ lap fraction. Only
-    // sampled in the back half of a lap: near the line a small pct divides into a
-    // wild answer. Accurate to ~±1 m, and it's the ONLY source of a true track
-    // length for a lap — the last sample's distance is up to 10 m short of the
-    // line, which is enough to matter when the online validator reconstructs a lap
-    // time from the trace. Same trick the track-map fitter already uses.
-    // Deliberately accumulated ACROSS laps, not per lap — more samples, better
-    // estimate — but scoped to one circuit, so it's dropped the moment the track
-    // changes or a stale one would be stamped onto the next circuit's laps.
+    // The circuit's true length, stamped on each lap (the last sample is up to
+    // 10 m short of the line, which matters when the online validator rebuilds a
+    // lap time from the trace). The snapshot carries the game's own value
+    // (`trackLength`, from the Session packet), so that is taken as-is. Only a
+    // snapshot without it falls back to estimating distance ÷ lap fraction,
+    // sampled in the back half of a lap where a small pct can't blow it up, and
+    // accumulated across laps. Scoped to one circuit either way, so a value is
+    // dropped the moment the track changes rather than stamped onto the next.
     if (buf.lapLenTrack !== trackName) { buf.lapLenTrack = trackName; buf.lapLenEst = 0; }
-    if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
+    if (trackLength > 0) buf.lapLenEst = trackLength;
+    else if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
       const est = lapDistance / lapPct;
       if (isFinite(est) && est > buf.lapLenEst) buf.lapLenEst = est;
     }
@@ -2196,12 +2197,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Both of the below analyse `coachLap` explicitly rather than "the last lap in
   // the window" — with a pinned lap those are the same thing, but naming the lap
   // means a change to the window's ordering can never silently re-point them.
-  const lapEvidence = useMemo(() => {
+  // They share ONE analysis: the prose evidence and the structured log used to
+  // each run analyzeLap on identical inputs.
+  const coachAnalysis = useMemo(() => {
     if (!activeTrace || refMismatch || !coachLap?.samples) return null;
+    return analyzeLap(coachLap.samples, activeTrace.samples, { labelAt: trackLabeler });
+  }, [coachLap, activeTrace, trackLabeler, refMismatch]);
+  const lapEvidence = useMemo(() => {
+    if (!coachAnalysis) return null;
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildLapEvidence(coachLap.samples, activeTrace.samples,
-      { labelAt: trackLabeler, userLapTime: coachLap.lapTime, refLapTime });
-  }, [coachLap, activeTrace, trackLabeler, refMismatch]);
+      { analysis: coachAnalysis, userLapTime: coachLap.lapTime, refLapTime });
+  }, [coachAnalysis, coachLap, activeTrace]);
 
   // Structured per-channel breakdown for the Coach Log screen — the lap under
   // analysis vs the reference, with the real time-on-table distributed across
@@ -2210,11 +2217,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // reference, and while the reference isn't comparable with the lap analysed
   // (the screen shows the notice).
   const coachLog = useMemo(() => {
-    if (!activeTrace || refMismatch || !coachLap?.samples) return null;
+    if (!coachAnalysis) return null;
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildCoachLog(coachLap, activeTrace.samples, refLapTime,
-      { labelAt: trackLabeler, lapsAnalysed: coachableLaps.length });
-  }, [coachLap, coachableLaps, activeTrace, trackLabeler, refMismatch]);
+      { analysis: coachAnalysis, lapsAnalysed: coachableLaps.length });
+  }, [coachAnalysis, coachLap, coachableLaps, activeTrace]);
 
   // Cross-lap trends (recurring corner issues on this track), scoped to the
   // current circuit. Recomputed only when a lap completes or the reference changes.
@@ -2324,10 +2331,16 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // shows exactly the loaded race, and a fresh lap id each so they never clobber
   // an existing lap. In-memory only — reviewing a saved session doesn't touch the
   // driver's persisted history; the file stays the durable copy.
+  // A failed write now throws (saveJson) rather than looking like a cancel —
+  // say so, the way a failed load already does.
+  const exportLapSafe = useCallback((lap, opts) =>
+    exportLapToFile(lap, opts).catch((e) => alert(e.message)), []);
   const saveSession = async () => {
-    await exportSessionToFile(sessionLaps, {
-      driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
-    });
+    try {
+      await exportSessionToFile(sessionLaps, {
+        driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
+      });
+    } catch (e) { alert(e.message); }
   };
   const loadSession = async (file) => {
     let text;
@@ -2484,8 +2497,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (!driving) return;
 
     // Track length (m) from live telemetry, so lead seconds → distance.
-    const trackLen = (tel.lapPct > 0.002 && tel.lapDistance > 0)
-      ? tel.lapDistance / tel.lapPct : lastTrackLenRef.current;
+    const trackLen = tel.trackLength > 0 ? tel.trackLength
+      : (tel.lapPct > 0.002 && tel.lapDistance > 0) ? tel.lapDistance / tel.lapPct : lastTrackLenRef.current;
     if (trackLen > 500) lastTrackLenRef.current = trackLen;
     const leadDist = Math.max(0, tel.speed / 3.6) * leadSeconds;       // m ahead
     const leadPct  = clamp(leadDist / trackLen, 0, 0.25);              // lap fraction
@@ -2686,7 +2699,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
-          onDeleteLap={deleteLap} onExportLap={exportLapToFile}
+          onDeleteLap={deleteLap} onExportLap={exportLapSafe}
           onPublishLap={leaderboardEnabled ? requestPublish : undefined}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
@@ -2798,7 +2811,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       {/* ── Modals ── */}
       {switchDriverOpen && (
         <SwitchDriverModal
-          drivers={drivers} activeDriver={activeDriver} avatars={avatars}
+          drivers={drivers} activeDriver={activeDriver} activeLaps={storedLaps} avatars={avatars}
           onPick={setActiveDriver}
           onClose={()=>setSwitchDriverOpen(false)}
           onSignUp={()=>setTab("setup")}

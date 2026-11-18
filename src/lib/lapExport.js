@@ -73,16 +73,26 @@ export async function exportLapToFile(lap, { hideSetup = false } = {}) {
     lapTimeLabel(payload.meta.lapTime),
   ].join(" - ") + ".json";
 
-  return saveJson(payload, name);
+  // One lap is small and is the file most likely to be opened by a person, so it
+  // stays indented; the multi-lap exports below don't.
+  return saveJson(payload, name, { pretty: true });
 }
 
-// Save `payload` as pretty-printed JSON. Inside the Tauri app this opens a native
-// "Save As" dialog (default filename `name`) so the driver picks the folder, then
-// writes there via the write_text_file command. In a plain browser (`npm run dev`,
-// no IPC) it falls back to the old anchor-download into the Downloads folder.
-// Resolves true if a file was written, false if the user cancelled the dialog.
-export async function saveJson(payload, name) {
-  const text = JSON.stringify(payload, null, 2);
+// Save `payload` as JSON. Inside the Tauri app this opens a native "Save As"
+// dialog (default filename `name`) so the driver picks the folder, then writes
+// there via the write_text_file command. In a plain browser (`npm run dev`, no
+// IPC) it falls back to the old anchor-download into the Downloads folder.
+//
+// Resolves true if a file was written and false ONLY if the dialog was cancelled.
+// A failed write THROWS, with a message fit to show: it used to resolve false as
+// well, so a permission-denied save of a whole profile read as "cancelled" and
+// the driver believed a backup existed that never did.
+//
+// Compact unless `pretty`: indentation made a session or profile file 2.5-3x
+// its size (hundreds of laps × hundreds of samples × ~16 fields), all built on
+// the main thread and then copied again across IPC.
+export async function saveJson(payload, name, { pretty = false } = {}) {
+  const text = pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
   if (inTauri) {
     try {
       const path = await save({
@@ -102,7 +112,7 @@ export async function saveJson(payload, name) {
       return true;
     } catch (e) {
       console.error("Save failed:", e);
-      return false;
+      throw new Error(`Couldn't save ${name}: ${e?.message || e}`);
     }
   }
   downloadJson(text, name);

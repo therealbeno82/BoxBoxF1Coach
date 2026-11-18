@@ -20,6 +20,7 @@
 import * as THREE from "three";
 import { loadCarTemplate, instanceCar } from "./carModel.js";
 import { pedalT, pedalColor } from "./racingLine.js";
+import { elevAtRowFrac } from "./trackGeometry.js";
 import { FONT } from "./ui/tokens.js";
 
 // Depth range. The camera pulls back to ~600 m and the far side of a circuit can be
@@ -122,6 +123,24 @@ function nearestRow(rows, closed, x, z, from = null, span = 90) {
     test(i);
   }
   return best;
+}
+
+// Where along the row pair around `i` a point projects, as a FRACTIONAL row index
+// — the same projection tcamScene's rowFracAt makes, so both views put a car at
+// the same height on the same tarmac.
+function rowFracNear(rows, closed, i, x, z) {
+  const n = rows.length;
+  const wrap = (k) => (closed ? ((k % n) + n) % n : Math.max(0, Math.min(n - 1, k)));
+  const along = (p, q) => {
+    const ex = q.x - p.x, ez = q.z - p.z;
+    const L2 = ex * ex + ez * ez;
+    return L2 > 0 ? ((x - p.x) * ex + (z - p.z) * ez) / L2 : 0;
+  };
+  const here = rows[i];
+  const fwd = along(here, rows[wrap(i + 1)]);
+  if (fwd >= 0) return i + Math.min(1, fwd);
+  const back = along(rows[wrap(i - 1)], here);
+  return i - 1 + Math.max(0, Math.min(1, back));
 }
 
 // ─── Geometry builders ────────────────────────────────────────────────────────
@@ -536,10 +555,34 @@ export function createOrbitScene(canvas, onReady) {
   // Road height at a world point, plus the row it came from so a caller walking a
   // polyline can hand it back and get an O(1) lookup next time. Flat when there's no
   // model at all — a lap with no fitted circuit still draws its lines and its cars.
+  //
+  // The height is INTERPOLATED between the two rows the point sits between, not
+  // read off the nearest one. `rows[nearest].y` is a step function: rows are
+  // 2.5 m apart, so a car at racing speed crossed one every couple of frames and
+  // jumped by the whole difference — ~0.4 m on Eau Rouge's gradient — while the
+  // tarmac under it slid smoothly. The T-cam fixed exactly this with roadYAt; this
+  // is the same answer, so the two views agree on what height the road is.
   const seatAt = (x, z, from = null) => {
     if (!rows?.length) return { y: 0, row: null };
     const row = nearestRow(rows, closed, x, z, from);
-    return { y: rows[row].y || 0, row };
+    return { y: elevAtRowFrac(rows, rowFracNear(rows, closed, row, x, z), closed), row };
+  };
+
+  // The same, for something that moves a little each frame (a car, the camera
+  // target): walk from where it was last time instead of scanning every row — the
+  // cars and the camera used to cost three full scans a frame. A walk that ends
+  // more than 50 m away means the playhead jumped (a scrub), so that one falls back
+  // to the full scan.
+  const lastRow = new Map();
+  const seatTracked = (key, x, z) => {
+    const from = lastRow.get(key);
+    let s = seatAt(x, z, from ?? null);
+    if (from != null && s.row != null) {
+      const r = rows[s.row];
+      if ((r.x - x) ** 2 + (r.z - z) ** 2 > 2500) s = seatAt(x, z, null);
+    }
+    if (s.row != null) lastRow.set(key, s.row);
+    return s;
   };
 
   return {
@@ -551,6 +594,7 @@ export function createOrbitScene(canvas, onReady) {
     // TrackOrbitView, which keys it on the model and line identities.
     setTrack({ model, driven, reference, cornerMarks, brakeMarks }) {
       clearWorld();
+      lastRow.clear();
       rows = model?.centerline || null;
       closed = !!model?.closed;
       const road = roadMesh(model);
@@ -616,12 +660,12 @@ export function createOrbitScene(canvas, onReady) {
         if (!it) continue;
         const car = carFor(it.color);
         car.root.visible = true;
-        car.place({ x: it.x, y: seatAt(it.x, it.z).y, z: it.z, yaw: it.yaw }, it.dist);
+        car.place({ x: it.x, y: seatTracked(it.color, it.x, it.z).y, z: it.z, yaw: it.yaw }, it.dist);
       }
     },
 
     // Height of the road under a point, for the caller's camera target.
-    roadY(x, z) { return seatAt(x, z).y; },
+    roadY(x, z) { return seatTracked("camera", x, z).y; },
 
     // Orbit pose: where to look, from what bearing, how high up, how far back.
     // Azimuth is WORLD-fixed, not car-relative — the corner has to hold still while

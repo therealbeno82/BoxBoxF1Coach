@@ -36,6 +36,7 @@
 // start/finish line and traversal direction are recoverable, so loadTrackModel
 // records them for src/lib/cornerAnchors.js.)
 import { setAnchor } from "./cornerAnchors.js";
+import { loadTrackFile } from "./trackFile.js";
 
 const FIT_N = 512;          // resample count for the alignment solve
 const RMSE_ACCEPT = 12;     // meters — reject fits worse than this (line legitimately
@@ -716,12 +717,10 @@ export async function loadTrackModel(slug, lines) {
   let model = null;
   if (slug) {
     try {
-      const res = await fetch(`/tracks/${slug}.json`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.points) && data.points.length > 100) {
-          model = fitRealTrack(data, anchor, lines);
-        }
+      // Parsed once per circuit (lib/trackFile.js) — a refit used to re-fetch it.
+      const data = await loadTrackFile(slug);
+      if (Array.isArray(data?.points) && data.points.length > 100) {
+        model = fitRealTrack(data, anchor, lines);
       }
     } catch (e) {
       console.warn(`[trackGeometry] ${slug}: load failed (${e.message}) — using heuristic road`);

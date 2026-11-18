@@ -21,6 +21,7 @@
 // Cached in localStorage (a few bytes per circuit). A stale or wrong entry is
 // self-correcting: every real fit overwrites it.
 import { CORNER_NAMES } from "./cornerData.js";
+import { loadTrackFile } from "./trackFile.js";
 
 const KEY = "boxbox.cornerAnchors.v1";
 
@@ -69,8 +70,8 @@ const apexCache = new Map();
 export function loadApexes(slug) {
   if (!slug) return Promise.resolve(null);
   if (apexCache.has(slug)) return apexCache.get(slug);
-  const p = fetch(`/tracks/${slug}.json`)
-    .then((r) => (r.ok ? r.json() : null))
+  // The same parsed file the geometry fitter reads (lib/trackFile.js).
+  const p = loadTrackFile(slug)
     .then((d) => (Array.isArray(d?.apexes) && d.apexes.length ? d.apexes : null))
     // A genuinely absent file stays cached (no refetch on every track change);
     // a transient network failure must be evicted, or one offline moment means

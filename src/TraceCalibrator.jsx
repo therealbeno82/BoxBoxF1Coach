@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { C, FONT } from "./lib/ui/tokens.js";
 import { clamp } from "./lib/format.js";
 import { TRACKS } from "./lib/trackData.js";
@@ -249,8 +249,11 @@ function BandEditor({ channels, setChannels, imgHeight, clientDyToFrac }) {
 }
 
 // ─── EXTRACTED CURVE OVERLAY ──────────────────────────────────────────────────
-
-function CurveOverlay({ extracted, channels, imgHeight, editChId }) {
+// memo: the Calibrator re-renders on every mouse move (the crosshair follows the
+// pointer), and this rebuilt every channel's path from all extracted columns —
+// plus one <circle> per point while editing — each time, for curves that only
+// change when the extraction does.
+const CurveOverlay = memo(function CurveOverlay({ extracted, channels, imgHeight, editChId }) {
   if (!extracted) return null;
 
   return (
@@ -283,6 +286,18 @@ function CurveOverlay({ extracted, channels, imgHeight, editChId }) {
       })}
     </>
   );
+});
+
+// Nearest extracted sample to pixel column `x`. Binary search: the samples are
+// one per extracted column, in x order, and this runs per channel per mouse move.
+function nearestByX(pts, x) {
+  let lo = 0, hi = pts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].x < x) lo = mid + 1; else hi = mid;
+  }
+  const a = pts[lo - 1], b = pts[lo];
+  return a && Math.abs(a.x - x) <= Math.abs(b.x - x) ? a : b;
 }
 
 // ─── CROSSHAIR TOOLTIP ────────────────────────────────────────────────────────
@@ -296,7 +311,7 @@ function Crosshair({ pos, channels, extracted, imgWidth, imgHeight, applyYCal })
   channels.forEach(ch => {
     const pts = extracted[ch.id];
     if (!pts || pts.length === 0) return;
-    const closest = pts.reduce((best, p) => Math.abs(p.x - x) < Math.abs(best.x - x) ? p : best, pts[0]);
+    const closest = nearestByX(pts, x);
     values[ch.id] = applyYCal ? sanitizeChannelValue(applyYCal(closest.value, ch), ch) : closest.value;
   });
 
@@ -624,7 +639,8 @@ export default function TraceCalibrator({ onExit }) {
 
   // saveJson opens the native Save dialog in the app (anchor-download in plain
   // `npm run dev`) so the driver picks the folder, like every other export.
-  // Resolves false when the dialog was cancelled — stay quiet then.
+  // Resolves false when the dialog was cancelled — stay quiet then; a failed
+  // write throws, and says so.
   const downloadJson = async () => {
     const json = buildExportJson();
     if (!json) return;
@@ -639,7 +655,9 @@ export default function TraceCalibrator({ onExit }) {
       lapTimeLabel(json.meta.lapTime),
       "trace",
     ].join(" - ") + ".json";
-    if (await saveJson(json, name)) showToast("Trace JSON saved");
+    try {
+      if (await saveJson(json, name, { pretty: true })) showToast("Trace JSON saved");
+    } catch (e) { showToast(e.message); }
   };
 
   const showToast = (msg) => {

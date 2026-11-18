@@ -46,11 +46,12 @@ export const EMPTY_TEL = Object.freeze({
   activeAeroActivationDistance: 0, regs2026: 0, sessionUid: "0",
 });
 
-// Track length (m), latched with 1% hysteresis.
+// Track length (m).
 // ─────────────────────────────────────────────────────────────────────────────
-// Telemetry carries no track-length channel, but the Rust core sets
-// lapPct = lapDistance / trackLength (telemetry/state.rs), so the ratio recovers
-// it exactly. The hysteresis is what keeps it off the hub's render path: the
+// The snapshot carries the game's own `trackLength` (Session packet), and that is
+// used whenever it's there. The estimate below is the fallback for a snapshot
+// without it: the Rust core sets lapPct = lapDistance / trackLength
+// (telemetry/state.rs), so the ratio recovers it exactly. The hysteresis is what keeps it off the hub's render path: the
 // snapshot rounds lapDistance to the metre, and dividing by a small lapPct
 // amplifies that rounding — half a metre at lapPct 0.02 is 25 m of estimate. A
 // raw ratio would therefore flip the identity slice several times at the start of
@@ -61,6 +62,7 @@ export const EMPTY_TEL = Object.freeze({
 // always done.
 const TRACK_LEN_HYSTERESIS = 0.01;
 const nextTrackLen = (s, prev) => {
+  if (s.trackLength > 0) return s.trackLength;
   const { lapPct, lapDistance } = s;
   if (!(lapPct > 0.02) || !(lapDistance > 0)) return prev;
   const est = lapDistance / lapPct;
@@ -92,14 +94,25 @@ function deriveIdentity(s, prev) {
 const listeners = new Set();
 let snapshot = EMPTY_TEL;
 let identity = EMPTY_IDENTITY;
+// The car setup arrives on its own `car_setup` event (it used to ride in every
+// snapshot at ~35% of its size). Held here and attached to each snapshot as
+// `setup`, so readers — the lap recorder — see the same shape they always did.
+let carSetup = null;
 
 // Called once per snapshot from the core's "telemetry" event (see useTelemetry).
 // Updating the module state before notifying means every subscriber — a hook
 // re-render or an imperative per-tick callback — sees the same frame.
 export function publishTelemetry(next) {
+  if (next && next.setup === undefined) next.setup = carSetup;  // a fresh event payload; ours to tag
   snapshot = next || EMPTY_TEL;
   identity = deriveIdentity(snapshot, identity);
   for (const l of listeners) l();
+}
+
+// From the core's "car_setup" event. Taken on the next snapshot; no notify of
+// its own, since nothing renders it live.
+export function publishCarSetup(setup) {
+  carSetup = setup ?? null;
 }
 
 // A module function, not a closure: `useSyncExternalStore` re-subscribes whenever

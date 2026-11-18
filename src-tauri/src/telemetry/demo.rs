@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(l.track_id, s.track_id);
         assert!(l.speed_kmh > 0.0);
         assert!(l.setup.is_some(), "the recorded garage setup reaches the UI");
-        assert!(shared.ui.load().setup.is_some());
+        assert!(shared.setup.load().is_some());
 
         // Skip past the first lap → the second lap of the recording, with the
         // first one's real time reported as the last lap.

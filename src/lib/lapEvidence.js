@@ -13,8 +13,10 @@ import { analyzeLap, rankFindings, reconcile } from "./coach/lapAnalysis.js";
 // opts.userLapTime / opts.refLapTime let the prose seconds reconcile with the
 // measured lap-time delta — the same scaling the Coach Log screen applies — so the
 // two views never disagree. Omit them and the modeled estimate is used instead.
+// opts.analysis: an analyzeLap() result already computed for these inputs (the hub
+// shares one between this and the Coach Log rather than running it twice).
 export function buildLapEvidence(userSamples, refSamples, opts = {}) {
-  const a = analyzeLap(userSamples, refSamples, opts);
+  const a = opts.analysis ?? analyzeLap(userSamples, refSamples, opts);
   if (!a) return null;
 
   const { scale, estimated } = reconcile(a, opts.userLapTime, opts.refLapTime);

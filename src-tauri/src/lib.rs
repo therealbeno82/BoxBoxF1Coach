@@ -281,6 +281,11 @@ impl FfbEmit {
     fn tick(&mut self, _app: &tauri::AppHandle) {}
 }
 
+/// The car setup is emitted when it changes AND re-sent this often regardless:
+/// a change that lands before the page has subscribed (a session already running
+/// at launch) would otherwise never arrive. Half a kilobyte every few seconds.
+const SETUP_RESEND: Duration = Duration::from_secs(3);
+
 /// How often the emitter samples shared state and emits to the webview. The FFB
 /// gauge producer is gated to the same period, so the two have to agree or a
 /// publish is built and dropped unread.
@@ -297,6 +302,8 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut last_core: Option<CoreStatus> = None;
         let mut last_snap = None;
+        let mut last_setup = None;
+        let mut setup_sent = std::time::Instant::now();
         while running.load(Ordering::Relaxed) {
             let tick_start = std::time::Instant::now();
             let now = now_ms();
@@ -310,6 +317,11 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
                 let snap = shared.ui.load_full();
                 if changed(&mut last_snap, &snap) {
                     let _ = app.emit("telemetry", snap.as_ref());
+                }
+                let setup = shared.setup.load_full();
+                if changed(&mut last_setup, &setup) || setup_sent.elapsed() >= SETUP_RESEND {
+                    let _ = app.emit("car_setup", setup.as_ref());
+                    setup_sent = std::time::Instant::now();
                 }
             }
             ffb.tick(&app);
@@ -387,13 +399,20 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Logging in EVERY build. It used to be debug-only, so in a shipped
+            // build every `[core]` / `[ffb]` warning — a port that wouldn't bind,
+            // a wheel that wouldn't open — went nowhere, and a driver's bug report
+            // had nothing behind it. Release keeps warnings and errors only, in
+            // the plugin's default targets (stdout + the app's log directory).
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Info
+                    } else {
+                        log::LevelFilter::Warn
+                    })
+                    .build(),
+            )?;
             let running = Arc::new(AtomicBool::new(true));
             app.manage(EmitterState { running: running.clone() });
             spawn_emitter(app.handle().clone(), running);

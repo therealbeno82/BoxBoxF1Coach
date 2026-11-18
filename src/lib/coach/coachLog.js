@@ -27,8 +27,10 @@ const META = {
 // Display order on the screen.
 const ORDER = ["LINE", "GEAR", "BRAKING", "ERS", "THROTTLE"];
 
+// opts.analysis: a precomputed analyzeLap() result for the same inputs (see
+// lapEvidence.js) — saves the second identical analysis.
 export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
-  const a = analyzeLap(userLap?.samples, refSamples, opts);
+  const a = opts.analysis ?? analyzeLap(userLap?.samples, refSamples, opts);
   if (!a) return null;
 
   // Real time on the table: the measured lap-time delta scaled across channels, or
