@@ -96,15 +96,6 @@ export async function gzipJson(obj) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-export async function gunzipJson(bytes) {
-  try {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-    return JSON.parse(await new Response(stream).text());
-  } catch {
-    return null;
-  }
-}
-
 // ─── Download ─────────────────────────────────────────────────────────────────
 // A published trace → the reference object the app's existing pipeline consumes.
 // Sanitising is not optional: this is third-party data on its way to the coaching

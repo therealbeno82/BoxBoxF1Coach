@@ -9,8 +9,7 @@
 // usual { lapTime, sectorTimes:[s1,s2,s3]|null, recordedAt }.
 
 import { tyreCondition } from "./tyres.js";
-
-const hasTime = (l) => typeof l?.lapTime === "number" && l.lapTime > 0;
+import { hasTime } from "./stats.js";
 
 // Bucket a lap by the rubber it was set on. Laps recorded before tyre data was
 // collected (or with no compound) have an unknown condition — fold them into the

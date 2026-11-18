@@ -60,6 +60,3 @@ export function eligibility(lap) {
 
   return { ok: true, board };
 }
-
-// Convenience for rendering: just the boolean.
-export const isEligible = (lap) => eligibility(lap).ok;

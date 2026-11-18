@@ -22,18 +22,18 @@ import { tyreLabel, tyreCondition, tyreColor } from "./tyres.js";
 import { isRankable } from "./driverStats.js";
 // Coarse session groups (meta.sessionType comes from format.js's sessionTypeName).
 // Shared with the online leaderboard's board key so the two can't drift.
-import { SESSION_GROUP } from "./sessionGroups.js";
+import { sessionGroupOf } from "./sessionGroups.js";
+import { quantile, median, hasTime } from "./stats.js";
 
 // Display order — quali first (the pace yardstick), then race stints hardest-last.
 const GROUP_ORDER = ["Qualifying", "Time Trial", "Practice", "Race", "Unclassified"];
 const COMPOUND_ORDER = ["Soft", "Medium", "Hard", "Super Hard", "Inter", "Wet"];
 
-const hasTime = (l) => typeof l?.lapTime === "number" && l.lapTime > 0;
 
 // The bucket a single lap belongs to: { key, group, compound, label, color }.
 // `key` is the identity used to gather laps; `label` is what the UI/prompt prints.
 export function lapBucket(lap) {
-  const group = SESSION_GROUP[lap?.meta?.sessionType] || "Unclassified";
+  const group = sessionGroupOf(lap);
   if (group === "Race") {
     const compound = tyreLabel(lap?.tyre) || "Unknown";
     return {
@@ -87,12 +87,6 @@ export function bucketLaps(laps = []) {
 // applies.
 const PACE_GATE_FACTOR = 1.03;
 
-const quantile = (sortedAsc, q) => {
-  if (!sortedAsc.length) return null;
-  const pos = (sortedAsc.length - 1) * q;
-  const lo = Math.floor(pos), hi = Math.ceil(pos);
-  return lo === hi ? sortedAsc[lo] : sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
-};
 
 // The lap-time ceiling for a set of laps: { best, median, cutoff } or null.
 export function paceGate(laps = []) {
@@ -144,18 +138,8 @@ export function buildCoachingSet(laps = [], lap = null, max = 20) {
   return { laps: kept, dropped, gate, key, outlierSubject };
 }
 
-// Backwards-compatible view of the above: just the laps.
-export function coachingWindow(laps = [], lap = null, max = 20) {
-  return buildCoachingSet(laps, lap, max).laps;
-}
-
 // ── Pace summary ─────────────────────────────────────────────────────────────
 
-const median = (nums) => {
-  const s = [...nums].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 // Least-squares slope of lap time against lap order, in seconds per lap — the
 // stint's drop-off. Computed only within ONE session (lap order across sessions

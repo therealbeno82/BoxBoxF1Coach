@@ -75,12 +75,6 @@ export const C = {
   textFaintest:"#3a4252",
 };
 
-// Sector / matrix colours (purple = session best, green = gain, yellow = loss).
-export const SECTOR_COLORS = ["#3671C6", "#b45bff", "#2ED573"]; // S1 / S2 / S3 tiles
-export const GAIN = "#2ED573";
-export const LOSS = "#FFC400";
-export const BEST = "#b45bff";
-
 // Driver livery swatches offered at sign-up (handoff signupColors).
 export const LIVERY_COLORS = ["#3671C6", "#b45bff", "#2ED573", "#FFC400", "#ff4d5e", "#2dd4bf"];
 
@@ -130,10 +124,6 @@ export const dot = (color, { glow = true, blink = false } = {}) => ({
   boxShadow: glow ? `0 0 8px ${color}` : "none",
   animation: blink ? "blink 1.6s infinite" : "none",
 });
-
-// Delta colour: faster (negative) is good. Mirrors the handoff's dcol().
-export const deltaColor = (v) =>
-  v <= -0.10 ? C.purple : v < 0 ? C.green : v < 0.10 ? C.yellow : C.red;
 
 // Format a signed delta in seconds, e.g. +0.198 / −0.005 (true minus sign).
 export const fmtDelta = (v) =>

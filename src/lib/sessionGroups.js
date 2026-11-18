@@ -25,6 +25,10 @@ export const SESSION_GROUP = {
 
 // The group a lap belongs to, or "Unclassified" when it carries no session type
 // (legacy history, or an imported trace tagged with free text we don't know).
+// THE lookup — lapBuckets and boardKey both go through it. Own-property only: an
+// imported lap's session text is arbitrary, and a bare index would hand back
+// Object.prototype members for "constructor" or "toString".
 export function sessionGroupOf(lap) {
-  return SESSION_GROUP[lap?.meta?.sessionType] || "Unclassified";
+  const t = lap?.meta?.sessionType;
+  return (typeof t === "string" && Object.hasOwn(SESSION_GROUP, t)) ? SESSION_GROUP[t] : "Unclassified";
 }

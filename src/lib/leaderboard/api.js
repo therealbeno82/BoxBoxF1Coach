@@ -59,23 +59,6 @@ async function request(url, { headers = {}, signal, count = false, withCount = f
   }
 }
 
-// Every board that has at least one entry, with its count and leader time.
-// → [{ boardId, trackSlug, sessionGroup, entryCount, bestTimeMs }] (never null)
-export async function listBoards({ enabled, signal } = {}) {
-  if (!available({ enabled })) return [];
-  const rows = await request(
-    `${REST_URL}/boards?select=board_id,track_slug,session_group,entry_count,best_time_ms`,
-    { signal });
-  if (!Array.isArray(rows)) return [];
-  return rows.map((r) => ({
-    boardId: r.board_id,
-    trackSlug: r.track_slug,
-    sessionGroup: r.session_group,
-    entryCount: r.entry_count,
-    bestTimeMs: r.best_time_ms,
-  }));
-}
-
 // One board's ranked rows, fastest first.
 // → { entries, total } | null   (null means the fetch failed — which the UI has
 // to tell apart from an empty board, since they need different messages)

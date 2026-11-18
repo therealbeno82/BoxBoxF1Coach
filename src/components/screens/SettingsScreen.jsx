@@ -37,7 +37,7 @@ export default function SettingsScreen({
   voicePrefs, setVoicePrefs, kokoro, nativeTts = { ready: false, error: null, voices: [] }, onTestVoice,
   drivers = [], activeDriver, onSignDriver, avatars = {}, onDeleteDriver, onEditDriver,
   onExportProfile, onImportProfile,
-  onOpenTrace, onOpenCalibrator,
+  onOpenCalibrator,
   leaderboardEnabled, setLeaderboardEnabled, driverProfile,
 }) {
   const engine = voicePrefs.engine || "browser";

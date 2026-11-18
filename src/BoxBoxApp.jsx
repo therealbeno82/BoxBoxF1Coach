@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react";
 import Shell from "./components/Shell.jsx";
-import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
+import { LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
 import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob, readPickedText } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
@@ -80,7 +80,6 @@ const PublishPrompt     = splitOut(() => import("./components/PublishPrompt.jsx"
 const PublishLapModal   = splitOut(() => import("./components/modals/PublishLapModal.jsx"));
 const SwitchDriverModal = splitOut(() => import("./components/modals/SwitchDriverModal.jsx"));
 const CarSetupModal     = splitOut(() => import("./components/modals/CarSetupModal.jsx"));
-const TraceConfiguratorModal = splitOut(() => import("./components/modals/TraceConfiguratorModal.jsx"));
 // Desktop only. Written as a folded ternary rather than registered and then never
 // used, so on Android `splitOut` is in the untaken branch: the import() becomes
 // unreachable and the whole screen drops out of that bundle instead of shipping as
@@ -1284,14 +1283,6 @@ function lapSourceLabel(s) {
   return `Ref · ${parts.join(" · ")}`;
 }
 
-// ─── SMALL SHARED COMPONENTS ──────────────────────────────────────────────────
-const inputStyle = { width:"100%", background:"var(--bg)", border:"1px solid var(--border-input)", borderRadius:5,
-  color:"var(--text-dim)", padding:"6px 8px", fontSize:11, fontFamily:"inherit", boxSizing:"border-box" };
-const btnStyle = (bg,color,border) => ({
-  background:bg, color, border:`1px solid ${border}`, borderRadius:6,
-  padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit", fontWeight:600,
-});
-
 // ─── LIVE TELEMETRY BOUNDARY ──────────────────────────────────────────────────
 // The one place in this tree that re-renders at the telemetry rate. It subscribes
 // to the store and calls `children(tel)`, so a new snapshot re-renders THIS
@@ -1331,14 +1322,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // button open it). Car-Setup modal holds the chosen lap's setup snapshot or null.
   const [switchDriverOpen, setSwitchDriverOpen] = useState(false);
   const [carSetup, setCarSetup] = useState(null); // { track, time, date, color, setup } | null
-  const [traceOpen, setTraceOpen] = useState(false); // Trace Configurator modal
-  // Which telemetry channels the trace pipeline records (display/config only — the
-  // telemetry core forwards what the game sends). Persisted so the choice sticks.
-  const [traceChannels, setTraceChannels] = useState(() => {
-    try { const s = JSON.parse(localStorage.getItem("f1coach.traceChannels") || "null"); if (s) return s; } catch {}
-    return { throttle:true, brake:true, steering:true, gear:true, speed:true, rpm:false, ers:true, drs:true, tyreTemp:false, gforce:true };
-  });
-  useEffect(() => { localStorage.setItem("f1coach.traceChannels", JSON.stringify(traceChannels)); }, [traceChannels]);
   // Which trace panels the Telemetry studio shows (ids match its PANELS registry).
   // Persisted per install; merged over the defaults so future panel ids appear
   // enabled instead of vanishing for drivers with an older saved selection.
@@ -2589,7 +2572,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // per click — and because the auto path deliberately skips laps older than 20s.
   const askCoachForLap = useCallback(async () => {
     if (!lapEvidence || !activeTrace || !coachLap) return;
-    const tip = await askLap(lapEvidence, activeTrace.meta, {
+    await askLap(lapEvidence, activeTrace.meta, {
       pace: buildPaceBlock(paceBuckets),
       bucket: coachBucket?.label || null,
       trends: sessionTrends,
@@ -2616,16 +2599,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       on: liveCues[key] !== false,
       onToggle: () => setLiveCues(f => ({ ...f, [key]: !f[key] })) })),
     [liveCues]);
-
-  // ── Tab button style ────────────────────────────────────────────────────
-  const tabBtn = (t) => ({
-    background: tab===t?"var(--elevated)":"transparent",
-    color:      tab===t?"var(--text)":"var(--text-faint)",
-    border:`1px solid ${tab===t?"var(--border-strong)":"transparent"}`,
-    borderRadius:6, padding:"5px 14px", fontSize:11,
-    fontWeight: tab===t?700:400, cursor:"pointer",
-    letterSpacing:1, fontFamily:"inherit",
-  });
 
   return (
     <Shell
@@ -2730,7 +2703,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           drivers={drivers} activeDriver={activeDriver} onSignDriver={signDriver}
           avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
           onExportProfile={exportProfile} onImportProfile={importProfile}
-          onOpenTrace={()=>setTraceOpen(true)} onOpenCalibrator={onOpenCalibrator}
+          onOpenCalibrator={onOpenCalibrator}
           leaderboardEnabled={leaderboardEnabled} setLeaderboardEnabled={setLeaderboardEnabled}
           driverProfile={activeDriverObj}
         />
@@ -2818,7 +2791,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         />
       )}
       {carSetup && <CarSetupModal pb={carSetup} onClose={()=>setCarSetup(null)} />}
-      {traceOpen && <TraceConfiguratorModal channels={traceChannels} setChannels={setTraceChannels} onClose={()=>setTraceOpen(false)} />}
       </Suspense>
     </Shell>
   );

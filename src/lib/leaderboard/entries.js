@@ -21,7 +21,6 @@
 // Pure.
 
 import { boardIdForLap, compoundToken, conditionToken } from "./boardKey.js";
-import { tyreLabel } from "../tyres.js";
 import { isDemoLap, isRankable } from "../driverStats.js";
 
 export const msOf = (seconds) =>
@@ -131,24 +130,6 @@ export function localBoardEntries(laps = [], boardId, { driver, onePerDriver = f
   return onePerDriver ? ranked.slice(0, 1) : ranked;
 }
 
-// Every board the driver has at least one lap on, fastest-first within each.
-// → Map<boardId, entry[]>
-export function localBoardIndex(laps = [], { driver } = {}) {
-  const byBoard = new Map();
-  for (const lap of laps) {
-    if (lap?.archived) continue;
-    if (isDemoLap(lap) || !isRankable(lap)) continue;
-    const { boardId } = boardIdForLap(lap);
-    if (!boardId) continue;
-    const entry = entryFromLap(lap, { driver });
-    if (!entry) continue;
-    if (!byBoard.has(boardId)) byBoard.set(boardId, []);
-    byBoard.get(boardId).push(entry);
-  }
-  for (const [k, v] of byBoard) byBoard.set(k, rankEntries(v));
-  return byBoard;
-}
-
 // The board this driver most recently ran on, plus their best lap for it.
 // Drives the Dashboard card — "here's where your Silverstone quali lap sits".
 //
@@ -183,9 +164,4 @@ function eligibilityLite(lap) {
   if (isDemoLap(lap) || !isRankable(lap) || !(lap?.lapTime > 0)) return { ok: false };
   const board = boardIdForLap(lap);
   return board.boardId ? { ok: true, board } : { ok: false };
-}
-
-// Display label for an entry's compound, e.g. "Soft" / "Inter" / null.
-export function entryCompoundLabel(entry) {
-  return entry?.tyreVisual != null ? tyreLabel({ visual: entry.tyreVisual }) : null;
 }
