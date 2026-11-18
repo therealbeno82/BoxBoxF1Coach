@@ -32,6 +32,7 @@ src-tauri/gen/android/gradlew text eol=lf
 *.ico   binary
 *.jar   binary
 *.png   binary
+*.webp  binary
 *.wasm  binary
 *.woff2 binary
 *.onnx  binary

@@ -1,6 +1,6 @@
 //! The single UDP listener — binds the game port, parses each datagram, updates
 //! the shared telemetry snapshot, maintains the FFB safety/pause signals, and
-//! wakes the FFB engine on every fresh Motion Ex frame. Ported in spirit from the
+//! publishes every fresh Motion Ex frame for the FFB engine. Ported in spirit from the
 //! C++ `UdpReceiver::loop`, minus the repeater (this is the sole receiver).
 
 use std::net::UdpSocket;
@@ -277,7 +277,6 @@ fn handle_datagram(buf: &[u8], latest: &mut Latest, ls: &mut LoopState, shared: 
                     now_secs(),
                 );
                 stats.motion_frames.fetch_add(1, Ordering::Relaxed);
-                stats.notify_frame();
             }
         }
         PKT_CAR_TELEM => {

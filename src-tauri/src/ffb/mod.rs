@@ -56,8 +56,8 @@ impl FfbSystem {
 
     pub fn stop(&mut self) {
         self.handle.running.store(false, Ordering::Relaxed);
-        // The thread is usually parked in wait_timeout_while on the frame condvar
-        // (up to 250 ms with no wheel open) — wake it so shutdown is immediate.
+        // With no wheel open the thread is parked on the condvar (up to one idle
+        // tick) — wake it so shutdown is immediate.
         {
             let wake = &self.shared.stats.wake;
             let _g = wake.0.lock().unwrap_or_else(|e| e.into_inner());

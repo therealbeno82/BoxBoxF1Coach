@@ -33,12 +33,12 @@ const switchIcon = (size) => (
 const SKIN_LOGOS = {
   anthra:   { src: "/Mclaren-logo.png",  alt: "McLaren", h: 160 },
   ferrari:  { src: "/ferrari-logo.png",  alt: "Ferrari" },
-  mercedes: { src: "/merc-logo.png",     alt: "Mercedes" },
+  mercedes: { src: "/merc-logo.webp",    alt: "Mercedes" },
   redbull:  { src: "/redbull-logo.png",  alt: "Red Bull Racing" },
-  wrl:      { src: "/wrl-logo.png",      alt: "Wallaby Racing League" },
+  wrl:      { src: "/wrl-logo.webp",     alt: "Wallaby Racing League" },
   // Square poster art rather than a wordmark — sized taller so it stays legible, and
   // `r` rounds its opaque edges (the other marks are transparent cut-outs, so no radius).
-  shitkickers: { src: "/shitkickers-logo.png", alt: "Shit Kickers", h: 104, r: 12 },
+  shitkickers: { src: "/shitkickers-logo.webp", alt: "Shit Kickers", h: 104, r: 12 },
 };
 
 // Boot-time "new version available" banner. `update` is null unless the GitHub

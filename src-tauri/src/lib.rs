@@ -125,8 +125,12 @@ fn get_fake_mode(state: tauri::State<CoreState>) -> bool {
 
 // ── FFB commands (desktop only) ─────────────────────────────────────────────
 
+// `async`: a plain (sync) Tauri command runs on the MAIN thread, and these two
+// block on a reply from the FFB thread — up to 2 s to enumerate and 5 s to open a
+// device. That froze the whole window (and every telemetry event) while SDL
+// talked to the wheel. Marked async they run on the async runtime instead.
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
     let (tx, rx) = sync_channel(1);
     if handle.cmd_tx.send(FfbCommand::Enumerate(tx)).is_err() {
@@ -136,7 +140,7 @@ fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
 }
 
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 fn open_ffb_device(index: i32, handle: tauri::State<Arc<FfbHandle>>) -> Result<String, String> {
     let (tx, rx) = sync_channel(1);
     handle

@@ -797,7 +797,7 @@ function paintCarShadow(ctx, cam, p) {
 // gives the eye a fixed reference, so yaw reads as the car turning rather than the
 // world swinging around for no reason.
 // The overlay is a Blender bake of the real car from THIS camera
-// (scripts/render-tcam-ego.py) — see public/tcam-ego.png. Compositing it needs one
+// (scripts/render-tcam-ego.py) — see public/tcam-ego.webp. Compositing it needs one
 // scalar, because the render and the pane are pinhole views of the same car from the
 // same eye: the ratio of their focal lengths. The image supplies its own focal from
 // its width, so re-rendering at a different resolution needs no change here.
@@ -809,7 +809,7 @@ const EGO_HALF_TAN = Math.tan(FOV_H * Math.PI / 360);
 const egoTintCache = new Map();
 
 // The overlay is a flat image, so on its own it has no idea which pixels are
-// paintwork and which are rubber. public/tcam-ego-mask.png answers that: a second
+// paintwork and which are rubber. public/tcam-ego-mask.webp answers that: a second
 // render over the identical camera whose ALPHA is "this pixel is bodywork". Cutting
 // the accent to that alpha and MULTIPLYING it in lands the lap colour on the body's
 // own shading and touches nothing else — where the mask is empty the source alpha is

@@ -31,6 +31,9 @@ fn session_has_ai_lap_start(t: u8) -> bool {
 
 const PI: f32 = std::f32::consts::PI;
 
+/// Output tick with no wheel open — see the wait at the bottom of the loop.
+const IDLE_TICK: Duration = Duration::from_millis(33);
+
 /// How recent a UDP packet has to be for the game to count as "sending".
 const TELE_LIVE_MS: i64 = 2_000;
 /// How long telemetry must have been quiet before it resuming counts as the
@@ -1151,7 +1154,7 @@ pub fn ffb_thread(
     // Records the game's ~60 Hz physics frames so the fixed-rate loop can render
     // continuously between them (see `TelemetryPredictor`).
     let mut predictor = TelemetryPredictor::new();
-    let mut seen_seq = stats.motion_seq.load(Ordering::Relaxed);
+    let mut seen_seq = shared.ffb_frame.load().seq;
     // `None` on anything that cannot provide a high-resolution timer; the wait
     // below then keeps the original condvar behaviour.
     let timer = hrtimer::HiResTimer::create();
@@ -1230,25 +1233,16 @@ pub fn ffb_thread(
         let enabled = handle.enabled.load(Ordering::Relaxed);
         // A new Motion Ex frame means a fresh physics sample: record it, then
         // drive the wheel with the interpolated input rather than the held one.
-        // Load the FRAME first, then re-read the sequence, and only accept the
-        // pair when the sequence hasn't moved underneath us. publish_ffb_frame
-        // stores the frame before bumping the sequence, so reading seq first let
-        // a frame published between the two loads be pushed while `seen_seq`
-        // still recorded the older number — the next tick then pushed the SAME
-        // frame again. A duplicate knot has a zero clock delta and a zero
-        // arrival delta, so both spacing guards fall through to the smoothed
-        // span and it lands a full frame after itself: one frame rendered flat,
-        // the next at double slope, which is exactly the slope discontinuity the
-        // predictor exists to remove.
-        let seq = stats.motion_seq.load(Ordering::Relaxed);
-        if seq != seen_seq {
-            let frame = shared.ffb_frame.load();
-            if stats.motion_seq.load(Ordering::Relaxed) == seq {
-                seen_seq = seq;
-                predictor.push(&frame);
-            }
-            // Sequence moved mid-read: leave seen_seq alone and take the pair on
-            // the next tick, at most one tick later.
+        // The frame carries its own sequence number (publish_ffb_frame), so ONE
+        // load says both what it is and whether it's new — a duplicate knot can't
+        // happen. (Pairing a separately-bumped counter with the frame could: a
+        // second frame stored between the two reads was taken under the first
+        // one's number and pushed again next tick — one frame rendered flat, the
+        // next at double slope, the discontinuity the predictor exists to remove.)
+        let frame = shared.ffb_frame.load();
+        if frame.seq != seen_seq {
+            seen_seq = frame.seq;
+            predictor.push(&frame);
         }
         let now_s = mono_secs(t0);
         let telem: FfbTelemetry =
@@ -1438,14 +1432,17 @@ pub fn ffb_thread(
         // wheel open the deadline is kept by a high-resolution waitable timer
         // (falling back to the condvar) and the last `WAIT_SPIN_GUARD` is spun,
         // because no wait primitive returns exactly on a sub-millisecond
-        // deadline. With no wheel open there is nothing to keep lively, so the
-        // idle tick stretches to 250 ms on the condvar — which is also how
-        // `stop` gets its prompt wake.
+        // deadline. With no wheel open the tick drops to ~30 Hz on the condvar
+        // (which is also how `stop` gets its prompt wake): slow enough to cost
+        // nothing, fast enough that the FFB tab's telemetry monitor — promised to
+        // stay live with no wheel — isn't a 4 Hz slideshow, and that a Rescan or
+        // Open sent from the tab is picked up within a frame rather than after up
+        // to a quarter of a second of a stalled command.
         {
             let deadline = if wheel.is_open() {
                 interval
             } else {
-                Duration::from_millis(250)
+                IDLE_TICK
             };
             let next = t0 + deadline;
             if wheel.is_open() {
@@ -1532,11 +1529,12 @@ mod tests {
     }
 
     fn frame(arrival_s: f64, lat: f32) -> FfbFrame {
-        FfbFrame { telem: telem(lat), session_time: None, frame_identifier: 0, arrival_s }
+        FfbFrame { seq: 0, telem: telem(lat), session_time: None, frame_identifier: 0, arrival_s }
     }
 
     fn frame_at(session_time: f32, arrival_s: f64, lat: f32) -> FfbFrame {
         FfbFrame {
+            seq: 0,
             telem: telem(lat),
             session_time: Some(session_time),
             frame_identifier: 0,
@@ -1647,8 +1645,8 @@ mod tests {
         let mut b = FfbTelemetry::default();
         b.steer = 0.1;
         let mut p = TelemetryPredictor::new();
-        p.push(&FfbFrame { telem: a, session_time: None, frame_identifier: 0, arrival_s: 0.000 });
-        p.push(&FfbFrame { telem: b, session_time: None, frame_identifier: 0, arrival_s: 0.016 });
+        p.push(&FfbFrame { seq: 0, telem: a, session_time: None, frame_identifier: 0, arrival_s: 0.000 });
+        p.push(&FfbFrame { seq: 0, telem: b, session_time: None, frame_identifier: 0, arrival_s: 0.016 });
         let s1 = p.at(0.016, InterpMode::Cubic, 0.5).steer;
         let s2 = p.at(0.024, InterpMode::Cubic, 0.5).steer;
         assert!(s2 > s1, "steer must ramp between frames, got {s1} then {s2}");

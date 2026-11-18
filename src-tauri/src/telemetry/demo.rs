@@ -375,7 +375,6 @@ impl Replay {
         shared.publish(l);
         shared.publish_ffb_frame(l, None, 0, now_secs());
         stats.motion_frames.fetch_add(1, Ordering::Relaxed);
-        stats.notify_frame();
         true
     }
 }

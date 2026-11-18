@@ -212,8 +212,8 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
       im.onload = () => { if (cancelled) return; ref.current = im; stRef.current.lastKey = null; start(); };
       im.src = src;
     };
-    load("/tcam-ego.png", egoRef);
-    load("/tcam-ego-mask.png", egoMaskRef);
+    load("/tcam-ego.webp", egoRef);
+    load("/tcam-ego-mask.webp", egoMaskRef);
     import("../lib/tcamCarLayer.js").then(({ createCarLayer }) => {
       if (cancelled) return;
       // The callback fires when the car model finishes loading, which is after this

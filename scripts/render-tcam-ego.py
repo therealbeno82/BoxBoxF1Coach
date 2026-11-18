@@ -1,7 +1,8 @@
 # Bakes the two car assets the T-cam needs out of the Formula 2 model:
 #
-#   public/tcam-ego.png   the ego overlay — the bodywork you see from the onboard
+#   public/tcam-ego.webp  the ego overlay — the bodywork you see from the onboard
 #                         camera, rendered from that exact camera
+#   public/tcam-ego-mask.webp  which of those pixels are bodywork (alpha only)
 #   public/tcam-car.glb   the ghost car — the OTHER car, drawn live in WebGL
 #
 # WHY THE EGO IS A BAKED IMAGE. The onboard camera is rigidly bolted to the car, so
@@ -177,9 +178,14 @@ if scene.render.engine == 'CYCLES':
 scene.render.film_transparent = True          # the app composites this over its road
 scene.render.resolution_x = RES_X
 scene.render.resolution_y = RES_Y
-scene.render.image_settings.file_format = 'PNG'
+# WebP, not PNG: these ship in the installer AND the APK, and the PNG pair was
+# 1.5 MB for two mostly-transparent frames. Lossy colour at 90 measures ~45 dB
+# PSNR against the PNG (indistinguishable), and WebP keeps alpha LOSSLESS at any
+# colour quality, so the silhouette the app cuts against is bit-identical. The
+# mask pass below switches to quality 100, which Blender writes losslessly.
+scene.render.image_settings.file_format = 'WEBP'
 scene.render.image_settings.color_mode = 'RGBA'
-scene.render.image_settings.compression = 100  # this ships; Blender's default is 15
+scene.render.image_settings.quality = 90
 scene.view_settings.view_transform = 'Standard'  # no filmic roll-off; this is UI art
 
 setback, pitch = OVERRIDE if OVERRIDE else (CAM_SETBACK, CAM_PITCH)
@@ -228,6 +234,7 @@ for mat in bpy.data.materials:
         n = nt.nodes.new('ShaderNodeHoldout')
     nt.links.new(n.outputs[0], out.inputs['Surface'])
 
+scene.render.image_settings.quality = 100   # only its alpha is read; keep it exact
 scene.render.filepath = os.path.join(OUT, "tcam-ego-mask")
 bpy.ops.render.render(write_still=True)
 print(f"[tcam-ego] body mask written (material '{BODY_MATERIAL}' white, rest holdout)")

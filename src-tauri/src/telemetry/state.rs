@@ -241,6 +241,10 @@ pub struct FfbTelemetry {
 #[cfg_attr(mobile, allow(dead_code))]
 #[derive(Clone, Copy, Default)]
 pub struct FfbFrame {
+    /// This frame's number in the Motion Ex sequence, stamped by
+    /// `publish_ffb_frame`. The FFB thread accepts a frame when this differs from
+    /// the last one it took — one load, nothing to race (see engine.rs).
+    pub seq: u64,
     pub telem: FfbTelemetry,
     pub session_time: Option<f32>,
     pub frame_identifier: u32,
@@ -443,9 +447,12 @@ pub struct AppStats {
     pub peak_lat_force_n: AtomicU32, // f32 bits
     pub clip_level: AtomicU32,   // f32 bits
 
-    /// Event-driven FFB wake: bumped once per Motion Ex frame; the FFB thread
-    /// waits on the condvar so it computes on fresh data with minimal latency.
+    /// Motion Ex frame counter; each published FfbFrame carries its value.
     pub motion_seq: AtomicU64,
+    /// Parks the FFB thread between output ticks with no wheel open, and lets
+    /// `stop` wake it promptly. Telemetry no longer signals it: the output loop
+    /// free-runs on its own clock, so a per-frame notify only woke an idle thread
+    /// sixty times a second for nothing.
     pub wake: (Mutex<()>, Condvar),
 }
 
@@ -497,12 +504,6 @@ impl AppStats {
     }
     pub fn get_clip_level(&self) -> f32 {
         f32::from_bits(self.clip_level.load(Ordering::Relaxed))
-    }
-    /// Bump the motion sequence and wake the FFB engine (one fresh frame arrived).
-    pub fn notify_frame(&self) {
-        let _g = self.wake.0.lock().unwrap_or_else(|e| e.into_inner());
-        self.motion_seq.fetch_add(1, Ordering::Relaxed);
-        self.wake.1.notify_one();
     }
     /// Is the UDP core currently receiving packets (any in the last `within_ms`)?
     pub fn receiving(&self, now_ms: i64, within_ms: i64) -> bool {
@@ -573,9 +574,13 @@ impl SharedTelemetry {
         }
     }
 
-    /// Publish one Motion Ex frame for the FFB thread. Called on the UDP/demo
-    /// thread immediately after the packet is parsed and before `notify_frame`,
-    /// so the `motion_seq` edge and the frame it refers to always agree.
+    /// Publish one Motion Ex frame for the FFB thread, stamped with the next
+    /// sequence number. The number travels INSIDE the frame, so the reader needs
+    /// one load to know both what the frame is and whether it has seen it.
+    /// Bumping a separate counter after the store left a window — two frames
+    /// back to back over Wi-Fi — where the reader paired frame N+2 with N+1's
+    /// number and then pushed N+2 again on its next tick: a duplicate knot, which
+    /// is the slope kink the predictor exists to remove.
     #[cfg_attr(mobile, allow(dead_code))]
     pub fn publish_ffb_frame(
         &self,
@@ -584,7 +589,9 @@ impl SharedTelemetry {
         frame_identifier: u32,
         arrival_s: f64,
     ) {
+        let seq = self.stats.motion_seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.ffb_frame.store(Arc::new(FfbFrame {
+            seq,
             telem: Snapshot::ffb(l),
             session_time,
             frame_identifier,
@@ -597,8 +604,9 @@ impl SharedTelemetry {
     /// setup, lap data, fuel and wear in the snapshot until real packets happened
     /// to overwrite each field — the Session and Setup packets only come every
     /// ~500 ms, so the first live snapshots mixed the two. The FFB-facing stats go
-    /// back to their defaults for the same reason (the frame stops advancing
-    /// anyway, which the engine already treats as frozen).
+    /// back to their defaults for the same reason. The last FFB frame is left in
+    /// place: it stops advancing, which the engine already treats as frozen, and
+    /// replacing it would hand the predictor a fresh all-zero knot.
     pub fn reset_after_demo(&self) {
         let fresh = Latest::default();
         self.got_packet.store(false, Ordering::Relaxed);
@@ -612,7 +620,6 @@ impl SharedTelemetry {
         s.driver_status.store(0xFF, Ordering::Relaxed);
         s.pit_status.store(0, Ordering::Relaxed);
         s.set_lap_distance(0.0);
-        self.ffb_frame.store(Arc::new(FfbFrame::default()));
         self.build_ui(&fresh, now_ms());
     }
 

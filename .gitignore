@@ -9,6 +9,12 @@ dist-ssr
 # Rust / Tauri (added when we wrap the native shell)
 src-tauri/target
 
+# The ONNX runtime's wasm + glue, copied out of node_modules by
+# scripts/copy-ort.mjs on every predev/prebuild (so `npm run dev`, `npm run build`
+# and therefore `tauri dev`/`tauri build` all regenerate it). Generated, 21.6 MB,
+# and re-committed with every transformers upgrade if tracked.
+public/ort/
+
 # Vendored Kokoro TTS weights — ~97 MB of fetchable artifacts (the .onnx alone is
 # ~90 MB, near GitHub's 100 MB hard limit); re-fetch with `node scripts/fetch-kokoro-model.mjs`
 public/kokoro/
