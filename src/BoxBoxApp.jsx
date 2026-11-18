@@ -39,6 +39,7 @@ import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
 import { useAndroidBack } from "./hooks/useAndroidBack.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
+import { usePersistentState, readBool01, writeBool01 } from "./hooks/usePersistentState.js";
 import {
   publishTelemetry, subscribeTelemetry, getTelemetry,
   useLiveTelemetry, useTelemetryIdentity,
@@ -94,6 +95,9 @@ const FfbScreen = isAndroid ? null : splitOut(() => import("./components/screens
 const ScreenFallback = () => <div style={{ flex: 1 }} />;
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+// Trace panels on by default (ids match TelemetryStudio's PANELS). A saved
+// selection is merged OVER these, so a panel added later starts visible.
+const TRACE_DEFAULTS = Object.freeze({ inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true });
 const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
 
 // How many recent comparable same-track laps the coach reasons over. Scopes every
@@ -1325,15 +1329,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Which trace panels the Telemetry studio shows (ids match its PANELS registry).
   // Persisted per install; merged over the defaults so future panel ids appear
   // enabled instead of vanishing for drivers with an older saved selection.
-  const [visibleTraces, setVisibleTraces] = useState(() => {
-    const defaults = { inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true };
-    try {
-      const s = JSON.parse(localStorage.getItem("f1coach.visibleTraces") || "null");
-      if (s) return { ...defaults, ...s };
-    } catch {}
-    return defaults;
+  const [visibleTraces, setVisibleTraces] = usePersistentState("f1coach.visibleTraces", TRACE_DEFAULTS, {
+    read: (raw) => { const s = JSON.parse(raw); return s ? { ...TRACE_DEFAULTS, ...s } : undefined; },
+    write: JSON.stringify,
   });
-  useEffect(() => { localStorage.setItem("f1coach.visibleTraces", JSON.stringify(visibleTraces)); }, [visibleTraces]);
   // ── Shared Analytics playback timeline ──
   // One clock for the whole Overview: the playing flag here, the 0–1 lap-distance
   // playhead in lib/playheadStore.js (read by the two views that draw it), so Play
@@ -1350,11 +1349,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   // Seconds of lead on every voice cue (see CALL_LEAD). Persisted, and clamped on
   // the way in so a hand-edited value can't put a call half a lap early.
-  const [leadSeconds, setLeadSeconds] = useState(() => {
-    const v = parseFloat(localStorage.getItem(LS_CALL_LEAD));
-    return isFinite(v) ? clamp(v, CALL_LEAD.min, CALL_LEAD.max) : CALL_LEAD.default;
+  const [leadSeconds, setLeadSeconds] = usePersistentState(LS_CALL_LEAD, CALL_LEAD.default, {
+    read: (raw) => { const v = parseFloat(raw); return isFinite(v) ? clamp(v, CALL_LEAD.min, CALL_LEAD.max) : undefined; },
   });
-  useEffect(() => { localStorage.setItem(LS_CALL_LEAD, String(leadSeconds)); }, [leadSeconds]);
 
   // Live screen per-category toggles, driven by the track-map legend chips. Each key
   // (legendKeyFor categories) governs BOTH whether that category is colour-coded on
@@ -1372,11 +1369,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // that stream and rebroadcasts it on another port — so this is configurable. The
   // number is pushed to the native core via the `set_udp_port` command (it rebinds
   // its listener live).
-  const [udpPort, setUdpPort] = useState(() => {
-    const n = parseInt(localStorage.getItem("f1coach.udpPort"), 10);
-    return n >= 1 && n <= 65535 ? n : 20777;
+  const [udpPort, setUdpPort] = usePersistentState("f1coach.udpPort", 20777, {
+    read: (raw) => { const n = parseInt(raw, 10); return n >= 1 && n <= 65535 ? n : undefined; },
   });
-  useEffect(() => { localStorage.setItem("f1coach.udpPort", String(udpPort)); }, [udpPort]);
 
   // Demo mode: the native core synthesises a lap so the whole pipeline (recorder,
   // coaching, FFB, track map) can be exercised with no game running. Two ways in,
@@ -1405,10 +1400,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   // LLM backend — OpenRouter cloud. Persisted so the user doesn't re-enter their
   // key/model each session.
-  const [openRouterKey,   setOpenRouterKey]   = useState(() => localStorage.getItem("f1coach.openRouterKey") || "");
-  const [openRouterModel, setOpenRouterModel] = useState(() => localStorage.getItem("f1coach.openRouterModel") || DEFAULT_OPENROUTER_MODEL);
-  useEffect(() => { localStorage.setItem("f1coach.openRouterKey", openRouterKey); }, [openRouterKey]);
-  useEffect(() => { localStorage.setItem("f1coach.openRouterModel", openRouterModel); }, [openRouterModel]);
+  const [openRouterKey,   setOpenRouterKey]   = usePersistentState("f1coach.openRouterKey", "");
+  const [openRouterModel, setOpenRouterModel] = usePersistentState("f1coach.openRouterModel", DEFAULT_OPENROUTER_MODEL,
+    { read: (raw) => raw || undefined });
 
   // One config object threaded to the LLM call sites (tips + debrief).
   const llmConfig = useMemo(
@@ -1430,20 +1424,17 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   // Speed units — the telemetry core always reports km/h; the driver can read km/h or
   // mph across the Live KPIs, Telemetry readouts and Corner table. Persisted.
-  const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
-  useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
+  const [units, setUnits] = usePersistentState("f1coach.units", "km/h", { read: (raw) => raw || undefined });
 
   // Master switch for the online leaderboards. Off means the app makes no
   // leaderboard request at all — not a failed one, none — which is the only
   // honest way to offer "leave me out of this".
-  const [leaderboardEnabled, setLeaderboardEnabled] = useState(
-    () => localStorage.getItem(LS_ENABLED) !== "0");
-  useEffect(() => { localStorage.setItem(LS_ENABLED, leaderboardEnabled ? "1" : "0"); }, [leaderboardEnabled]);
+  const [leaderboardEnabled, setLeaderboardEnabled] = usePersistentState(LS_ENABLED, true,
+    { read: readBool01, write: writeBool01 });
 
   // Tyre temp units — the telemetry core always reports °C; the driver can read °C or °F
   // in the Telemetry Studio's Tyre Temps panel. Persisted.
-  const [tempUnits, setTempUnits] = useState(() => localStorage.getItem("f1coach.tempUnits") || "°C");
-  useEffect(() => { localStorage.setItem("f1coach.tempUnits", tempUnits); }, [tempUnits]);
+  const [tempUnits, setTempUnits] = usePersistentState("f1coach.tempUnits", "°C", { read: (raw) => raw || undefined });
 
   // Voice preferences — persisted across sessions
   const [voicePrefs, setVoicePrefs] = useState(() => {
