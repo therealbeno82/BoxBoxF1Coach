@@ -1,7 +1,6 @@
 // ─── LAP EXPORT ───────────────────────────────────────────────────────────────
-// Recorded laps live in memory only for the duration of a session. This helper
-// lets the user explicitly save ONE chosen lap to a .json file they can keep or
-// share. The file uses the same { meta, samples } shape the Trace Calibrator
+// Recorded laps persist in IndexedDB (lib/lapStore.js); this lets the driver
+// save ONE chosen lap to a .json file to keep outside the app or share. The file uses the same { meta, samples } shape the Trace Calibrator
 // exports, so an exported lap re-imports through Setup → "Load trace JSON" and
 // shows up as a comparison source — no special import path needed.
 //
@@ -12,6 +11,7 @@
 // same sector colours, Compare traces and coaching as it did live.
 
 import { tyreCondition } from "./tyres.js";
+import { lapTraceMeta } from "./lapTrace.js";
 import { inTauri, isAndroid } from "./env.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -45,18 +45,18 @@ export async function exportLapToFile(lap, { hideSetup = false } = {}) {
 
   const payload = {
     meta: {
-      driver: lap.meta?.driver || "You",
-      track:  lap.meta?.track  || "Live",
-      sessionType: lap.meta?.sessionType || null, // coarse mode: Time Trial / Qualifying / …
+      // Same meta block the leaderboard upload writes (lib/lapTrace.js), so a
+      // reloaded lap keeps its circuit, sector lines, conditions and invalid flag.
+      ...lapTraceMeta(lap),
+      track: lap.meta?.track || "Live",
       exportedAt: new Date().toISOString(),
       sampleCount: lap.samples.length,
       lapNumber: lap.lapNumber,
-      lapTime: lap.lapTime,
-      sectorTimes: lap.sectorTimes || null,
       source: lap.source || "live",
     },
     setup: hideSetup ? null : (lap.setup || null), // garage setup driven on this lap (null for older laps or when hidden)
     tyre: lap.tyre || null,   // compound worn → preserves the dry/wet split on reload
+    miniSectors: lap.miniSectors || null,
     samples: lap.samples,
   };
 
@@ -72,16 +72,26 @@ export async function exportLapToFile(lap, { hideSetup = false } = {}) {
     lapTimeLabel(payload.meta.lapTime),
   ].join(" - ") + ".json";
 
-  return saveJson(payload, name);
+  // One lap is small and is the file most likely to be opened by a person, so it
+  // stays indented; the multi-lap exports below don't.
+  return saveJson(payload, name, { pretty: true });
 }
 
-// Save `payload` as pretty-printed JSON. Inside the Tauri app this opens a native
-// "Save As" dialog (default filename `name`) so the driver picks the folder, then
-// writes there via the write_text_file command. In a plain browser (`npm run dev`,
-// no IPC) it falls back to the old anchor-download into the Downloads folder.
-// Resolves true if a file was written, false if the user cancelled the dialog.
-export async function saveJson(payload, name) {
-  const text = JSON.stringify(payload, null, 2);
+// Save `payload` as JSON. Inside the Tauri app this opens a native "Save As"
+// dialog (default filename `name`) so the driver picks the folder, then writes
+// there via the write_text_file command. In a plain browser (`npm run dev`, no
+// IPC) it falls back to the old anchor-download into the Downloads folder.
+//
+// Resolves true if a file was written and false ONLY if the dialog was cancelled.
+// A failed write THROWS, with a message fit to show: it used to resolve false as
+// well, so a permission-denied save of a whole profile read as "cancelled" and
+// the driver believed a backup existed that never did.
+//
+// Compact unless `pretty`: indentation made a session or profile file 2.5-3x
+// its size (hundreds of laps × hundreds of samples × ~16 fields), all built on
+// the main thread and then copied again across IPC.
+export async function saveJson(payload, name, { pretty = false } = {}) {
+  const text = pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
   if (inTauri) {
     try {
       const path = await save({
@@ -101,7 +111,7 @@ export async function saveJson(payload, name) {
       return true;
     } catch (e) {
       console.error("Save failed:", e);
-      return false;
+      throw new Error(`Couldn't save ${name}: ${e?.message || e}`);
     }
   }
   downloadJson(text, name);

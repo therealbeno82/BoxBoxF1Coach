@@ -45,20 +45,42 @@ function getWorker() {
     if (m.ok) p.resolve(m);
     else p.reject(new Error(m.error || "Kokoro worker error"));
   };
-  // A worker-level crash (script load failure etc.) gets no per-id reply — fail
-  // everything in flight so callers' catch paths run instead of hanging forever.
-  _worker.onerror = (e) => {
-    const err = new Error(e?.message || "Kokoro worker failed");
-    for (const p of _pending.values()) p.reject(err);
-    _pending.clear();
-  };
+  // A worker-level crash (script load failure, wasm OOM…) gets no per-id reply —
+  // fail everything in flight so callers' catch paths run instead of hanging.
+  _worker.onerror = (e) => resetWorker(new Error(e?.message || "Kokoro worker failed"));
   return _worker;
 }
 
-function callWorker(msg) {
+// Throw the worker away and forget it was ever loaded. Rejecting what was in
+// flight is not enough on its own: the old handler left the dead worker in
+// `_worker` and `_loaded` true, so every later phrase was posted to a worker that
+// would never answer — and the speech arbiter, waiting on that answer, kept its
+// slot occupied for the rest of the session. Speech just stopped. Resetting lets
+// the next call spawn a fresh worker and load the model again.
+function resetWorker(err) {
+  for (const p of _pending.values()) { clearTimeout(p.timer); p.reject(err); }
+  _pending.clear();
+  try { _worker?.terminate(); } catch { /* already gone */ }
+  _worker = null;
+  _loaded = false;
+  _loadPromise = null;
+}
+
+// Every request carries a deadline. A worker that is alive but wedged (stuck
+// inside inference) is indistinguishable from a slow one until it isn't, and the
+// worker is single-threaded, so one request that never answers blocks every one
+// queued behind it. Past the deadline the worker is reset, not just the request.
+const LOAD_TIMEOUT_MS = 120000;  // first-run model load on a slow machine
+const SYNTH_TIMEOUT_MS = 20000;  // a long tip on a slow CPU is a few seconds
+
+function callWorker(msg, timeoutMs) {
   const id = _nextId++;
   return new Promise((resolve, reject) => {
-    _pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (_pending.has(id)) resetWorker(new Error(`Kokoro ${msg.type} timed out`));
+    }, timeoutMs);
+    const settle = (fn) => (v) => { clearTimeout(timer); fn(v); };
+    _pending.set(id, { resolve: settle(resolve), reject: settle(reject), timer });
     getWorker().postMessage({ id, ...msg });
   });
 }
@@ -71,7 +93,7 @@ export async function loadKokoro(onProgress) {
   if (onProgress) _onProgress = onProgress;
   if (_loaded) return true;
   if (!_loadPromise) {
-    _loadPromise = callWorker({ type: "load" })
+    _loadPromise = callWorker({ type: "load" }, LOAD_TIMEOUT_MS)
       .then(() => { _loaded = true; _onProgress = null; return true; })
       .catch((err) => { _loadPromise = null; _onProgress = null; throw err; });
   }
@@ -86,7 +108,7 @@ export async function synthesize(text, voice = DEFAULT_KOKORO_VOICE, speed = 1) 
   const hit = await cacheGet(key);
   if (hit) return hit;
   await loadKokoro();
-  const { audio, sampleRate } = await callWorker({ type: "synthesize", text, voice, speed });
+  const { audio, sampleRate } = await callWorker({ type: "synthesize", text, voice, speed }, SYNTH_TIMEOUT_MS);
   cachePut(key, audio, sampleRate); // fire-and-forget — a failed write just means a re-synth later
   return { audio, sampleRate };
 }

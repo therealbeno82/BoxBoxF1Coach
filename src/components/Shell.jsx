@@ -261,7 +261,7 @@ export default function Shell({
           paddingBottom: "env(safe-area-inset-bottom)",
         }}>
           {NAV.map(([id, label]) => (
-            <button key={id} onClick={() => onTab(id)} style={tabBtn(tab === id)}>{label}</button>
+            <button key={id} onClick={() => onTab(id)} aria-current={tab === id ? "page" : undefined} style={tabBtn(tab === id)}>{label}</button>
           ))}
         </nav>
       </div>
@@ -318,7 +318,7 @@ export default function Shell({
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", scrollbarWidth: "none",
             display: "flex", flexDirection: "column", gap: 2 }}>
             {NAV.map(([id, label]) => (
-              <button key={id} onClick={() => onTab(id)} style={railBtn(tab === id)}>{label}</button>
+              <button key={id} onClick={() => onTab(id)} aria-current={tab === id ? "page" : undefined} style={railBtn(tab === id)}>{label}</button>
             ))}
           </div>
 
@@ -389,7 +389,7 @@ export default function Shell({
           boxShadow: "0 8px 30px rgba(0,0,0,.5)",
         }}>
           {NAV.map(([id, label]) => (
-            <button key={id} onClick={() => onTab(id)} style={navBtn(tab === id)}>{label}</button>
+            <button key={id} onClick={() => onTab(id)} aria-current={tab === id ? "page" : undefined} style={navBtn(tab === id)}>{label}</button>
           ))}
           <div style={{ width: 1, height: 20, background: C.borderModal, margin: "0 2px" }} />
           <StatusPill on={wsConnected} label="UDP" blink />
@@ -405,7 +405,7 @@ export default function Shell({
         <div style={{ flex: 1 }} />
 
         {/* Driver chip */}
-        <button onClick={onDriverChip} title="Switch driver" style={{
+        <button onClick={onDriverChip} title="Switch driver" aria-label="Switch driver" style={{
           display: "flex", alignItems: "center", gap: 9, padding: "6px 12px 6px 8px",
           borderRadius: 10, border: `1px solid ${C.line}`, background: C.surface,
           cursor: "pointer", fontFamily: FONT.ui,

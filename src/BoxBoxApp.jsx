@@ -1,20 +1,7 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react";
 import Shell from "./components/Shell.jsx";
-import DashboardScreen from "./components/screens/DashboardScreen.jsx";
-import LiveScreen from "./components/screens/LiveScreen.jsx";
-import AnalyticsScreen from "./components/screens/AnalyticsScreen.jsx";
-import SettingsScreen from "./components/screens/SettingsScreen.jsx";
-import CoachLogScreen from "./components/screens/CoachLogScreen.jsx";
-import LeaderboardScreen from "./components/screens/LeaderboardScreen.jsx";
-import PublishLapModal from "./components/modals/PublishLapModal.jsx";
-import PublishPrompt from "./components/PublishPrompt.jsx";
-import FfbScreen from "./components/screens/FfbScreen.jsx";
-import SwitchDriverModal from "./components/modals/SwitchDriverModal.jsx";
-import CarSetupModal from "./components/modals/CarSetupModal.jsx";
-import TraceConfiguratorModal from "./components/modals/TraceConfiguratorModal.jsx";
-import { C, LIVERY_COLORS } from "./lib/ui/tokens.js";
+import { LIVERY_COLORS } from "./lib/ui/tokens.js";
 import { applySkin, isSkin, DEFAULT_SKIN } from "./lib/ui/skins.js";
-import TelemetryStudio from "./components/TelemetryStudio.jsx";
 import { exportLapToFile, exportSessionToFile, parseSessionLaps, saveBlob, readPickedText } from "./lib/lapExport.js";
 import * as lapStore from "./lib/lapStore.js";
 import { exportProfile as exportProfileFile, importProfile as importProfileData } from "./lib/profileBackup.js";
@@ -22,10 +9,6 @@ import { buildLapEvidence } from "./lib/lapEvidence.js";
 import { buildTrends } from "./lib/lapHistory.js";
 import { buildCoachingSet, lapBucket, buildPaceBuckets, buildPaceBlock } from "./lib/lapBuckets.js";
 import { makeTrackLabeler } from "./lib/trackLabels.js";
-// The Analytics Overview's top-down driving-lines panel. It owns the shared
-// playback clock that also drives the TelemetryStudio trace cursor (state for
-// both lives here in BoxBoxApp — see anaPlayhead/anaPlaying).
-import DrivingLinesView from "./components/DrivingLinesView.jsx";
 import { getTrack, sameTrack } from "./lib/trackData.js";
 import { cornerLabel } from "./lib/cornerData.js";
 import { useTrackCorners } from "./hooks/useTrackCorners.js";
@@ -34,6 +17,8 @@ import {
   HAS_NATIVE_TTS, isNativeTtsReady, loadNativeTts, speakNative, stopNative,
 } from "./lib/tts/index.js";
 import { buildCoachLog } from "./lib/coach/coachLog.js";
+import { analyzeLap } from "./lib/coach/lapAnalysis.js";
+import { deriveZonesFromTrace } from "./lib/coach/zones.js";
 import { matchReference, profileLabel } from "./lib/coach/refMatch.js";
 import { buildDebriefPrompt } from "./lib/coach/prompts.js";
 import { DEBRIEF_SCHEMA, validateTip, repairTip, cleanSummary } from "./lib/coach/schema.js";
@@ -54,13 +39,66 @@ import { useUpdateCheck } from "./hooks/useUpdateCheck.js";
 import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
 import { useAndroidBack } from "./hooks/useAndroidBack.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
+import { usePersistentState, readBool01, writeBool01 } from "./hooks/usePersistentState.js";
+import { setPlayhead } from "./lib/playheadStore.js";
+import {
+  publishTelemetry, subscribeTelemetry, getTelemetry,
+  useLiveTelemetry, useTelemetryIdentity,
+} from "./lib/telemetryStore.js";
 import { useFfbEngine } from "./hooks/useFfbEngine.js";
 import { invoke } from "@tauri-apps/api/core";
 
 // Guard the `invoke` calls so `npm run dev` in a browser doesn't throw.
 const coreInvoke = (cmd, args) => { if (inTauri) invoke(cmd, args).catch(() => {}); };
 
+// ─── SCREENS, SPLIT OUT OF THE ENTRY CHUNK ────────────────────────────────────
+// Six screens, five overlays and the two Analytics panels are roughly 5,000 lines
+// a given session may never open, and as static imports every launch parsed all of
+// it before the first screen could paint. This is the same argument that already
+// keeps three.js and the track geometry behind dynamic imports; it just applies
+// several times over to the screens.
+//
+// `splitOut` registers each loader as it declares the component, so the warm-up
+// below can pull the chunks in on idle from ONE list that cannot drift out of step
+// with what is actually lazy. The import specifiers stay static string literals,
+// which is what Rollup needs to see to make a chunk of each.
+const chunkLoaders = [];
+const splitOut = (load) => { chunkLoaders.push(load); return lazy(load); };
+
+const DashboardScreen   = splitOut(() => import("./components/screens/DashboardScreen.jsx"));
+const LiveScreen        = splitOut(() => import("./components/screens/LiveScreen.jsx"));
+const AnalyticsScreen   = splitOut(() => import("./components/screens/AnalyticsScreen.jsx"));
+const SettingsScreen    = splitOut(() => import("./components/screens/SettingsScreen.jsx"));
+const CoachLogScreen    = splitOut(() => import("./components/screens/CoachLogScreen.jsx"));
+const LeaderboardScreen = splitOut(() => import("./components/screens/LeaderboardScreen.jsx"));
+// The Analytics Overview's trace stack and its top-down driving-lines panel. The
+// latter owns the shared playback clock that also drives the TelemetryStudio trace
+// cursor. The playhead itself lives in lib/playheadStore.js, NOT here: it moves
+// every frame during playback, and as hub state it re-rendered the whole app to
+// do it. `anaPlaying` (play/pause) is still hub state — it isn't per-frame.
+const TelemetryStudio   = splitOut(() => import("./components/TelemetryStudio.jsx"));
+const DrivingLinesView  = splitOut(() => import("./components/DrivingLinesView.jsx"));
+const PublishPrompt     = splitOut(() => import("./components/PublishPrompt.jsx"));
+const PublishLapModal   = splitOut(() => import("./components/modals/PublishLapModal.jsx"));
+const SwitchDriverModal = splitOut(() => import("./components/modals/SwitchDriverModal.jsx"));
+const CarSetupModal     = splitOut(() => import("./components/modals/CarSetupModal.jsx"));
+// Desktop only. Written as a folded ternary rather than registered and then never
+// used, so on Android `splitOut` is in the untaken branch: the import() becomes
+// unreachable and the whole screen drops out of that bundle instead of shipping as
+// a chunk nothing can ever fetch.
+const FfbScreen = isAndroid ? null : splitOut(() => import("./components/screens/FfbScreen.jsx"));
+
+// Fallback for a screen whose chunk has not arrived yet. Shell's body is a flex
+// column, so this holds the body open at full height and leaves the header, nav
+// and background exactly where they are — a tab switch shows an empty panel for a
+// frame or two at worst, never a jump or a flash of a different colour. In
+// practice the warm-up below means it is rarely seen at all.
+const ScreenFallback = () => <div style={{ flex: 1 }} />;
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+// Trace panels on by default (ids match TelemetryStudio's PANELS). A saved
+// selection is merged OVER these, so a panel added later starts visible.
+const TRACE_DEFAULTS = Object.freeze({ delta: true, inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true });
 const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
 
 // How many recent comparable same-track laps the coach reasons over. Scopes every
@@ -85,32 +123,6 @@ const zoneFill = (z) => z?.type === "ers" ? (ERS_COLORS[z.ersMode] || "#2979ff")
 const legendKeyFor = (z) => z?.type === "ers" ? (z.ersMode >= 1 ? `ers${z.ersMode}` : "normal") : (z?.type || "normal");
 const ZONE_OFF_COLOR = "#222"; // neutral colour for a filtered-out zone segment
 
-// Thresholds for turning one telemetry sample into a call/zone type, used by the
-// reference zone-derivation (deriveZonesFromTrace) so the dashboard map and voice
-// calls classify identically.
-const BRAKE_ON = 12, COAST_THR = 15, LIFT_HI = 85, ERS_THR = 85;
-// Shortest zone worth announcing, in METRES. Deliberately not a fraction of the lap:
-// a fraction moves the floor with the circuit, so the same 35 m squirt of Medium was
-// announced at Monaco and silently dropped at Spa (0.6% of 7 km is 42 m). A braking
-// zone and an ERS application are physical things — neither gets longer because the
-// lap does. Traces are distance-binned every 10 m, so the ERS floor keeps runs of 3
-// bins or more and rejects a single-sample blip.
-const ERS_MIN_M = 20, PEDAL_MIN_M = 50;
-// Classify a single sample into a pseudo-zone { type, ersMode } consumable by
-// zoneFill(). hasBrake=false (trace with no brake channel) treats
-// every off-throttle stretch as braking, matching deriveZonesFromTrace. Priority:
-// braking > full coast > ERS deploy > partial lift.
-function classifySample(s, hasBrake = true) {
-  const thr  = typeof s?.throttle === "number" ? s.throttle : 100;
-  const brk  = typeof s?.brake === "number" ? s.brake : 0;
-  const mode = Math.round(clamp(s?.ersMode ?? 0, 0, 3));
-  if (hasBrake && brk > BRAKE_ON)           return { type: "brake", ersMode: mode };
-  if (thr < COAST_THR)                      return { type: hasBrake ? "lico" : "brake", ersMode: mode };
-  if (thr >= ERS_THR && mode >= 1)          return { type: "ers", ersMode: mode };
-  if (thr < LIFT_HI)                        return { type: hasBrake ? "lift" : "normal", ersMode: mode };
-  return { type: "normal", ersMode: mode };
-}
-
 // LIVE screen legend: [swatch colour, label, GRANULAR key (legendKeyFor)]. Each chip
 // is an independent on/off toggle controlling both the map colour AND that category's
 // voice cue. "normal" (None) toggles whether un-cued track segments are drawn AND
@@ -127,213 +139,7 @@ const LIVE_LEGEND = [
   ["#2979ff", "Boost",  "ers3"],
   ["#6b7280", "None",   "normal"], // visible neutral grey (was near-black #1e1e1e)
 ];
-const DEFAULT_ZONES = [
-  { id:1, name:"T1",          start:0.04, end:0.08, type:"brake", ersMode:0, note:"Heavy braking zone" },
-  { id:2, name:"S1 Straight", start:0.12, end:0.22, type:"ers",   ersMode:3, note:"Main straight — Boost" },
-  { id:3, name:"T3 Entry",    start:0.27, end:0.30, type:"lico",  ersMode:1, note:"Lift and coast into chicane" },
-  { id:4, name:"T3 Apex",     start:0.30, end:0.34, type:"brake", ersMode:1, note:"Brake — chicane entry" },
-  { id:5, name:"T6 Hairpin",  start:0.42, end:0.47, type:"brake", ersMode:0, note:"Max brake — tight hairpin" },
-  { id:6, name:"S2 Deploy",   start:0.52, end:0.62, type:"ers",   ersMode:3, note:"Boost through S2" },
-  { id:7, name:"T10 Entry",   start:0.71, end:0.74, type:"lico",  ersMode:1, note:"Lift early — long entry" },
-  { id:8, name:"T10 Brake",   start:0.74, end:0.78, type:"brake", ersMode:1, note:"Brake zone" },
-  { id:9, name:"S3 Deploy",   start:0.85, end:0.95, type:"ers",   ersMode:2, note:"Hotlap — final sector" },
-];
 
-// ── Derive strategy zones FROM a loaded reference trace ─────────────────────
-// A trace (exported by the Trace Calibrator) carries throttle, brake + ERS
-// channels sampled by lap distance. We segment the lap into three call types:
-//   • brake — brake actually applied
-//   • lico  — off throttle but not yet braking (the coast before a corner)
-//   • ers   — on throttle while the reference is deploying ERS, split BY MODE
-//             (Medium / Hotlap / Boost) so the call IS the ERS mode itself.
-// There is deliberately no separate "deploy" concept — deploying ERS and the
-// ERS mode are one and the same. No trace → DEFAULT_ZONES.
-function mostCommon(arr) {
-  const counts = {};
-  let best = arr[0] ?? 0, bestC = 0;
-  for (const v of arr) {
-    counts[v] = (counts[v] || 0) + 1;
-    if (counts[v] > bestC) { bestC = counts[v]; best = v; }
-  }
-  return best;
-}
-
-// Smooth a numeric channel with a centred moving average (~`win` either side).
-function smoothChannel(pts, key, win) {
-  const N = pts.length;
-  return pts.map((_, i) => {
-    let sum = 0, c = 0;
-    for (let j = Math.max(0, i - win); j <= Math.min(N - 1, i + win); j++) {
-      const v = pts[j][key];
-      if (typeof v === "number") { sum += v; c++; }
-    }
-    return c ? sum / c : 0;
-  });
-}
-
-function deriveZonesFromTrace(trace) {
-  const raw = trace?.samples;
-  if (!Array.isArray(raw) || raw.length < 8) return DEFAULT_ZONES;
-
-  const pts = raw
-    .filter(s => s && typeof s.dist === "number" && typeof s.throttle === "number")
-    .sort((a, b) => a.dist - b.dist);
-  const N = pts.length;
-  const totalDist = N ? pts[N - 1].dist : 0;
-  if (N < 8 || !(totalDist > 0)) return DEFAULT_ZONES;
-
-  // Smooth throttle + brake (~1% of lap window) so noise — an image-extracted trace,
-  // or a real one where the brake dips under the threshold mid-zone — can't fragment
-  // a run. This is for SEGMENTATION ONLY; the edges come back off the raw channels
-  // below, because a centred average shifts them earlier by up to half a window.
-  const win = Math.max(1, Math.round(N * 0.01));
-  const thr = smoothChannel(pts, "throttle", win);
-  const brk = smoothChannel(pts, "brake", win);
-  // If the trace has no brake channel at all we can't tell coasting from braking,
-  // so we treat every off-throttle stretch as a brake call (old behaviour).
-  const hasBrake = pts.some(p => typeof p.brake === "number");
-
-  // Classify each sample. Priority: braking > full coast > ERS deploy > partial lift.
-  //  • brake — brake actually applied (from the brake trace)
-  //  • lico  — (near-)zero throttle, NOT braking (the full coast before a corner)
-  //  • ers   — on full throttle while deploying (mode ≥ 1); the mode labels the zone
-  //  • lift  — throttle eased (partial) but still applied, NOT braking
-  // Classify on the SMOOTHED throttle/brake but the raw ERS mode (via
-  // classifySample, defined near zoneFill).
-  const classOf = (i) =>
-    classifySample({ throttle: thr[i], brake: brk[i], ersMode: pts[i].ersMode }, hasBrake).type;
-  // The same test on the UNSMOOTHED sample. Smoothing is what makes the SEGMENTATION
-  // robust — one dropped-out sample in the brake trace must not chop a braking zone
-  // into three — but a centred moving average also drags every EDGE half a window
-  // earlier, and `win` is ~1% of the lap. Measured against the recorded demo laps,
-  // that opened each brake zone ~30 m (up to 42 m) before the reference actually
-  // touched the pedal, so the voice call went out that much early ON TOP of its lead
-  // time. So: the smoothed channels decide where the runs ARE, the raw ones decide
-  // where each run BEGINS and ENDS.
-  const rawClassOf = (i) => classifySample(pts[i], hasBrake).type;
-
-  // Group contiguous same-class runs. ERS runs additionally break on a change of
-  // ERS MODE, so a straight that ramps Medium → Boost becomes two ERS zones (and
-  // therefore two distinct mode calls), not one averaged blob.
-  const runs = [];
-  for (let i = 0; i < N; i++) {
-    const cls = classOf(i);
-    const mode = cls === "ers" ? Math.round(clamp(pts[i].ersMode ?? 0, 0, 3)) : null;
-    const key  = cls === "ers" ? `ers${mode}` : cls;
-    const last = runs[runs.length - 1];
-    if (last && last.key === key) last.endI = i;
-    else runs.push({ cls, key, mode, startI: i, endI: i });
-  }
-
-  // Pull a run's edges onto the nearest RAW crossing into/out of its class, looking
-  // no further than the smoothing window that displaced them. -1 means the raw
-  // channels never do this thing anywhere near the run — i.e. the run exists only
-  // because the average invented it (a corner-exit throttle ramp averaging down into
-  // a "lift" while the reference is flat, which is how a Lift call ended up being
-  // spoken 140 m up the straight). Those are dropped rather than announced.
-  const rawStart = (i0, cls) => {
-    for (let d = 0; d <= win; d++)
-      for (const i of (d ? [i0 + d, i0 - d] : [i0]))
-        if (i >= 0 && i < N && rawClassOf(i) === cls && (i === 0 || rawClassOf(i - 1) !== cls)) return i;
-    return -1;
-  };
-  const rawEnd = (i1, cls) => {
-    for (let d = 0; d <= win; d++)
-      for (const i of (d ? [i1 - d, i1 + d] : [i1]))
-        if (i >= 0 && i < N && rawClassOf(i) === cls && (i === N - 1 || rawClassOf(i + 1) !== cls)) return i;
-    return -1;
-  };
-
-  const modeAt = (i) => Math.round(clamp(pts[i].ersMode ?? 0, 0, 3));
-
-  const zones = [];
-  for (const r of runs) {
-    if (r.cls === "normal") continue;
-    // ERS zones come from the mode channel itself, not from a smoothed threshold,
-    // so their edges are already exact — only the pedal-derived ones need correcting.
-    if (r.cls !== "ers") {
-      const s = rawStart(r.startI, r.cls), e = rawEnd(r.endI, r.cls);
-      if (s < 0 || e < 0) continue;
-      if (s <= e) { r.startI = s; r.endI = e; }
-    }
-    // A partial lift is only a real coaching call when the driver eased off near-full
-    // power and held it — not when throttle merely ramps back up on a corner exit.
-    // Read on the RAW trace at the corrected edge: the smoothed value here is an
-    // average reaching half a window up the road, which let corner exits pass.
-    if (r.cls === "lift" && !(pts[Math.max(0, r.startI - 1)].throttle >= ERS_THR)) continue;
-    const start = pts[r.startI].dist / totalDist;
-    const end   = pts[r.endI].dist / totalDist;
-    if ((end - start) * totalDist < (r.cls === "ers" ? ERS_MIN_M : PEDAL_MIN_M)) continue;
-
-    // The zone's ERS mode: for an ERS run it IS the run; for a pedal zone it's
-    // whatever mode the reference mostly held through it.
-    const ersVals = [];
-    for (let i = r.startI; i <= r.endI; i++) ersVals.push(Math.round(pts[i].ersMode ?? 0));
-    if (r.cls === "brake") {
-      zones.push({ start, end, type: "brake", ersMode: mostCommon(ersVals),
-        note: "Braking zone (from reference)" });
-    } else if (r.cls === "lico") {
-      zones.push({ start, end, type: "lico", ersMode: mostCommon(ersVals),
-        note: "Lift and coast — off throttle, no brake" });
-    } else if (r.cls === "lift") {
-      zones.push({ start, end, type: "lift", ersMode: mostCommon(ersVals),
-        note: "Partial throttle lift (from reference)" });
-    } else {
-      const mode = Math.max(1, r.mode);
-      // Silent when the reference was ALREADY in this mode before the zone opened:
-      // then this isn't a change, it's the far side of a corner that split one long
-      // deployment into two runs, and calling "Medium" at a driver already in Medium
-      // is noise. It still colours the map — it just doesn't speak. The transition
-      // loop below un-silences any zone that turns out to carry a real mode change.
-      zones.push({ start, end, type: "ers", ersMode: mode,
-        silent: r.startI > 0 && modeAt(r.startI - 1) === mode,
-        note: `Reference runs ${ERS_MODES[mode]} here` });
-    }
-  }
-
-  // ERS mode markers. The mode is a DISCRETE state the driver sets, so the call is
-  // the CHANGE itself — and a change is a change however briefly it lasts and whatever
-  // the throttle is doing. The runs above can only see a deployment that is BOTH long
-  // enough to clear the floor AND held near full throttle (classifySample gates the
-  // "ers" class on throttle ≥ ERS_THR, since a mid-braking-zone ERS colour would hide
-  // the braking call), so a quick tap of Medium, or one taken at part throttle on a
-  // corner exit, produced no call at all. These markers catch every transition no zone
-  // already covers — including the drop back to None, which is all this loop used to
-  // do. Built AFTER the length filter so a short application survives it.
-  const trans = [];
-  for (let i = 1; i < N; i++) if (modeAt(i) !== modeAt(i - 1)) trans.push(i);
-  for (let t = 0; t < trans.length; t++) {
-    const mode = modeAt(trans[t]);
-    const at   = pts[trans[t]].dist / totalDist;
-    // The stretch this mode is held for. Any zone the runs above derived for it must
-    // begin inside that stretch — and it can begin LATER than the change itself, since
-    // an "ers" run only opens once throttle is back to full: set Medium on a corner
-    // exit and the zone appears a few bins up the road. Same event, so one call.
-    const until = t + 1 < trans.length ? pts[trans[t + 1]].dist / totalDist : 1;
-    const zone = zones.find(z => z.type === "ers" && z.ersMode === mode && z.start >= at && z.start < until);
-    // Covered: keep the zone's extent for the map, but move its CALL onto the change.
-    // The two are not the same place — a mode set through a corner complex has had its
-    // zone open as much as 450 m later, which is where the call was going out.
-    if (zone) { zone.callAt = Math.min(zone.start, at); zone.silent = false; continue; }
-    zones.push({ start: at, end: Math.min(1, at + 0.01), type: "ers", ersMode: mode,
-      note: mode === 0 ? "Stop deploying — ERS off" : `Reference switches to ${ERS_MODES[mode]} here` });
-  }
-
-  // Number each category in TRACK order. The two loops above build independently, so
-  // numbering inside them would put a marker called "Medium 1" downstream of a zone
-  // called "Medium 3".
-  const seenN = {};
-  zones.sort((a, b) => a.start - b.start).forEach((z, i) => {
-    z.id = i + 1;
-    const base = z.type === "ers"  ? ERS_MODES[z.ersMode]
-               : z.type === "brake" ? "Brake"
-               : z.type === "lico"  ? "Lift & Coast" : "Lift";
-    seenN[base] = (seenN[base] || 0) + 1;
-    z.name = `${base} ${seenN[base]}`;
-  });
-
-  return zones.length ? zones : DEFAULT_ZONES;
-}
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -370,7 +176,7 @@ const LS_CALL_LEAD = "f1coach.callLead";
 //   • "kokoro"  — neural Kokoro model run locally (natural, but must SYNTHESISE
 //                 audio first). To keep on-the-mark corner calls instant we
 //                 pre-synthesise the known call phrases (see `prewarm`) and cache
-//                 the decoded AudioBuffers; only novel text (AI tips, chat) is
+//                 the decoded AudioBuffers; only novel text (AI debrief tips) is
 //                 synthesised on demand.
 //   • native    — Android's own TextToSpeech, through the f1android plugin. It is
 //                 the ONLY engine in that build (Kokoro is stripped from the
@@ -384,7 +190,7 @@ function useAudio(voicePrefs = {}) {
   // Single-voice arbiter: `current` is the item being spoken, `queue` holds at
   // most one pending lower-priority item so nothing overlaps. `source` is the
   // live Kokoro AudioBufferSourceNode (so a preempt can stop it).
-  const stateRef      = useRef({ current: null, queue: null, source: null });
+  const stateRef      = useRef({ current: null, queue: null, source: null, watchdog: 0 });
   // Keep a ref so the memoized callbacks always read the latest preference.
   const voicePrefsRef = useRef(voicePrefs);
   voicePrefsRef.current = voicePrefs;
@@ -434,7 +240,7 @@ function useAudio(voicePrefs = {}) {
     const hit = bufCache.current.get(key);
     if (hit) {
       // Touch (re-insert at the end) so repeatedly-played corner calls stay warm
-      // while one-shot AI tips/chat replies age out under the LRU cap below.
+      // while one-shot AI debrief tips age out under the LRU cap below.
       bufCache.current.delete(key);
       bufCache.current.set(key, hit);
       return hit;
@@ -444,7 +250,7 @@ function useAudio(voicePrefs = {}) {
     const buf = ctx.createBuffer(1, audio.length, sampleRate);
     buf.copyToChannel(audio, 0);
     bufCache.current.set(key, buf);
-    // Bound memory: evict the least-recently-used entries. Novel text (tips, chat)
+    // Bound memory: evict the least-recently-used entries. Novel text (debrief tips)
     // is each unique, so without a cap the decoded-buffer cache grows unbounded.
     const CACHE_CAP = 64;
     while (bufCache.current.size > CACHE_CAP) {
@@ -457,9 +263,34 @@ function useAudio(voicePrefs = {}) {
     const prefs = voicePrefsRef.current;
     stateRef.current.current = item;
 
+    // Every engine path arms a watchdog, so a phrase that never reports back can
+    // only ever hold the slot for a bounded time. Each engine has its own way of
+    // going silent — Chrome's Web Speech dropping onend, a Kokoro synth that never
+    // answers, a platform TTS call that never resolves — and before this only the
+    // first one was covered: the other two parked the arbiter's slot for the rest
+    // of the session, and every later same-priority call was queued and replaced
+    // behind a phrase that would never finish. `arm` replaces any earlier timer,
+    // so a path can re-arm once it knows the real duration.
+    const arm = (ms) => {
+      if (stateRef.current.watchdog) clearTimeout(stateRef.current.watchdog);
+      stateRef.current.watchdog = setTimeout(() => {
+        stateRef.current.watchdog = 0;
+        if (stateRef.current.current === item) onDone();
+      }, ms);
+    };
+    // Generous spoken-length estimate at the rate the phrase is actually said
+    // at — dividing by the rate is what keeps a slow voice from being cut off
+    // mid-sentence by its own watchdog.
+    const spokenMs = (rate) =>
+      Math.min(30000, ((item.text.length / 12) * 1000) / (rate > 0 ? rate : 1) + 2500);
+
     // Finish handler: clear the slot and advance the one pending item (unless stale).
     const onDone = () => {
       if (stateRef.current.current !== item) return; // already preempted
+      if (stateRef.current.watchdog) {
+        clearTimeout(stateRef.current.watchdog);
+        stateRef.current.watchdog = 0;
+      }
       stateRef.current.current = null;
       stateRef.current.source  = null;
       const next = stateRef.current.queue;
@@ -479,11 +310,15 @@ function useAudio(voicePrefs = {}) {
         // matters, and anything still sounding is by definition lower priority.
         flush: true,
       }).then(onDone, onDone);
+      arm(spokenMs(prefs.rate ?? 1.1) + 5000);
       return;
     }
 
     // ── Kokoro path: synth (or cache hit) → play through Web Audio ──
     if (prefs.engine === "kokoro" && isKokoroLoaded()) {
+      // Synthesis budget first (kokoroTTS times the worker out at 20 s itself);
+      // once the clip exists its real length is known, so re-arm on that.
+      arm(25000);
       getBuffer(item.text).then(buf => {
         if (stateRef.current.current !== item) return; // preempted while synthesising
         const ctx = audioCtx();
@@ -493,10 +328,16 @@ function useAudio(voicePrefs = {}) {
         src.connect(ctx.destination);
         src.onended = onDone;
         stateRef.current.source = src;
+        arm(buf.duration * 1000 + 2000);
         try { src.start(); } catch { onDone(); }
       }).catch(() => onDone());
       return;
     }
+    // Kokoro chosen but not loaded — either still loading, or its worker crashed
+    // and was reset (lib/kokoroTTS.js). This phrase goes out on the browser voice;
+    // starting the reload here brings later ones back to Kokoro. loadKokoro()
+    // shares one in-flight promise, so repeated calls cost nothing.
+    if (HAS_KOKORO && prefs.engine === "kokoro") loadKokoro().catch(() => {});
 
     // ── Browser path: Web Speech utterance ──
     if (!window.speechSynthesis) { onDone(); return; }
@@ -505,10 +346,23 @@ function useAudio(voicePrefs = {}) {
     const v = pickVoice(); if (v) u.voice = v;
     u.onend = u.onerror = onDone;
     window.speechSynthesis.speak(u);
+    // Chrome is known to occasionally never fire onend/onerror. At rate 0.5 a
+    // 150-character tip really takes ~27 s, which is why the estimate divides by
+    // the rate (see spokenMs) — firing early releases the slot MID-SENTENCE and
+    // play() then starts the queued phrase over the top. The handle is kept so
+    // the normal onend path cancels it (see onDone) rather than leaving a timer
+    // to fire into a torn-down tree.
+    arm(spokenMs(u.rate));
   }, [getBuffer]);
 
   // Stop whatever is currently speaking, on any engine.
   const stopCurrent = () => {
+    // Nothing is speaking after this, so the Web Speech watchdog has no phrase
+    // left to rescue — drop it rather than leaving a timer to wake up later.
+    if (stateRef.current.watchdog) {
+      clearTimeout(stateRef.current.watchdog);
+      stateRef.current.watchdog = 0;
+    }
     if (HAS_NATIVE_TTS) stopNative();
     try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
     const s = stateRef.current.source;
@@ -534,8 +388,9 @@ function useAudio(voicePrefs = {}) {
       play(item);
       return;
     }
-    // Equal/lower priority → hold one pending item, keeping the higher-priority one.
-    if (!st.queue || prio > st.queue.prio) st.queue = item;
+    // Equal/lower priority → hold one pending item. A fresher call at the same
+    // priority should replace an older queued one, not be dropped for it.
+    if (!st.queue || prio >= st.queue.prio) st.queue = item;
   }, [play]);
 
   // Load (download + init) the Kokoro model, surfacing progress to the UI.
@@ -551,6 +406,18 @@ function useAudio(voicePrefs = {}) {
       console.error("Kokoro load failed:", e);
       setKokoroStatus("error");
     }
+  }, []);
+
+  // Silence everything on teardown. Without this the Web Speech watchdog can
+  // outlive the tree, and its onDone would call play() on the queued item —
+  // speaking into a component that no longer exists.
+  useEffect(() => () => {
+    if (stateRef.current.watchdog) clearTimeout(stateRef.current.watchdog);
+    stateRef.current.watchdog = 0;
+    stateRef.current.current = null;
+    stateRef.current.queue = null;
+    if (HAS_NATIVE_TTS) { try { stopNative(); } catch { /* engine already gone */ } }
+    try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch { /* no engine */ }
   }, []);
 
   // Honor the persisted engine choice on every launch. The model itself lives in a
@@ -602,6 +469,13 @@ function useAudio(voicePrefs = {}) {
   // arbiter and works on whichever engine is selected.
   const preview = useCallback(async (text) => {
     const prefs = voicePrefsRef.current;
+    // Preempt whatever is speaking, mirroring the native path's flush — otherwise
+    // hitting Test mid-call plays two voices at once. Detach the arbiter's slot
+    // FIRST: stopCurrent resolves the preempted item's onDone, which would
+    // otherwise see itself as current and play the queued corner call over the
+    // preview. The priority-preempt path above does the same before stopping.
+    stateRef.current.current = null;
+    stopCurrent();
     if (HAS_NATIVE_TTS && isNativeTtsReady()) {
       // Same preempt as a real call, so hitting Test twice replaces rather than
       // queues — that is what the button appears to promise.
@@ -647,13 +521,15 @@ function useAudio(voicePrefs = {}) {
 }
 
 // ─── LLM ENGINE ───────────────────────────────────────────────────────────────
+// The fallback when a failure carries no better description (a network error,
+// say). Provider errors name their own cause — see describeOpenRouterError.
 function providerErr() {
-  return "⚠ OpenRouter not reachable — check your API key in the Setup tab";
+  return "⚠ Couldn't reach OpenRouter — check your connection.";
 }
 
 // The between-lap debrief is the ONLY LLM call the app makes. There used to be a
 // second one — an on-track one-shot tip grounded in the live telemetry point vs the
-// reference sample — but its only entry point was the Race Engineer chat panel, so
+// reference sample — but its only entry point was the Race Engineer chat panel (since removed), so
 // it was orphaned when that was removed. The deterministic rule engine owns
 // everything that happens mid-corner; the LLM only ever speaks between laps.
 function useLLM(llmConfig) {
@@ -684,7 +560,13 @@ function useLLM(llmConfig) {
       });
       let result = validateTip(json);
       if (!result.ok) result = repairTip(text);     // weak model returned non-JSON
-      if (!result.ok) return null;
+      if (!result.ok) {
+        // Say so rather than just stopping the spinner — a driver who pressed
+        // "Ask the coach" otherwise can't tell a refusal from a hang.
+        setLastAdvice({ text: "⚠ The coach's reply couldn't be read — try asking again.",
+          time: Date.now(), error: true, lapId: context.lapId ?? null });
+        return null;
+      }
       // The pace and trend blocks are grounding material too — every figure the
       // model was shown must stay quotable, or enforceGrounding strips the very
       // numbers that make a "you keep doing this" line land.
@@ -703,10 +585,15 @@ function useLLM(llmConfig) {
       setLastAdvice({ text:tip.text, severity:tip.severity, summary:tip.summary, time:Date.now(), lap:true, lapId: lapId ?? null });
       return tip.text || null;
     } catch (e) {
-      if (e.name!=="AbortError") setLastAdvice({ text:providerErr(), time:Date.now(), error:true });
+      if (e.name!=="AbortError") {
+        setLastAdvice({ text: e.userMessage ? `⚠ ${e.userMessage}` : providerErr(),
+          time: Date.now(), error: true, lapId: context.lapId ?? null });
+      }
       return null;
     } finally {
-      setAsking(false);
+      // Only this request may clear the spinner — a superseded (aborted) request
+      // finishing must not blank it while the newer one is still in flight.
+      if (abortRef.current === ctrl) setAsking(false);
     }
   }, [llmConfig]);
 
@@ -721,9 +608,10 @@ function useLLM(llmConfig) {
 // dashboard stats survive restarts. Distance-binning (~10 m) keeps a ~90 s / 30 Hz
 // lap to a few hundred samples. The user can still export a lap to a file too.
 
-// Idle telemetry reading shown before the Rust telemetry core delivers a snapshot.
-const EMPTY_TEL = { lapPct:0, lapDistance:0, throttle:0, brake:0, speed:0, gear:1, rpm:0, ersMode:0, ersDeploy:0, ersBattery:0, lapTime:0, currentZone:null, sector2Pct:1/3, sector3Pct:2/3,
-  ersHarvestLimit:0, overtakeAvailable:0, overtakeActive:0, overtakeActivationDistance:0, activeAeroMode:0, activeAeroAvailable:0, activeAeroActivationDistance:0, regs2026:0, sessionUid:"0" };
+// One shared empty array for "this lap has no such channel". A fresh `|| []` in a
+// render path is a new identity every time, which silently defeats any memo or
+// prop comparison downstream of it.
+const EMPTY_ARR = Object.freeze([]);
 
 // Cumulative lap-time stamped at each mini-sector boundary: index k = the running
 // lap time when the car entered mini-sector k. Slot 0 is the start line (time 0);
@@ -757,8 +645,19 @@ const runMeta = (m) => ({
   track: m.trackName || "Live",
 });
 
-function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
+// Reads the live snapshot straight off the telemetry store rather than taking it
+// as an argument. Recording IS per-tick work, but it produces no render output
+// beyond the bin-version bump below, so it has no business re-rendering the hub
+// that hosts it thirty times a second — see lib/telemetryStore.js.
+function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = false, trackId = -1, trackSlug = null) {
   const [storedLaps, setStoredLaps] = useState([]);
+  // Read by the lap freeze on the telemetry edge, which no dep array can reach.
+  const storedLapsRef = useRef(storedLaps);
+  storedLapsRef.current = storedLaps;
+  // Bumped whenever the SET of recorded bins changes (a new 10 m bin, or a wipe at
+  // a lap/driver boundary) — never when the bin the car is already inside is
+  // overwritten. This is what currentLap keys on instead of the telemetry tick.
+  const [binVersion, setBinVersion] = useState(0);
   const bufRef    = useRef({ bins: new Map(), lastPct: null, lastLapTime: 0, lastLapNum: -1, lastDriverStatus: -1, lastS1: 0, lastS2: 0, lastSetup: null, lastTyre: null, fuelStart: null, lastFuel: null, lastFuelDelta: null, tainted: false, invalidated: false, miniBound: freshMiniBound(), miniIdx: 0, lapLenEst: 0 });
   const lapNumRef = useRef(0);
   // The run (session + session type + track — see lapRunKey) the lap counter is
@@ -789,8 +688,13 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
   useEffect(() => {
     let cancelled = false;
     const buf = bufRef.current;
-    buf.bins.clear(); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+    buf.bins.clear(); setBinVersion(v => v + 1); buf.lastPct = null; buf.lastLapNum = -1; buf.lastDriverStatus = -1; buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
     buf.fuelStart = null; buf.lastFuel = null; buf.lastFuelDelta = null;
+    // These survive a swap too: a lap frozen right after the switch could
+    // otherwise inherit the previous driver's fallback lap time / tyre tag.
+    buf.lastLapTime = 0; buf.lastSetup = null; buf.lastTyre = null;
+    buf.aids = null; buf.fbStart = null; buf.penStart = null;
+    buf.lapLenEst = 0; buf.lapLenTrack = null;
     buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     if (!driver) { setStoredLaps([]); lapNumRef.current = 0; lapNumSessionRef.current = null; return; }
     lapStore.getLaps(driver).then(laps => {
@@ -805,14 +709,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     return () => { cancelled = true; };
   }, [driver]);
 
-  useEffect(() => {
+  // Installed once per trackName, and run on the telemetry EDGE rather than on a
+  // render. The body is unchanged: the only difference is where the snapshot comes
+  // from. Everything else it reads was already behind a ref (metaRef, bufRef)
+  // precisely because this used to re-run on every tick regardless.
+  useEffect(() => subscribeTelemetry(() => {
     const { lapDistance, lapPct, lapNumber, throttle, brake, steer, speed, gear, ersMode, ersDeploy, lapTime,
             sector1Time, sector2Time, lastLapTime, driverStatus, pitStatus, lapInvalid,
             setup, tyreVisual, tyreActual, tyreAge, tyreWear, fuelInTank, fuelRemainingLaps,
             weather, trackTemp, airTemp,
             worldX, worldY, worldZ,
-            sector2Pct, sector3Pct, overtakeActive, activeAeroMode,
-            tyreSurfaceTemps, tyreInnerTemps } = tel;
+            sector2Pct, sector3Pct, overtakeActive, activeAeroMode, trackLength,
+            tcAssist, absAssist, steeringAssist, brakingAssist, gearboxAssist, racingLineAssist,
+            flashbacks, penalties,
+            tyreSurfaceTemps, tyreInnerTemps } = getTelemetry();
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
     const buf = bufRef.current;
 
@@ -858,10 +768,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         // session type changes, restart the count at 1 (see lapNumSessionRef) so the
         // first lap of a fresh session reads "Lap 1", not a continuation of the
         // driver's career total or of the qualifying laps above it.
+        //
+        // On a run change the count CONTINUES from the laps already stored under
+        // that run rather than restarting blindly at 0. The driver-load seed
+        // above runs before the session id and track are known (its run key is
+        // "∅::?::Live"), so the first freeze always lands here — and the game's
+        // session UID survives an app restart, so relaunching mid-session used
+        // to stamp the next lap "Lap 1" while the readout said "Lap 6", leaving
+        // two Lap 1s in one run. A genuinely new run has no stored laps and
+        // starts at 1 exactly as before.
         const run = lapRunKey(runMeta(m));
         if (lapNumSessionRef.current !== run) {
           lapNumSessionRef.current = run;
-          lapNumRef.current = 0;
+          lapNumRef.current = storedLapsRef.current.reduce(
+            (acc, l) => (lapRunKey(l.meta) === run ? Math.max(acc, l.lapNumber || 0) : acc), 0);
         }
         lapNumRef.current += 1;
         // S1/S2 are the game's native splits captured just before the line; S3 is
@@ -938,15 +858,24 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
           tyre: buf.lastTyre || null,   // compound worn on this lap → dry/wet PB split (lib/tyres.js)
           // kg burned on this lap + laps of fuel in hand at the flag (lib/fuel.js).
           fuel: (fuelUsed != null || fuelDelta != null) ? { used: fuelUsed, delta: fuelDelta } : null,
+          // Driver aids in use (the most-assisted value seen across the lap) and
+          // the Event packet's count of flashbacks / penalties DURING the lap —
+          // the game's own word on both, where the leaderboard validator could
+          // only infer a flashback from holes in the trace.
+          ...(buf.aids ? { assists: buf.aids } : {}),
+          flashbacks: Math.max(0, (flashbacks ?? 0) - (buf.fbStart ?? flashbacks ?? 0)),
+          penalties: Math.max(0, (penalties ?? 0) - (buf.penStart ?? penalties ?? 0)),
           samples,
         };
         setStoredLaps(prev => [...prev, lap]); // persisted history is uncapped per driver
         lapStore.putLap(lap);                  // fire-and-forget; no-op if no driver
       }
       buf.bins.clear();
+      setBinVersion(v => v + 1);
       buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
       buf.fuelStart = null; // re-armed at this tick's fuel capture = the new lap's start level
       buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
+      buf.aids = null; buf.fbStart = null; buf.penStart = null; // re-armed below, for the new lap
     }
 
     // A new clean lap began with no pct-wrap this tick — the car crossed the line
@@ -969,6 +898,25 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     //     taint-set block below won't re-taint it.
     // No-op when lapNumber is absent/static (idle EMPTY_TEL, replays) or on a normal
     // completion (the wrap block above already saved + reset that boundary).
+    // Driver aids + flashback/penalty baselines for the lap in progress. The aids
+    // keep the MOST-assisted value seen (every scale here rises with assistance),
+    // so a lap that switched traction control off halfway still reads as assisted.
+    // The tallies are cumulative in the core; the lap's own count is the rise
+    // from its first tick.
+    {
+      const now = { tc: tcAssist, abs: absAssist, steering: steeringAssist, braking: brakingAssist,
+        gearbox: gearboxAssist, racingLine: racingLineAssist };
+      if (Object.values(now).some((v) => typeof v === "number")) {
+        if (!buf.aids) buf.aids = {};
+        for (const k in now) {
+          const v = now[k];
+          if (typeof v === "number" && !(v <= (buf.aids[k] ?? -1))) buf.aids[k] = v;
+        }
+      }
+      if (buf.fbStart == null && typeof flashbacks === "number") buf.fbStart = flashbacks;
+      if (buf.penStart == null && typeof penalties === "number") buf.penStart = penalties;
+    }
+
     const wrapped = buf.lastPct != null && buf.lastPct > 0.85 && lapPct < 0.15;
     const cleanNow = driverStatus === 1 || driverStatus === 4; // flying lap / on track
     const wasDirty = buf.lastDriverStatus === 0 || buf.lastDriverStatus === 2 ||
@@ -978,7 +926,9 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
       if (!wrapped &&
           ((lapNumber > buf.lastLapNum && buf.lastLapNum >= 0) || enteredCleanLap)) {
         buf.bins.clear();
+        setBinVersion(v => v + 1);
         buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+        buf.aids = null; buf.fbStart = null; buf.penStart = null;
         buf.fuelStart = null;
         buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
       }
@@ -1037,17 +987,17 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     if (typeof fuelRemainingLaps === "number" && isFinite(fuelRemainingLaps)) {
       buf.lastFuelDelta = fuelRemainingLaps;
     }
-    // Running estimate of the circuit's length, from distance ÷ lap fraction. Only
-    // sampled in the back half of a lap: near the line a small pct divides into a
-    // wild answer. Accurate to ~±1 m, and it's the ONLY source of a true track
-    // length for a lap — the last sample's distance is up to 10 m short of the
-    // line, which is enough to matter when the online validator reconstructs a lap
-    // time from the trace. Same trick the track-map fitter already uses.
-    // Deliberately accumulated ACROSS laps, not per lap — more samples, better
-    // estimate — but scoped to one circuit, so it's dropped the moment the track
-    // changes or a stale one would be stamped onto the next circuit's laps.
+    // The circuit's true length, stamped on each lap (the last sample is up to
+    // 10 m short of the line, which matters when the online validator rebuilds a
+    // lap time from the trace). The snapshot carries the game's own value
+    // (`trackLength`, from the Session packet), so that is taken as-is. Only a
+    // snapshot without it falls back to estimating distance ÷ lap fraction,
+    // sampled in the back half of a lap where a small pct can't blow it up, and
+    // accumulated across laps. Scoped to one circuit either way, so a value is
+    // dropped the moment the track changes rather than stamped onto the next.
     if (buf.lapLenTrack !== trackName) { buf.lapLenTrack = trackName; buf.lapLenEst = 0; }
-    if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
+    if (trackLength > 0) buf.lapLenEst = trackLength;
+    else if (typeof lapDistance === "number" && isFinite(lapDistance) && lapPct > 0.5) {
       const est = lapDistance / lapPct;
       if (isFinite(est) && est > buf.lapLenEst) buf.lapLenEst = est;
     }
@@ -1079,30 +1029,55 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
         // recorded before this existed simply renders flat.
         if (typeof worldY === "number" && isFinite(worldY)) bin.y = worldY;
       }
+      const before = buf.bins.size;
       buf.bins.set(Math.round(lapDistance / 10), bin);
+      // Bump ONLY when a new bin lands. Overwriting the bin the car is currently
+      // inside doesn't add a sample, so it must not force a rebuild — see
+      // currentLap below, and recordedPath for the same pattern on the map.
+      if (buf.bins.size !== before) setBinVersion(v => v + 1);
     }
-  }, [tel, trackName]);
+  }), [trackName]);
 
-  // Render-friendly snapshot of the in-progress lap, refreshed each telemetry tick.
+  // Render-friendly snapshot of the in-progress lap, rebuilt only when the SET of
+  // bins actually changes — the same distinction `pathVersion` makes for the track
+  // outline, and for the same reason.
+  //
+  // This used to key on `tel.lapDistance`, which moves every telemetry tick, so a
+  // Map of up to ~700 bins was spread and sorted 30x/s on every tab. The cost was
+  // not the sort: the new array IDENTITY propagated into comparisonLap -> cs ->
+  // TelemetryStudio's `compareSamples`, whose `scales`, `paths` and read-out memos
+  // all key on it. That meant 18 buildPath calls (9 channels x main+ref), each
+  // walking ~700 samples and concatenating a 10-20 kB path string, plus 18 fresh
+  // SVG `d` attributes and a re-rasterise of six panels — 30 times a second, to
+  // redraw a trace that gains a point roughly 5 times a second.
+  //
+  // Keyed on the bin count, the newest sample is up to one bin (10 m) stale in the
+  // live view. That is the same trade recordedPath already makes.
   const currentLap = useMemo(() => ({
     samples: [...bufRef.current.bins.values()].sort((a, b) => a.dist - b.dist),
-  }), [tel.lapDistance, storedLaps]);
+  }), [binVersion, storedLaps]);
 
   // Live mini-sector progress for the Live screen's S1/S2/S3 cards: each slice's
   // duration once the car has cleared it (null while ahead/un-driven), plus the slice
   // being driven now and the tyre worn — so the UI can colour past slices against the
-  // per-mini PBs and pulse the current one. One tick behind (the buffer is stamped in
-  // the effect, read here on the next render), imperceptible at telemetry rates.
-  const liveMini = useMemo(() => {
+  // per-mini PBs and pulse the current one.
+  //
+  // A function rather than a memo, because only the LIVE tab reads it: as a hub memo
+  // keyed on lapPct/lapTime it put the hub back on the telemetry tick single-handed.
+  // The Live tab's own telemetry boundary calls it once per tick instead (see
+  // LiveTelemetry below), which is where that rate belongs. Stable identity, so it
+  // can be handed out as a prop without defeating a memo downstream.
+  const readLiveMini = useCallback(() => {
     const b = bufRef.current;
     const durations = [];
     for (let m = 0; m < MINI_SECTORS; m++) {
       const a = b.miniBound[m], c = b.miniBound[m + 1];
       durations.push((a != null && c != null && c > a) ? c - a : null);
     }
-    const driving = typeof tel.lapTime === "number" && tel.lapTime > 0;
+    const { lapTime } = getTelemetry();
+    const driving = typeof lapTime === "number" && lapTime > 0;
     return { durations, current: driving ? b.miniIdx : -1, tyre: b.lastTyre };
-  }, [tel.lapPct, tel.lapTime, storedLaps]);
+  }, []);
 
   const deleteLap = useCallback(id => {
     setStoredLaps(prev => prev.filter(l => l.id !== id));
@@ -1128,17 +1103,20 @@ function useLapRecorder(tel, trackName, driver, sessionId, sessionType, demoMode
     setStoredLaps(prev => [...prev, ...laps]);
   }, []);
 
-  // Re-read the active driver's persisted laps from IndexedDB. The driver-change
-  // effect above already does this on a switch; this covers writes made OUTSIDE
-  // the recorder (a profile import) that land under the CURRENT driver, where the
-  // driver dep hasn't changed so that effect wouldn't fire.
-  const reloadLaps = useCallback(() => {
-    const d = metaRef.current.driver;
+  // Re-read a driver's persisted laps from IndexedDB. The driver-change effect
+  // above already does this on a switch; this covers writes made OUTSIDE the
+  // recorder (a profile import) that land under a driver whose identity hasn't
+  // propagated yet. Takes the driver explicitly — metaRef.current is only
+  // reassigned during render, so reading it right after setActiveDriver(target)
+  // in the import path returns the PREVIOUS driver and this would load their
+  // laps instead (racing the driver-change effect for the outcome).
+  const reloadLaps = useCallback((driver) => {
+    const d = driver ?? metaRef.current.driver;
     if (!d) { setStoredLaps([]); return; }
     lapStore.getLaps(d).then(setStoredLaps).catch(() => {});
   }, []);
 
-  return { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps };
+  return { currentLap, readLiveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps };
 }
 
 // ─── TRACK MAP ────────────────────────────────────────────────────────────────
@@ -1341,13 +1319,22 @@ function lapSourceLabel(s) {
   return `Ref · ${parts.join(" · ")}`;
 }
 
-// ─── SMALL SHARED COMPONENTS ──────────────────────────────────────────────────
-const inputStyle = { width:"100%", background:"var(--bg)", border:"1px solid var(--border-input)", borderRadius:5,
-  color:"var(--text-dim)", padding:"6px 8px", fontSize:11, fontFamily:"inherit", boxSizing:"border-box" };
-const btnStyle = (bg,color,border) => ({
-  background:bg, color, border:`1px solid ${border}`, borderRadius:6,
-  padding:"6px 14px", fontSize:11, cursor:"pointer", fontFamily:"inherit", fontWeight:600,
-});
+// ─── LIVE TELEMETRY BOUNDARY ──────────────────────────────────────────────────
+// The one place in this tree that re-renders at the telemetry rate. It subscribes
+// to the store and calls `children(tel)`, so a new snapshot re-renders THIS
+// component and its subtree — the Live screen and its track map — and nothing
+// above it. Everything else those leaves need is captured by the render closure
+// from the hub's last render, which is exactly the right staleness: those props
+// only move when the hub's own state does, and then the hub re-renders and hands
+// down a fresh closure.
+//
+// A render prop rather than making LiveScreen subscribe for itself, because the
+// map is handed in as an element (`mapSlot`) built in the hub's JSX: one boundary
+// covers both leaves and neither component's prop contract had to change.
+function LiveTelemetry({ children }) {
+  const tel = useLiveTelemetry();
+  return children(tel);
+}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function BoxBoxApp({ onOpenCalibrator }) {
@@ -1371,32 +1358,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // button open it). Car-Setup modal holds the chosen lap's setup snapshot or null.
   const [switchDriverOpen, setSwitchDriverOpen] = useState(false);
   const [carSetup, setCarSetup] = useState(null); // { track, time, date, color, setup } | null
-  const [traceOpen, setTraceOpen] = useState(false); // Trace Configurator modal
-  // Which telemetry channels the trace pipeline records (display/config only — the
-  // telemetry core forwards what the game sends). Persisted so the choice sticks.
-  const [traceChannels, setTraceChannels] = useState(() => {
-    try { const s = JSON.parse(localStorage.getItem("f1coach.traceChannels") || "null"); if (s) return s; } catch {}
-    return { throttle:true, brake:true, steering:true, gear:true, speed:true, rpm:false, ers:true, drs:true, tyreTemp:false, gforce:true };
-  });
-  useEffect(() => { localStorage.setItem("f1coach.traceChannels", JSON.stringify(traceChannels)); }, [traceChannels]);
   // Which trace panels the Telemetry studio shows (ids match its PANELS registry).
   // Persisted per install; merged over the defaults so future panel ids appear
   // enabled instead of vanishing for drivers with an older saved selection.
-  const [visibleTraces, setVisibleTraces] = useState(() => {
-    const defaults = { inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true };
-    try {
-      const s = JSON.parse(localStorage.getItem("f1coach.visibleTraces") || "null");
-      if (s) return { ...defaults, ...s };
-    } catch {}
-    return defaults;
+  const [visibleTraces, setVisibleTraces] = usePersistentState("f1coach.visibleTraces", TRACE_DEFAULTS, {
+    read: (raw) => { const s = JSON.parse(raw); return s ? { ...TRACE_DEFAULTS, ...s } : undefined; },
+    write: JSON.stringify,
   });
-  useEffect(() => { localStorage.setItem("f1coach.visibleTraces", JSON.stringify(visibleTraces)); }, [visibleTraces]);
   // ── Shared Analytics playback timeline ──
-  // One clock for the whole Overview: a 0–1 lap-distance fraction + playing flag,
-  // fed to BOTH the driving-lines panel and the telemetry trace stack so Play /
-  // scrubbing in either moves the cars and the trace cursor together. The rAF
+  // One clock for the whole Overview: the playing flag here, the 0–1 lap-distance
+  // playhead in lib/playheadStore.js (read by the two views that draw it), so Play
+  // / scrubbing in either moves the cars and the trace cursor together. The rAF
   // loop that advances it lives in DrivingLinesView (it owns duration/speed/loop).
-  const [anaPlayhead, setAnaPlayhead] = useState(0);
   const [anaPlaying, setAnaPlaying] = useState(false);
   // Refuse to hide the last visible trace — an all-empty studio is never useful.
   const toggleTrace = (id) => setVisibleTraces((v) => {
@@ -1404,15 +1377,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (on && Object.values(v).filter(Boolean).length <= 1) return v;
     return { ...v, [id]: !on };
   });
-  const [cues,       setCues]       = useState([]);
+
 
   // Seconds of lead on every voice cue (see CALL_LEAD). Persisted, and clamped on
   // the way in so a hand-edited value can't put a call half a lap early.
-  const [leadSeconds, setLeadSeconds] = useState(() => {
-    const v = parseFloat(localStorage.getItem(LS_CALL_LEAD));
-    return isFinite(v) ? clamp(v, CALL_LEAD.min, CALL_LEAD.max) : CALL_LEAD.default;
+  const [leadSeconds, setLeadSeconds] = usePersistentState(LS_CALL_LEAD, CALL_LEAD.default, {
+    read: (raw) => { const v = parseFloat(raw); return isFinite(v) ? clamp(v, CALL_LEAD.min, CALL_LEAD.max) : undefined; },
   });
-  useEffect(() => { localStorage.setItem(LS_CALL_LEAD, String(leadSeconds)); }, [leadSeconds]);
 
   // Live screen per-category toggles, driven by the track-map legend chips. Each key
   // (legendKeyFor categories) governs BOTH whether that category is colour-coded on
@@ -1430,11 +1401,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // that stream and rebroadcasts it on another port — so this is configurable. The
   // number is pushed to the native core via the `set_udp_port` command (it rebinds
   // its listener live).
-  const [udpPort, setUdpPort] = useState(() => {
-    const n = parseInt(localStorage.getItem("f1coach.udpPort"), 10);
-    return n >= 1 && n <= 65535 ? n : 20777;
+  const [udpPort, setUdpPort] = usePersistentState("f1coach.udpPort", 20777, {
+    read: (raw) => { const n = parseInt(raw, 10); return n >= 1 && n <= 65535 ? n : undefined; },
   });
-  useEffect(() => { localStorage.setItem("f1coach.udpPort", String(udpPort)); }, [udpPort]);
 
   // Demo mode: the native core synthesises a lap so the whole pipeline (recorder,
   // coaching, FFB, track map) can be exercised with no game running. Two ways in,
@@ -1463,10 +1432,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   // LLM backend — OpenRouter cloud. Persisted so the user doesn't re-enter their
   // key/model each session.
-  const [openRouterKey,   setOpenRouterKey]   = useState(() => localStorage.getItem("f1coach.openRouterKey") || "");
-  const [openRouterModel, setOpenRouterModel] = useState(() => localStorage.getItem("f1coach.openRouterModel") || DEFAULT_OPENROUTER_MODEL);
-  useEffect(() => { localStorage.setItem("f1coach.openRouterKey", openRouterKey); }, [openRouterKey]);
-  useEffect(() => { localStorage.setItem("f1coach.openRouterModel", openRouterModel); }, [openRouterModel]);
+  const [openRouterKey,   setOpenRouterKey]   = usePersistentState("f1coach.openRouterKey", "");
+  const [openRouterModel, setOpenRouterModel] = usePersistentState("f1coach.openRouterModel", DEFAULT_OPENROUTER_MODEL,
+    { read: (raw) => raw || undefined });
 
   // One config object threaded to the LLM call sites (tips + debrief).
   const llmConfig = useMemo(
@@ -1488,20 +1456,17 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   // Speed units — the telemetry core always reports km/h; the driver can read km/h or
   // mph across the Live KPIs, Telemetry readouts and Corner table. Persisted.
-  const [units, setUnits] = useState(() => localStorage.getItem("f1coach.units") || "km/h");
-  useEffect(() => { localStorage.setItem("f1coach.units", units); }, [units]);
+  const [units, setUnits] = usePersistentState("f1coach.units", "km/h", { read: (raw) => raw || undefined });
 
   // Master switch for the online leaderboards. Off means the app makes no
   // leaderboard request at all — not a failed one, none — which is the only
   // honest way to offer "leave me out of this".
-  const [leaderboardEnabled, setLeaderboardEnabled] = useState(
-    () => localStorage.getItem(LS_ENABLED) !== "0");
-  useEffect(() => { localStorage.setItem(LS_ENABLED, leaderboardEnabled ? "1" : "0"); }, [leaderboardEnabled]);
+  const [leaderboardEnabled, setLeaderboardEnabled] = usePersistentState(LS_ENABLED, true,
+    { read: readBool01, write: writeBool01 });
 
   // Tyre temp units — the telemetry core always reports °C; the driver can read °C or °F
   // in the Telemetry Studio's Tyre Temps panel. Persisted.
-  const [tempUnits, setTempUnits] = useState(() => localStorage.getItem("f1coach.tempUnits") || "°C");
-  useEffect(() => { localStorage.setItem("f1coach.tempUnits", tempUnits); }, [tempUnits]);
+  const [tempUnits, setTempUnits] = usePersistentState("f1coach.tempUnits", "°C", { read: (raw) => raw || undefined });
 
   // Voice preferences — persisted across sessions
   const [voicePrefs, setVoicePrefs] = useState(() => {
@@ -1588,6 +1553,15 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       if (p.tempUnits != null) setTempUnits(p.tempUnits);
       if (p.voicePrefs != null) setVoicePrefs(p.voicePrefs);
       if (isSkin(p.skin)) setActiveSkin(p.skin);
+    } else {
+      // A fresh (or migrated, prefs-less) profile must inherit the global seed
+      // defaults — NOT the previous driver's live values.
+      setUnits(localStorage.getItem("f1coach.units") || "km/h");
+      setTempUnits(localStorage.getItem("f1coach.tempUnits") || "°C");
+      try { setVoicePrefs(JSON.parse(localStorage.getItem("f1coach.voicePrefs") || "{}")); }
+      catch { setVoicePrefs({}); }
+      const s = localStorage.getItem("f1coach.skin");
+      setActiveSkin(isSkin(s) ? s : DEFAULT_SKIN);
     }
   }, [activeDriver]);
   // Persist live units/voicePrefs/skin back onto the active driver — but skip the
@@ -1622,8 +1596,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (!nm || list.length <= 1 || !list.some(d => d.name === nm)) return;
     setDrivers(prev => prev.filter(d => d.name !== nm));
     setAvatars(prev => { const next = { ...prev }; delete next[nm]; return next; });
+    // Everything keyed by the driver's name goes with them. Track maps and
+    // downloaded references used to be left behind, so a new profile signed
+    // under the same name later inherited a stranger's saved circuits and refs.
     lapStore.clearLaps(nm);
     lapStore.deleteAvatar(nm);
+    lapStore.clearTrackMaps(nm);
+    lapStore.clearRefTraces(nm);
   }, []);
   // Edit an existing driver profile from the Settings roster. Name, number, team,
   // livery and photo are all editable. Renaming re-files the driver's laps, photo
@@ -1664,9 +1643,16 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     return true;
   }, [activeDriver]);
 
-  // Connection state
+  // Connection state. Note what is NOT here: the live snapshot. It lives in
+  // lib/telemetryStore.js, outside React, because as hub state it re-rendered
+  // every mounted screen about thirty times a second. `wsConnected` stays — it is
+  // edge-triggered ("is the game sending at all"), so it changes a handful of
+  // times a session, and the Shell, the auto-tab effect and useAndroidDevice all
+  // read it.
   const [wsConnected,  setWsConnected]  = useState(false);
-  const [liveTel,      setLiveTel]      = useState(null);
+  // The core's whole status — Settings reads bindError / wrongFormat from it to
+  // explain WHY nothing is arriving, rather than only that nothing is.
+  const [coreStatus,   setCoreStatus]   = useState(null);
   // A drive "session": a fresh id minted each time live telemetry connects, so
   // laps recorded during one connection share it and the dashboard can count
   // distinct sessions per driver.
@@ -1702,27 +1688,32 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     return () => { cancelled = true; };
   }, [activeDriver]);
 
-  // Telemetry comes solely from the Rust telemetry core. Until a connection delivers a
-  // snapshot, fall back to a zeroed reading so the UI renders an idle state.
-  const rawTel = liveTel || EMPTY_TEL;
+  // The slow-moving telemetry facts this hub genuinely needs: which circuit, which
+  // session type, which compound is on the car, the game's session UID and the
+  // track length. The object's identity only changes when one of those does (see
+  // lib/telemetryStore.js), so reading it here costs a handful of renders a
+  // session rather than thirty a second. Every per-tick channel is read either by
+  // the Live tab's own telemetry boundary or by one of the three per-tick
+  // subscribers further down, none of which re-render this component.
+  const telId = useTelemetryIdentity();
 
   // Identify the circuit from the m_trackId the telemetry core forwards in each snapshot.
-  const trackInfo = useMemo(() => getTrack(rawTel.trackId ?? -1), [rawTel.trackId]);
+  const trackInfo = useMemo(() => getTrack(telId.trackId ?? -1), [telId.trackId]);
 
   // Coarse game mode (Time Trial / Qualifying / …) from the telemetry core's sessionType,
   // tagged onto each recorded lap so the dashboard can split fastest laps by mode.
-  const sessionTypeLabel = useMemo(() => sessionTypeName(rawTel.sessionType), [rawTel.sessionType]);
+  const sessionTypeLabel = useMemo(() => sessionTypeName(telId.sessionType), [telId.sessionType]);
 
-  // Lap recording runs on RAW telemetry — it only reads the channels + lap
-  // position (not currentZone), so storedLaps is available to resolve the
-  // reference and comparison laps below. Laps are saved under the active driver.
-  const { currentLap, liveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
-    useLapRecorder(rawTel, trackInfo?.name || loadedRefTrace?.meta?.track || null,
+  // Lap recording reads the snapshot straight off the telemetry store, so
+  // storedLaps is available to resolve the reference and comparison laps below.
+  // Laps are saved under the active driver.
+  const { currentLap, readLiveMini, storedLaps, deleteLap, archiveSessionLaps, loadSessionLaps, reloadLaps } =
+    useLapRecorder(trackInfo?.name || loadedRefTrace?.meta?.track || null,
       activeDriver, sessionId, sessionTypeLabel, fakeMode,
       // Only pass the circuit id/slug when telemetry actually identified it — a
       // name borrowed from a loaded reference trace is a display fallback, not
       // proof of which circuit the car is on.
-      trackInfo ? (rawTel.trackId ?? -1) : -1, trackInfo?.slug || null);
+      trackInfo ? (telId.trackId ?? -1) : -1, trackInfo?.slug || null);
 
   // "Reset" the Session Laps panel. Archiving the current laps hides them from the
   // live Session-Laps / Analytics views permanently (the flag is persisted in
@@ -1762,6 +1753,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (overwrite) {
       await lapStore.clearLaps(target);
       await lapStore.clearTrackMaps(target);
+      await lapStore.clearRefTraces(target);
       await lapStore.deleteAvatar(target);
     }
     const entry = await importProfileData(payload, { name: target });
@@ -1780,7 +1772,14 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (entry.avatar) setAvatars(prev => ({ ...prev, [target]: entry.avatar }));
     else if (overwrite) setAvatars(prev => { const n = { ...prev }; delete n[target]; return n; });
     setActiveDriver(target);
-    reloadLaps();
+    reloadLaps(target);
+    // The driver-change effect restores downloaded references, but it doesn't
+    // fire when the import overwrote the driver already active — re-read here.
+    // Idempotent with that effect (both replace every leaderboard ref wholesale).
+    lapStore.getRefTraces(target).then(rows => {
+      const restored = rows.map(r => ({ ...r.trace, id: r.key, source: "leaderboard" }));
+      setRefTraces(prev => [...restored, ...prev.filter(t => t.source !== "leaderboard")]);
+    });
     return entry;
   }, [reloadLaps]);
 
@@ -1793,13 +1792,13 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // menu blips (real → -1 → same real) never fire a spurious reset.
   const prevTrackRef = useRef(null);
   useEffect(() => {
-    const trackId = rawTel.trackId;
+    const trackId = telId.trackId;
     const tValid = typeof trackId === "number" && trackId >= 0; // -1/undefined = no session
     if (tValid) {
       if (prevTrackRef.current != null && prevTrackRef.current !== trackId) resetSessionLaps();
       prevTrackRef.current = trackId;
     }
-  }, [rawTel.trackId, resetSessionLaps]);
+  }, [telId.trackId, resetSessionLaps]);
 
   // Laps belonging to the current drive, scoped by sessionId exactly like the Live
   // screen's Session Laps panel (both go through visibleSessionLaps). The Analytics
@@ -1824,15 +1823,100 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     }
   }, [wsConnected, tab]);
 
-  // Resolve the active reference from loaded traces + this session's driven laps.
-  const activeTrace = useMemo(
-    () => [...refTraces, ...storedLaps].find(t=>t.id===activeTraceId)||null,
+  const [comparisonLapId, setComparisonLapId] = useState("live");
+
+  // The circuit the driver's current laps belong to — the anchor for scoping every
+  // coaching input to ONE track (compare apples with apples). Prefer the live-
+  // identified circuit; fall back to the newest saved lap's own track. Deliberately
+  // NOT trackName, which falls back to the reference's track — that would let a
+  // wrong-track reference redefine "the driven track" and hide a real mismatch.
+  const drivenTrackName = useMemo(() => {
+    if (trackInfo?.name) return trackInfo.name;
+    // The NEWEST lap by recording time, not the last array element — a session
+    // file load appends older laps at the end.
+    let newest = null;
+    for (const l of storedLaps) {
+      if (l.meta?.track && (newest == null || (l.recordedAt || 0) > (newest.recordedAt || 0))) newest = l;
+    }
+    return newest?.meta?.track || null;
+  }, [trackInfo, storedLaps]);
+
+  // Laps the coach is allowed to reason about:
+  //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
+  //     another track (mixed history produced nonsense cross-track claims);
+  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
+  //   • the same side of the demo line (isDemoLap). Demo Mode replays somebody
+  //     else's real race, so its laps must never become the benchmark a driven lap
+  //     is measured against — and, replaying, the driver should be compared with
+  //     the replay's own laps rather than their real history at this circuit.
+  const trackLaps = useMemo(
+    () => storedLaps.filter((l) =>
+      isRankable(l) && isDemoLap(l) === !!fakeMode && sameTrack(l.meta?.track, drivenTrackName)),
+    [storedLaps, drivenTrackName, fakeMode]);
+
+  // The newest lap on this circuit — what the driver is being coached on AS THEY
+  // DRIVE, and the default subject of the Coach Log.
+  const latestTrackLap = trackLaps.length ? trackLaps[trackLaps.length - 1] : null;
+
+  // ── The lap the COACH LOG is analysing ────────────────────────────────────
+  // Shared with the Analytics "Driven Lap" selector, so choosing a lap on either
+  // screen moves both. Analytics' "live" option is the lap IN PROGRESS: it has no
+  // lap time and only partial samples, so it can't be analysed — for the coach it
+  // means "follow the newest completed lap", which is the pre-selector behaviour.
+  // Anything else resolves within trackLaps, so a stale id can never point the
+  // coach at another circuit's lap.
+  const coachLap = useMemo(() => {
+    if (comparisonLapId === "live") return latestTrackLap;
+    return trackLaps.find((l) => l.id === comparisonLapId) || latestTrackLap;
+  }, [comparisonLapId, trackLaps, latestTrackLap]);
+  // Is the Coach Log pinned to an earlier lap rather than following the newest?
+  const coachLapPinned = !!coachLap && !!latestTrackLap && coachLap.id !== latestTrackLap.id;
+
+  // The car on track right now, as a lap-shaped profile for matchReference — see
+  // the live/coach verdicts further down for why it's read off telemetry.
+  const liveProfileLap = useMemo(() => ({
+    tyre: { visual: telId.tyreVisual },
+    meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
+  }), [telId.tyreVisual, drivenTrackName, sessionTypeLabel]);
+
+  // ── The reference ────────────────────────────────────────────────────────
+  // `activeTraceId` is the driver's explicit choice: a trace or lap id, the string
+  // "none" (no reference, on purpose), or null — AUTO, the default.
+  //
+  // Auto picks the driver's own fastest COMPARABLE lap here: this circuit, the same
+  // side of the demo line, game-valid (all via trackLaps), with a real trace, and
+  // passing matchReference against what's being driven or analysed (same dry/wet,
+  // session type and compound). Without it, nothing was coached until a reference
+  // had been loaded by hand: no corner calls, an empty Coach Log, no debrief — on
+  // exactly the laps where the driver's own best is the obvious benchmark.
+  //
+  // It skips the lap under analysis, since a lap measured against itself finds
+  // nothing; so when the newest lap is a new best, the previous best becomes the
+  // reference for it. An explicit choice always wins, "none" included.
+  const explicitTrace = useMemo(
+    () => (activeTraceId && activeTraceId !== "none"
+      ? [...refTraces, ...storedLaps].find(t=>t.id===activeTraceId)||null : null),
     [refTraces, storedLaps, activeTraceId]);
+  const autoTrace = useMemo(() => {
+    if (activeTraceId != null) return null;
+    const subject = coachLap || liveProfileLap;
+    let best = null;
+    for (const l of trackLaps) {
+      if (l.id === coachLap?.id || !(l.lapTime > 0)) continue;
+      if (!Array.isArray(l.samples) || l.samples.length < 50) continue;
+      if (best && l.lapTime >= best.lapTime) continue;
+      const m = matchReference(subject, l, { drivenTrack: drivenTrackName });
+      if (m && !m.ok) continue;
+      best = l;
+    }
+    return best;
+  }, [activeTraceId, trackLaps, coachLap, liveProfileLap, drivenTrackName]);
+  const activeTrace = explicitTrace || autoTrace;
 
   // Strategy zones are DERIVED FROM the active reference — braking, lift-and-coast,
   // and ERS-mode (by-mode) zones detected from its throttle, brake + ERS channels.
   // Select a different reference and the zones (and coaching calls) change. No
-  // reference → generic defaults.
+  // reference, or one with nothing to derive from → no zones and no calls.
   const zones = useMemo(
     () => (activeTrace ? deriveZonesFromTrace(activeTrace) : []),
     [activeTrace]
@@ -1892,22 +1976,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
 
   const trackName = trackInfo?.name || activeTrace?.meta?.track || null;
 
-  // Derive the active strategy zone from lap position here (not in the source):
-  // live snapshots from the telemetry core only carry lapPct, not the zone.
-  const currentZone = useMemo(
-    () => zones.find(z => rawTel.lapPct >= z.start && rawTel.lapPct <= z.end) || null,
-    [rawTel.lapPct, zones]
-  );
-  const tel = useMemo(() => ({ ...rawTel, currentZone }), [rawTel, currentZone]);
-
   // Accumulate world positions into ~12 m bins to trace the real circuit.
   // Bumped ONLY when the set of bins actually changes (a new ~12 m bin, or a
   // teleport wiping them) — see recordedPath below for why that distinction
   // matters. Overwriting the bin the car is currently inside doesn't move the
   // outline, so it must not count.
+  //
+  // Like the lap recorder, this runs on the telemetry EDGE rather than on a
+  // render: it is per-tick work whose only render-visible product is that bump,
+  // which lands ~5×/s at racing speed rather than 30.
   const [pathVersion, setPathVersion] = useState(0);
-  useEffect(() => {
-    const { worldX, worldZ, lapDistance, lapPct } = tel;
+  useEffect(() => subscribeTelemetry(() => {
+    const { worldX, worldZ, lapDistance, lapPct } = getTelemetry();
     if (typeof worldX !== "number" || typeof worldZ !== "number") return; // no world data yet
     if (!isFinite(worldX) || !isFinite(worldZ)) return;
     const rec = trackPathRef.current;
@@ -1920,7 +2000,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const before = rec.bins.size; // read AFTER any clear above, so a wipe counts
     rec.bins.set(Math.round((lapDistance || 0) / 12), bin);
     if (rec.bins.size !== before) setPathVersion(v => v + 1);
-  }, [tel.worldX, tel.worldZ]);
+  }), []);
 
   // Keyed on the bin COUNT, not on worldX/worldZ: the car sends ~30 positions a
   // second but only crosses a new 12 m bin ~5×/s at racing speed, and this
@@ -1989,8 +2069,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   };
 
   // Comparison lap for the Compare screen — defaults to the live lap; can also be
-  // any lap driven this session. (The reference/benchmark side is activeTrace.)
-  const [comparisonLapId, setComparisonLapId] = useState("live");
+  // any lap driven this session. (The id state itself is declared further up,
+  // beside the reference: the auto-reference needs to know the coached lap.)
   const comparisonLap = useMemo(
     () => comparisonLapId === "live" ? currentLap : (storedLaps.find(s => s.id === comparisonLapId) || null),
     [comparisonLapId, currentLap, storedLaps]);
@@ -1999,10 +2079,45 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // previous session's lap that's no longer in the now session-scoped list.
   useEffect(() => { setComparisonLapId("live"); }, [sessionId]);
 
-  // Lap-wide evidence for the coach: your most recent COMPLETED lap vs the loaded
-  // reference. Recomputed only when a lap finishes or the reference changes (not
-  // per telemetry tick), so it's cheap. Falls back to null → coach uses the
-  // instantaneous at-this-point comparison.
+  // The two sample arrays the Analytics panels read, and the lap length derived
+  // from them — memoised on the selected lap and reference, the only things they
+  // depend on (they used to be computed inline in the JSX). Both arrays are
+  // sorted by `dist`, so the length is simply the last element.
+  const compareSamples = useMemo(() => comparisonLap?.samples || [], [comparisonLap]);
+  const referenceSamples = useMemo(() => activeTrace?.samples || [], [activeTrace]);
+  const lapLenFromSamples = useMemo(() => {
+    const lastOf = (a) => (a.length ? (a[a.length - 1].dist || 0) : 0);
+    return Math.max(lastOf(compareSamples), lastOf(referenceSamples));
+  }, [compareSamples, referenceSamples]);
+  // The live fallback is only reached when NEITHER lap carries samples. It wants a
+  // track length, which telemetry only carries implicitly as lapDistance / lapPct
+  // — so it reads the store's latched version of exactly that ratio rather than
+  // recomputing it from a raw snapshot, which would have put this memo, and with
+  // it the whole hub, back on the telemetry tick for a value that is constant per
+  // circuit. See nextTrackLen in lib/telemetryStore.js.
+  const lapLen = useMemo(
+    () => lapLenFromSamples || telId.trackLenM,
+    [lapLenFromSamples, telId.trackLenM]);
+
+  // Lap number the Live screen shows for the lap in progress: the highest lap
+  // number already recorded in THIS session, plus one. Was an inline reduce over
+  // the driver's entire uncapped history on every render — 500 laps is 15,000
+  // iterations a second for a number that changes once a lap.
+  // Both of these were array literals written inline in the Analytics JSX, so
+  // every render handed the screen a new identity and defeated any memo keyed on
+  // them downstream.
+  const referenceSources = useMemo(() => [...refTraces, ...sessionLaps], [refTraces, sessionLaps]);
+  const sectorDists = useMemo(() => activeTrace?.meta?.sectors || EMPTY_ARR, [activeTrace]);
+
+  const liveLapNumber = useMemo(() => {
+    if (sessionId == null) return 1;
+    let max = 0;
+    for (const l of storedLaps) {
+      if (!l.archived && l.meta?.sessionId === sessionId) max = Math.max(max, l.lapNumber || 0);
+    }
+    return max + 1;
+  }, [storedLaps, sessionId]);
+
   // One labeler the coach uses everywhere a track distance would otherwise be
   // read out: corner/zone name inside a named zone, else the sector. Bound to the
   // active zones + the trace's sector boundaries (meta.sectors) when present.
@@ -2016,45 +2131,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     [zones, activeTrace, trackCorners]
   );
 
-  // The circuit the driver's current laps belong to — the anchor for scoping every
-  // coaching input to ONE track (compare apples with apples). Prefer the live-
-  // identified circuit; fall back to the newest saved lap's own track. Deliberately
-  // NOT trackName, which falls back to the reference's track — that would let a
-  // wrong-track reference redefine "the driven track" and hide a real mismatch.
-  const drivenTrackName = trackInfo?.name
-    || storedLaps[storedLaps.length - 1]?.meta?.track
-    || null;
-
-  // Laps the coach is allowed to reason about:
-  //   • THIS circuit only — a lap at Silverstone is never analysed against laps from
-  //     another track (mixed history produced nonsense cross-track claims);
-  //   • game-valid only (isRankable drops track-limits/corner-cut deleted laps);
-  //   • the same side of the demo line (isDemoLap). Demo Mode replays somebody
-  //     else's real race, so its laps must never become the benchmark a driven lap
-  //     is measured against — and, replaying, the driver should be compared with
-  //     the replay's own laps rather than their real history at this circuit.
-  const trackLaps = useMemo(
-    () => storedLaps.filter((l) =>
-      isRankable(l) && isDemoLap(l) === !!fakeMode && sameTrack(l.meta?.track, drivenTrackName)),
-    [storedLaps, drivenTrackName, fakeMode]);
-
-  // The newest lap on this circuit — what the driver is being coached on AS THEY
-  // DRIVE, and the default subject of the Coach Log.
-  const latestTrackLap = trackLaps.length ? trackLaps[trackLaps.length - 1] : null;
-
-  // ── The lap the COACH LOG is analysing ────────────────────────────────────
-  // Shared with the Analytics "Driven Lap" selector, so choosing a lap on either
-  // screen moves both. Analytics' "live" option is the lap IN PROGRESS: it has no
-  // lap time and only partial samples, so it can't be analysed — for the coach it
-  // means "follow the newest completed lap", which is the pre-selector behaviour.
-  // Anything else resolves within trackLaps, so a stale id can never point the
-  // coach at another circuit's lap.
-  const coachLap = useMemo(() => {
-    if (comparisonLapId === "live") return latestTrackLap;
-    return trackLaps.find((l) => l.id === comparisonLapId) || latestTrackLap;
-  }, [comparisonLapId, trackLaps, latestTrackLap]);
-  // Is the Coach Log pinned to an earlier lap rather than following the newest?
-  const coachLapPinned = !!coachLap && !!latestTrackLap && coachLap.id !== latestTrackLap.id;
 
   // The selector is shared with Analytics, which happily lists laps the coach
   // cannot work with — an invalidated lap is still worth overlaying as a trace,
@@ -2093,10 +2169,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //     muted" against a race lap the driver hadn't asked about. Idle, every field
   //     below is null, every rule fails open, and only a wrong-circuit reference
   //     can still flag — which is exactly what should flag with no lap running.
-  const liveProfileLap = useMemo(() => ({
-    tyre: { visual: rawTel.tyreVisual },
-    meta: { track: drivenTrackName, sessionType: sessionTypeLabel },
-  }), [rawTel.tyreVisual, drivenTrackName, sessionTypeLabel]);
+  // (liveProfileLap — the live car's profile — is declared up with the reference,
+  // which the auto-reference needs it for.)
 
   const liveRefMatch = useMemo(
     () => matchReference(liveProfileLap, activeTrace, { drivenTrack: drivenTrackName }),
@@ -2118,6 +2192,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   const liveCalls = useMemo(
     () => (liveRefMismatch ? [] : announceCalls),
     [liveRefMismatch, announceCalls]);
+  // Identity of the call set `announcedRef`'s fired-set belongs to. Kept here so
+  // the announcement effect can clear the set in the SAME run that fires calls,
+  // rather than in a later effect that re-armed what had just fired.
+  const announcedCallsRef = useRef(liveCalls);
 
   // Aggregate window for inputs that don't cite lap numbers (evidence, trends,
   // structured log) — the most recent laps on this track that are COMPARABLE with
@@ -2155,12 +2233,18 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // Both of the below analyse `coachLap` explicitly rather than "the last lap in
   // the window" — with a pinned lap those are the same thing, but naming the lap
   // means a change to the window's ordering can never silently re-point them.
-  const lapEvidence = useMemo(() => {
+  // They share ONE analysis: the prose evidence and the structured log used to
+  // each run analyzeLap on identical inputs.
+  const coachAnalysis = useMemo(() => {
     if (!activeTrace || refMismatch || !coachLap?.samples) return null;
+    return analyzeLap(coachLap.samples, activeTrace.samples, { labelAt: trackLabeler });
+  }, [coachLap, activeTrace, trackLabeler, refMismatch]);
+  const lapEvidence = useMemo(() => {
+    if (!coachAnalysis) return null;
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildLapEvidence(coachLap.samples, activeTrace.samples,
-      { labelAt: trackLabeler, userLapTime: coachLap.lapTime, refLapTime });
-  }, [coachLap, activeTrace, trackLabeler, refMismatch]);
+      { analysis: coachAnalysis, userLapTime: coachLap.lapTime, refLapTime });
+  }, [coachAnalysis, coachLap, activeTrace]);
 
   // Structured per-channel breakdown for the Coach Log screen — the lap under
   // analysis vs the reference, with the real time-on-table distributed across
@@ -2169,11 +2253,11 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // reference, and while the reference isn't comparable with the lap analysed
   // (the screen shows the notice).
   const coachLog = useMemo(() => {
-    if (!activeTrace || refMismatch || !coachLap?.samples) return null;
+    if (!coachAnalysis) return null;
     const refLapTime = activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null;
     return buildCoachLog(coachLap, activeTrace.samples, refLapTime,
-      { labelAt: trackLabeler, lapsAnalysed: coachableLaps.length });
-  }, [coachLap, coachableLaps, activeTrace, trackLabeler, refMismatch]);
+      { analysis: coachAnalysis, lapsAnalysed: coachableLaps.length });
+  }, [coachAnalysis, coachLap, coachableLaps, activeTrace]);
 
   // Cross-lap trends (recurring corner issues on this track), scoped to the
   // current circuit. Recomputed only when a lap completes or the reference changes.
@@ -2199,9 +2283,14 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // no connect/disconnect: we just subscribe to its Tauri events. `wsConnected`
   // now means "the game is actively sending packets"; a fresh drive session id is
   // minted on each rising edge (as the old WebSocket onopen used to do).
+  // The snapshot goes to the telemetry store, NOT to state on this component:
+  // publishing it does not re-render the hub, so a UDP packet now only reaches the
+  // pieces that subscribed to it. "receiving" is still hub state — it is an edge,
+  // and the Shell's UDP pill reads it.
   useTelemetry({
-    onSnapshot: setLiveTel,
+    onSnapshot: publishTelemetry,
     onReceivingChange: setWsConnected,
+    onStatus: setCoreStatus,
   });
 
   // Drive-session identity is minted from the GAME's per-session UID (in every UDP
@@ -2212,12 +2301,34 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // only cleared by a different circuit (the auto-reset effect above) or the manual
   // "Reset Session Laps" button — both of which mint their own id.
   useEffect(() => {
-    const uid = rawTel.sessionUid;
+    const uid = telId.sessionUid;
     if (uid && uid !== "0") setSessionId(prev => prev || `s-${uid}`);
-  }, [rawTel.sessionUid]);
+  }, [telId.sessionUid]);
 
   // Push a UDP-port change to the native core; it rebinds its listener live.
   useEffect(() => { coreInvoke("set_udp_port", { port: udpPort }); }, [udpPort]);
+
+  // Warm the split-out screen chunks once the app is idle. Splitting them is about
+  // what LAUNCH has to parse before the first screen paints; it is not an argument
+  // for making the driver wait on a disk read when they change tab. Pulling them in
+  // after first paint keeps both: nothing blocks the launch, and by the time anyone
+  // reaches for a tab its chunk is already in the module cache, so the Suspense
+  // fallback above is never actually seen.
+  //
+  // requestIdleCallback yields to real work, which is the point — but it also may
+  // not fire at all on a page that never goes idle, so the timeout bounds it. These
+  // are local files; nothing here needs the network. The Trace Calibrator is
+  // deliberately NOT in this list: it is reached from one button in Settings and
+  // most sessions never open it, so it is the one chunk worth loading on demand.
+  useEffect(() => {
+    const warm = () => { for (const load of chunkLoaders) load().catch(() => {}); };
+    if (typeof requestIdleCallback === "function") {
+      const id = requestIdleCallback(warm, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const id = setTimeout(warm, 1500);
+    return () => clearTimeout(id);
+  }, []);
 
   // Native force-feedback engine (device control, live gauges, tuning + profiles).
   const ffb = useFfbEngine();
@@ -2237,8 +2348,6 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       const id = crypto.randomUUID(); // UUID, not Date.now(): importing several traces at once would collide on ms
       setRefTraces(prev => [...prev, { ...json, id }]);
       setActiveTraceId(id);
-      const zoneCount = deriveZonesFromTrace(json).length;
-      addCue(`📂 Loaded ${json.meta.driver} @ ${json.meta.track} — ${zoneCount} strategy zones generated`, "info");
     } catch { alert("Could not parse JSON file."); }
   };
 
@@ -2258,11 +2367,16 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // shows exactly the loaded race, and a fresh lap id each so they never clobber
   // an existing lap. In-memory only — reviewing a saved session doesn't touch the
   // driver's persisted history; the file stays the durable copy.
+  // A failed write now throws (saveJson) rather than looking like a cancel —
+  // say so, the way a failed load already does.
+  const exportLapSafe = useCallback((lap, opts) =>
+    exportLapToFile(lap, opts).catch((e) => alert(e.message)), []);
   const saveSession = async () => {
-    const ok = await exportSessionToFile(sessionLaps, {
-      driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
-    });
-    if (ok) addCue(`💾 Saved ${sessionLaps.length} laps to file`, "info");
+    try {
+      await exportSessionToFile(sessionLaps, {
+        driver: activeDriver, track: trackName, sessionType: sessionTypeLabel,
+      });
+    } catch (e) { alert(e.message); }
   };
   const loadSession = async (file) => {
     let text;
@@ -2282,15 +2396,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     loadSessionLaps(retagged);
     setSessionId(newSid);       // scope the panel to the loaded session
     setActiveTraceId(null);     // the old reference belonged to a different drive
-    addCue(`📂 Loaded ${retagged.length} laps from file`, "info");
   };
-
-  // Append a line to the pit-wall cue feed (kept to the last 60 entries).
-  const addCue = useCallback((text, type="info") => {
-    const t = new Date();
-    const time = `${t.getMinutes().toString().padStart(2,"0")}:${t.getSeconds().toString().padStart(2,"0")}`;
-    setCues(prev => [...prev.slice(-59), { text, time, type }]);
-  }, []);
 
   // ── Adopt a leaderboard entry as the active reference ────────────────────
   // Two kinds of entry reach this. A LOCAL one (the board's own-laps preview)
@@ -2301,39 +2407,41 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   //
   // Either way the driver lands on Analytics, because a reference they can't see
   // applied is indistinguishable from a button that did nothing.
-  const useLeaderboardEntry = useCallback(async (entry) => {
+  const adoptLeaderboardEntry = useCallback(async (entry) => {
     if (!entry) return;
-    const label = `${entry.displayName} · ${formatLapTime(entry.lapTimeMs / 1000, 3)}`;
 
     // Local: the lap is already in storedLaps, so it already resolves as a
     // reference. Pointing activeTraceId at it is the whole job.
     if (entry.lap?.id) {
       setActiveTraceId(entry.lap.id);
       setTab("compare");
-      addCue(`🏆 Reference set — ${label}`, "info");
       return;
     }
 
     // Remote: already downloaded once? Re-use it rather than fetching again —
-    // this is what makes a saved reference work with no network at all.
+    // this is what makes a saved reference work with no network at all. But only
+    // while it is still THAT driver's lap: the cache is keyed per board entry,
+    // and an entry is replaced whenever its driver improves, so a copy saved
+    // last week can be a lap the board no longer holds. The row's own time says
+    // which lap it is now; a mismatch re-downloads, and a download that fails
+    // (offline at the track) still falls back to the copy we have.
     const cachedId = `${activeDriver}::${entry.boardId}::${entry.driverId}`;
-    if (refTraces.some(t => t.id === cachedId)) {
-      setActiveTraceId(cachedId);
-      setTab("compare");
-      addCue(`🏆 Reference set — ${label}`, "info");
-      return;
+    const cached = refTraces.find(t => t.id === cachedId);
+    const adoptCached = () => { setActiveTraceId(cachedId); setTab("compare"); };
+    if (cached) {
+      const cachedMs = Math.round(((cached.meta?.lapTime ?? cached.lapTime) || 0) * 1000);
+      const stale = cachedMs > 0 && entry.lapTimeMs > 0 && Math.abs(cachedMs - entry.lapTimeMs) > 1;
+      if (!stale || !entry.tracePath) return adoptCached();
     }
 
-    if (!entry.tracePath) { addCue("🏆 That entry has no trace to download.", "warn"); return; }
-    addCue(`⬇ Downloading ${label}…`, "info");
+    if (!entry.tracePath) return;
     const json = await fetchTrace(entry.tracePath);
-    if (!json) { addCue("⚠ Couldn't download that lap — check your connection.", "warn"); return; }
 
     // traceToReference sanitises the samples. Not optional: this is third-party
     // data heading for the coaching engine and the zone derivation that drives
     // the voice calls.
-    const trace = traceToReference(json, { entry, boardId: entry.boardId });
-    if (!trace) { addCue("⚠ That lap's trace was malformed and wasn't loaded.", "warn"); return; }
+    const trace = json ? traceToReference(json, { entry, boardId: entry.boardId }) : null;
+    if (!trace) { if (cached) adoptCached(); return; }
 
     // Persisted so it survives a restart — a reference pulled today has to still
     // be there for an offline race weekend.
@@ -2345,9 +2453,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     setRefTraces(prev => [{ ...trace, id }, ...prev.filter(t => t.id !== id)]);
     setActiveTraceId(id);
     setTab("compare");
-    const zones = deriveZonesFromTrace(trace).length;
-    addCue(`🏆 Reference set — ${label} · ${zones} strategy zones`, "info");
-  }, [addCue, activeDriver, refTraces]);
+  }, [activeDriver, refTraces]);
 
   // ── Publish a lap to its board ───────────────────────────────────────────
   // The lap awaiting confirmation; non-null while the publish dialog is open.
@@ -2364,37 +2470,61 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const lap = pendingPublish;
     if (!lap) return;
     setPublishing(true);
+    // `enabled` is what makes the Settings switch binding here too: without it
+    // submitLap's own gate defaulted open, so a publish still signed up an
+    // account and uploaded with the feature turned off.
     const res = await submitLap(lap, {
       displayName: activeDriverObj?.name || activeDriver,
       team: activeDriverObj?.team || null,
+      enabled: leaderboardEnabled,
     });
     setPublishing(false);
     setPublishResult(res);
-    if (res.ok && res.improved) {
-      addCue(`🏆 Published — P${res.pos} of ${res.total}`, "info");
-    } else if (res.ok) {
-      addCue("🏆 Already published a faster lap on that board", "info");
-    } else {
-      addCue(`⚠ ${res.reason}`, "warn");
-    }
-  }, [pendingPublish, activeDriver, activeDriverObj, addCue]);
+  }, [pendingPublish, activeDriver, activeDriverObj, leaderboardEnabled]);
 
   // ── Real-time call engine (lead-time aware) ──────────────────────────────
   // Each enabled call fires once per lap, `leadSeconds` of track ahead of its action
   // point. Seconds → lap-fraction uses current speed and the lap length, so the lead
   // is the same slice of TIME whether the mark is at the end of a straight or in a
   // slow corner. At leadSeconds = 0 the cue starts on the mark itself.
-  useEffect(() => {
-    if (!audioOn) return;
+  //
+  // Runs on the telemetry edge rather than on a render, for the same reason as the
+  // lap recorder: firing a cue is per-tick work that renders nothing. Everything it
+  // reads that ISN'T telemetry therefore has to come through a ref — a dep array
+  // can't deliver it to a callback installed once. The ordering inside is unchanged,
+  // which matters for the fired-set bookkeeping below.
+  const callInputsRef = useRef(null);
+  callInputsRef.current = { audioOn, liveCalls, liveCues, leadSeconds, speak, beep };
+
+  useEffect(() => subscribeTelemetry(() => {
+    const { audioOn, liveCalls, liveCues, leadSeconds, speak, beep } = callInputsRef.current;
+    const tel = getTelemetry();
     const a = announcedRef.current;
+    // Swapping the reference mid-lap re-derives the zone keys (z1…zN), which
+    // collide with the stale fired-set and would suppress the new calls for the
+    // rest of the lap. The clear has to happen BEFORE the firing loop below: as
+    // a separate effect declared after this one it ran second, so a call the
+    // loop had just fired for a newly-keyed zone was re-armed by the wipe and
+    // beeped again on the next tick. Deliberately before the `audioOn` return —
+    // this is fire-once bookkeeping and must stay in step while muted.
+    if (announcedCallsRef.current !== liveCalls) {
+      announcedCallsRef.current = liveCalls;
+      a.set.clear();
+    }
+    if (!audioOn) return;
     // New lap (lapPct wrapped back to ~0) → let every call fire again.
     if (tel.lapPct < a.lastPct - 0.5) a.set.clear();
     // Smaller backward jump = a flashback within the lap: re-arm only the calls
     // whose mark is now ahead again (already-passed calls must not instantly refire).
-    else if (tel.lapPct < a.lastPct - 0.02) {
+    // The game also SAYS when it flashed back (Event packet → tel.flashbacks), which
+    // catches a rewind too short for the 2% heuristic to see — one corner back is
+    // often less than that, and its call stayed silent on the retry.
+    else if (tel.lapPct < a.lastPct - 0.02
+             || (typeof tel.flashbacks === "number" && tel.flashbacks > (a.lastFlashbacks ?? tel.flashbacks))) {
       for (const call of liveCalls) if (tel.lapPct < call.atPct) a.set.delete(call.key);
     }
     a.lastPct = tel.lapPct;
+    if (typeof tel.flashbacks === "number") a.lastFlashbacks = tel.flashbacks;
 
     // Only fire cues when the car is genuinely driving on track. Paused, in the
     // garage, or in the pit lane, the game resets/freezes lap distance — which
@@ -2408,8 +2538,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (!driving) return;
 
     // Track length (m) from live telemetry, so lead seconds → distance.
-    const trackLen = (tel.lapPct > 0.002 && tel.lapDistance > 0)
-      ? tel.lapDistance / tel.lapPct : lastTrackLenRef.current;
+    const trackLen = tel.trackLength > 0 ? tel.trackLength
+      : (tel.lapPct > 0.002 && tel.lapDistance > 0) ? tel.lapDistance / tel.lapPct : lastTrackLenRef.current;
     if (trackLen > 500) lastTrackLenRef.current = trackLen;
     const leadDist = Math.max(0, tel.speed / 3.6) * leadSeconds;       // m ahead
     const leadPct  = clamp(leadDist / trackLen, 0, 0.25);              // lap fraction
@@ -2426,11 +2556,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       const [f,d,t] = call.beep;
       beep(f, d, t);
       speak(call.speak, call.type === "ers" ? "normal" : "urgent");
-      addCue(call.cue, call.type);
     }
-  }, [tel.lapPct, tel.speed, tel.lapDistance, tel.lapTime,
-      tel.gamePaused, tel.driverStatus, tel.pitStatus, wsConnected,
-      audioOn, liveCalls, liveCues, leadSeconds, speak, beep, addCue]);
+  }), []);
 
   // ── "That's your best — publish it?" ─────────────────────────────────────
   // Offers to publish when a freshly-recorded lap is both publishable AND the
@@ -2449,6 +2576,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     const lap = storedLaps[storedLaps.length - 1];
     if (!lap || promptedRef.current.has(lap.id)) return;
     promptedRef.current.add(lap.id);
+
+    // Only offer a lap that's actually fresh — re-enabling the leaderboard
+    // re-evaluates the newest stored lap, which could be days old.
+    if (Date.now() - lap.recordedAt > 60000) return;
 
     if (!eligibility(lap).ok) return;
     const { boardId } = boardIdForLap(lap);
@@ -2490,9 +2621,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         lapId: lap.id,
       });
       if (tip && focusAudioOn) speak(tip, "low");
-      if (tip) addCue(`🤖 ${tip}`, "llm");
     })();
-  }, [coachLap, coachLapPinned, aiActive, activeTrace, lapEvidence, focusAudioOn, paceBuckets, coachBucket, sessionTrends]);
+  }, [coachLap, coachLapPinned, aiActive, activeTrace, lapEvidence, focusAudioOn, paceBuckets, coachBucket, sessionTrends, askLap, speak]);
 
   // The Coach Log's "Ask the coach" button: the same debrief, for whichever lap is
   // being reviewed. Manual rather than automatic because selecting a lap should
@@ -2500,39 +2630,32 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
   // per click — and because the auto path deliberately skips laps older than 20s.
   const askCoachForLap = useCallback(async () => {
     if (!lapEvidence || !activeTrace || !coachLap) return;
-    const tip = await askLap(lapEvidence, activeTrace.meta, {
+    await askLap(lapEvidence, activeTrace.meta, {
       pace: buildPaceBlock(paceBuckets),
       bucket: coachBucket?.label || null,
       trends: sessionTrends,
       lapId: coachLap.id,
     });
-    if (tip) addCue(`🤖 ${tip}`, "llm");
-  }, [askLap, lapEvidence, activeTrace, coachLap, paceBuckets, coachBucket, sessionTrends, addCue]);
+  }, [askLap, lapEvidence, activeTrace, coachLap, paceBuckets, coachBucket, sessionTrends]);
 
   // Open the Car Setup modal for a lap/trace (Dashboard, Live, Analytics).
-  const openSetupForLap = (lap) => setCarSetup({
+  // useCallback: this is handed to the memo'd LapRow as `onOpenSetup`, so a fresh
+  // arrow every render would change the prop on every telemetry tick and undo the
+  // memo for every row in the session log.
+  const openSetupForLap = useCallback((lap) => setCarSetup({
     track: lap?.meta?.track || trackName || "—",
     time: lap?.lapTime ? fmtTime(lap.lapTime) : (lap?.meta?.lapTime ? fmtTime(lap.meta.lapTime) : ""),
     date: lap?.recordedAt ? new Date(lap.recordedAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "",
     color: activeDriverObj?.color || "#3671C6", setup: lap?.setup || null,
-  });
+  }), [trackName, activeDriverObj?.color]);
 
-  // ── Tab button style ────────────────────────────────────────────────────
-  const tabBtn = (t) => ({
-    background: tab===t?"var(--elevated)":"transparent",
-    color:      tab===t?"var(--text)":"var(--text-faint)",
-    border:`1px solid ${tab===t?"var(--border-strong)":"transparent"}`,
-    borderRadius:6, padding:"5px 14px", fontSize:11,
-    fontWeight: tab===t?700:400, cursor:"pointer",
-    letterSpacing:1, fontFamily:"inherit",
-  });
-
-  // ── Zone alert colours ──────────────────────────────────────────────────
-  const zone = tel.currentZone;
-  const zoneBg     = zone?.type==="brake"?"#1a0606":zone?.type==="lico"?"#1a1100":zone?.type==="ers"?"#00102a":"var(--surface)";
-  const zoneBorder  = zone ? zoneFill(zone) : "var(--border)";
-  const zoneLabel   = zone?.type==="brake"?"BRAKE":zone?.type==="lico"?"LIFT AND COAST":zone?.type==="ers"?`ERS — ${ERS_MODES[zone.ersMode]?.toUpperCase()}`:"CLEAR";
-  const zoneColor   = zone ? zoneFill(zone) : "var(--text-faintest)";
+  // The track-map legend chips, memoised on the one thing they depend on: which
+  // cues are toggled on.
+  const legendChips = useMemo(
+    () => LIVE_LEGEND.map(([color, label, key]) => ({ color, label,
+      on: liveCues[key] !== false,
+      onToggle: () => setLiveCues(f => ({ ...f, [key]: !f[key] })) })),
+    [liveCues]);
 
   return (
     <Shell
@@ -2543,6 +2666,9 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       activeDriver={activeDriver} driverColor={activeDriverObj?.color || "#3671C6"} driverCount={drivers.length}
       onDriverChip={()=>setSwitchDriverOpen(true)}
     >
+      {/* One Suspense for the tab screens, since only ever one of them is
+          mounted. The overlays below get their own (see there). */}
+      <Suspense fallback={<ScreenFallback />}>
       {/* ── DASHBOARD (full-bleed redesigned screen) ── */}
       {tab==="dashboard" && (
         <DashboardScreen
@@ -2569,57 +2695,54 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           driven, and its notice explains why the real-time calls are silent.
           Never the Coach Log's verdict, which follows the lap being reviewed. */}
       {tab==="live" && (
+        <LiveTelemetry>{(tel) => (
         <LiveScreen
           tel={tel} units={units}
           trackName={trackName}
           sessionLabel={sessionTypeLabel}
-          liveLapNumber={storedLaps.reduce((m,l)=>(l.meta?.sessionId===sessionId?Math.max(m,l.lapNumber||0):m),0)+1}
-          laps={storedLaps} sessionId={sessionId} liveMini={liveMini} demoMode={fakeMode}
-          activeTrace={activeTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
+          liveLapNumber={liveLapNumber}
+          laps={storedLaps} sessionId={sessionId} liveMini={readLiveMini()} demoMode={fakeMode}
+          activeTrace={activeTrace} refIsAuto={!explicitTrace && !!autoTrace} lastAdvice={lastAdvice} refMismatch={liveRefMismatch}
           audioOn={audioOn} onToggleAudio={()=>setAudioOn(a=>!a)}
           focusAudioOn={focusAudioOn} onToggleFocusAudio={()=>setFocusAudioOn(a=>!a)}
           onOpenSetup={openSetupForLap} onResetSessionLaps={resetSessionLaps}
           onSaveSession={saveSession} onLoadSession={loadSession}
           onSaveMap={mapPath && mapPath.length >= 20 ? exportTrackMapPng : null}
-          legendChips={LIVE_LEGEND.map(([color,label,key])=>({ color, label,
-            on: liveCues[key]!==false,
-            onToggle: ()=>setLiveCues(f=>({...f,[key]:!f[key]})) }))}
+          legendChips={legendChips}
           leadSeconds={leadSeconds} onLeadSeconds={setLeadSeconds} leadRange={CALL_LEAD}
           mapSlot={<TrackMap telemetry={tel} zones={zones} recordedPath={mapPath}
             filters={liveCues} corners={trackCorners} W={1000} H={720} fill />}
         />
+        )}</LiveTelemetry>
       )}
 
       {/* ── ANALYTICS (full-bleed redesigned screen) ── */}
       {tab==="compare" && (() => {
-        const cs = comparisonLap?.samples || [];
-        const rs = activeTrace?.samples || [];
-        const lapLen = Math.max(
-          cs.reduce((m,s)=>Math.max(m,s.dist||0),0),
-          rs.reduce((m,s)=>Math.max(m,s.dist||0),0)
-        ) || ((tel.lapPct>0.02 && tel.lapDistance) ? tel.lapDistance/tel.lapPct : 0);
         const comparisonLabel = comparisonLapId==="live" ? "Live lap" : (comparisonLap ? lapSourceLabel(comparisonLap) : "—");
         const referenceLabel  = activeTrace ? lapSourceLabel(activeTrace) : "ref";
         return (
         <AnalyticsScreen
           trackName={trackName} sessionLabel={sessionTypeLabel} demoMode={fakeMode}
           laps={sessionLaps} comparisonLap={comparisonLap}
-          referenceSources={[...refTraces, ...sessionLaps]}
-          referenceId={activeTraceId} onSelectReference={setActiveTraceId}
+          referenceSources={referenceSources}
+          referenceId={activeTraceId} onSelectReference={setActiveTraceId} autoReference={autoTrace}
           comparisonSources={sessionLaps}
           comparisonId={comparisonLapId} onSelectComparison={setComparisonLapId}
           onLoadTrace={loadTrace} onRemoveTrace={removeTrace}
-          onDeleteLap={deleteLap} onExportLap={exportLapToFile} onPublishLap={requestPublish}
+          onDeleteLap={deleteLap} onExportLap={exportLapSafe}
+          onPublishLap={leaderboardEnabled ? requestPublish : undefined}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
-          tracesSlot={<TelemetryStudio compareSamples={cs} referenceSamples={rs} lapLength={lapLen}
-            zones={zones} sectorDists={activeTrace?.meta?.sectors||[]} units={units} tempUnits={tempUnits} corners={trackCorners}
-            visibleTraces={visibleTraces} onToggleTrace={toggleTrace} compact
-            playhead={anaPlayhead} playing={anaPlaying} onSeek={setAnaPlayhead} onSetPlaying={setAnaPlaying} />}
+          tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
+            compareLapTime={comparisonLap?.lapTime ?? null}
+            referenceLapTime={activeTrace?.lapTime ?? activeTrace?.meta?.lapTime ?? null}
+            zones={zones} sectorDists={sectorDists} units={units} tempUnits={tempUnits} corners={trackCorners}
+            visibleTraces={visibleTraces} onToggleTrace={toggleTrace}
+            playing={anaPlaying} onSetPlaying={setAnaPlaying} />}
           linesSlot={<DrivingLinesView referenceLap={activeTrace} comparisonLap={comparisonLap}
             referenceLabel={referenceLabel} comparisonLabel={comparisonLabel}
             trackName={trackName} trackSlug={trackInfo?.slug || null}
             zones={zones} corners={trackCorners} lapLength={lapLen}
-            playhead={anaPlayhead} playing={anaPlaying} onSeek={setAnaPlayhead} onSetPlaying={setAnaPlaying} />}
+            playing={anaPlaying} onSetPlaying={setAnaPlaying} />}
         />
         );
       })()}
@@ -2629,7 +2752,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         <SettingsScreen
           openRouterKey={openRouterKey} setOpenRouterKey={setOpenRouterKey}
           openRouterModel={openRouterModel} setOpenRouterModel={setOpenRouterModel}
-          wsConnected={wsConnected}
+          wsConnected={wsConnected} coreStatus={coreStatus}
           udpPort={udpPort} setUdpPort={setUdpPort}
           fakeMode={fakeMode} setFakeMode={setFakeMode}
           units={units} setUnits={setUnits}
@@ -2639,7 +2762,7 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           drivers={drivers} activeDriver={activeDriver} onSignDriver={signDriver}
           avatars={avatars} onDeleteDriver={deleteDriver} onEditDriver={editDriver}
           onExportProfile={exportProfile} onImportProfile={importProfile}
-          onOpenTrace={()=>setTraceOpen(true)} onOpenCalibrator={onOpenCalibrator}
+          onOpenCalibrator={onOpenCalibrator}
           leaderboardEnabled={leaderboardEnabled} setLeaderboardEnabled={setLeaderboardEnabled}
           driverProfile={activeDriverObj}
         />
@@ -2655,6 +2778,10 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
       {tab==="coach" && (() => {
         const forThisLap = lastAdvice && lastAdvice.lap && !lastAdvice.error
           && (lastAdvice.lapId == null || lastAdvice.lapId === coachLap?.id);
+        // A failed debrief for the lap on screen is shown too, beside the button
+        // that asked for it — otherwise the spinner just stops.
+        const errorForThisLap = lastAdvice?.error
+          && (lastAdvice.lapId == null || lastAdvice.lapId === coachLap?.id);
         return (
         <CoachLogScreen
           coachLog={coachLog} trackName={trackName} sessionLabel={sessionTypeLabel}
@@ -2667,11 +2794,44 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onAskCoach={aiActive && lapEvidence ? askCoachForLap : null} asking={asking}
           llmFocus={forThisLap ? lastAdvice.text : null}
           llmSummary={forThisLap ? lastAdvice.summary : null}
+          llmError={errorForThisLap ? lastAdvice.text : null}
+          onShowOnLap={coachLap && coachLog?.lapLen > 0 ? (d) => {
+            // The analysed lap becomes Analytics' driven lap, and the shared
+            // playhead goes to the spot — paused, so it stays there to be read.
+            setAnaPlaying(false);
+            setComparisonLapId(coachLap.id);
+            setPlayhead(d / coachLog.lapLen);
+            setTab("compare");
+          } : null}
         />
         );
       })()}
 
-      {publishPrompt && !pendingPublish && (
+      {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
+      {tab==="board" && (
+        <LeaderboardScreen
+          laps={storedLaps} driver={activeDriverObj}
+          // Demo laps are a replay and can never be published, so the
+          // comparability preview must not be based on one either.
+          recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
+          initialSlug={trackInfo?.slug || null}
+          enabled={leaderboardEnabled}
+          onUseReference={adoptLeaderboardEntry}
+        />
+      )}
+
+      {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
+      {/* Desktop only — the Rust engine is cfg'd out of the Android build, and
+          Shell drops the tab there, so this can never be reached anyway. */}
+      {!isAndroid && tab==="ffb" && <FfbScreen ffb={ffb} />}
+
+      </Suspense>
+
+      {/* Overlays get a boundary of their own, with no fallback: sharing the
+          screens' one would blank the screen behind a modal for the frame its
+          chunk takes to arrive, and a modal appearing a frame late is invisible. */}
+      <Suspense fallback={null}>
+      {leaderboardEnabled && publishPrompt && !pendingPublish && (
         <PublishPrompt
           lap={publishPrompt}
           onPublish={() => { requestPublish(publishPrompt); setPublishPrompt(null); }}
@@ -2688,35 +2848,17 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
         />
       )}
 
-      {/* ── LEADERBOARD (published reference laps, by circuit + session) ── */}
-      {tab==="board" && (
-        <LeaderboardScreen
-          laps={storedLaps} driver={activeDriverObj}
-          // Demo laps are a replay and can never be published, so the
-          // comparability preview must not be based on one either.
-          recentLap={coachLap && !isDemoLap(coachLap) ? coachLap : null}
-          initialSlug={trackInfo?.slug || null}
-          enabled={leaderboardEnabled}
-          onUseReference={useLeaderboardEntry}
-        />
-      )}
-
-      {/* ── FORCE FEEDBACK (native FFB engine control) ── */}
-      {/* Desktop only — the Rust engine is cfg'd out of the Android build, and
-          Shell drops the tab there, so this can never be reached anyway. */}
-      {!isAndroid && tab==="ffb" && <FfbScreen ffb={ffb} />}
-
       {/* ── Modals ── */}
       {switchDriverOpen && (
         <SwitchDriverModal
-          drivers={drivers} activeDriver={activeDriver} avatars={avatars}
+          drivers={drivers} activeDriver={activeDriver} activeLaps={storedLaps} avatars={avatars}
           onPick={setActiveDriver}
           onClose={()=>setSwitchDriverOpen(false)}
           onSignUp={()=>setTab("setup")}
         />
       )}
       {carSetup && <CarSetupModal pb={carSetup} onClose={()=>setCarSetup(null)} />}
-      {traceOpen && <TraceConfiguratorModal channels={traceChannels} setChannels={setTraceChannels} onClose={()=>setTraceOpen(false)} />}
+      </Suspense>
     </Shell>
   );
 }

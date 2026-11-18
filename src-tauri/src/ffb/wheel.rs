@@ -20,7 +20,7 @@
 //! missing half: it asks the device whether the effect is really playing, and
 //! re-arms it when it isn't.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::time::{Duration, Instant};
 
 use sdl2::sys as sys;
@@ -128,6 +128,7 @@ pub struct WheelOutput {
     eff_constant: i32,
     eff_damper: i32,
     eff_sine: i32,
+    last_constant_lvl: i32,
     last_damper_lvl: i32,
     last_sine_lvl: i32,
     last_sine_period: i32,
@@ -157,6 +158,7 @@ impl WheelOutput {
             eff_constant: -1,
             eff_damper: -1,
             eff_sine: -1,
+            last_constant_lvl: LVL_UNSET,
             last_damper_lvl: LVL_UNSET,
             last_sine_lvl: LVL_UNSET,
             last_sine_period: LVL_UNSET,
@@ -172,9 +174,7 @@ impl WheelOutput {
     pub fn init(&mut self) -> bool {
         unsafe {
             sys::SDL_SetMainReady();
-            let hint = CString::new("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS").unwrap();
-            let one = CString::new("1").unwrap();
-            sys::SDL_SetHint(hint.as_ptr(), one.as_ptr());
+            sys::SDL_SetHint(c"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS".as_ptr(), c"1".as_ptr());
 
             if sys::SDL_Init(sys::SDL_INIT_JOYSTICK | sys::SDL_INIT_HAPTIC) != 0 {
                 self.error = format!("SDL_Init failed: {}", sdl_error());
@@ -320,6 +320,7 @@ impl WheelOutput {
             self.haptic = h;
             self.active_idx = index;
             self.error.clear();
+            self.last_constant_lvl = LVL_UNSET;
             self.last_damper_lvl = LVL_UNSET;
             self.last_sine_lvl = LVL_UNSET;
             self.last_sine_period = LVL_UNSET;
@@ -425,9 +426,10 @@ impl WheelOutput {
             sys::SDL_HapticSetAutocenter(self.haptic, 0);
             sys::SDL_HapticSetGain(self.haptic, 100);
         }
-        // The damper/sine sends skip the driver while their level is unchanged;
-        // after a restart the device's copy is not what those caches believe,
-        // so drop them and let the next frame re-push real values.
+        // The constant/damper/sine sends skip the driver while their level is
+        // unchanged; after a restart the device's copy is not what those caches
+        // believe, so drop them and let the next frame re-push real values.
+        self.last_constant_lvl = LVL_UNSET;
         self.last_damper_lvl = LVL_UNSET;
         self.last_sine_lvl = LVL_UNSET;
         self.last_sine_period = LVL_UNSET;
@@ -558,18 +560,33 @@ impl WheelOutput {
             return;
         }
         unsafe {
-            // Constant force — main torque.
+            // Constant force — main torque. Skip the driver round-trip if the
+            // quantised level is unchanged; a running effect holds its level.
             if self.eff_constant >= 0 {
-                let mut e: sys::SDL_HapticEffect = std::mem::zeroed();
-                e.constant.type_ = sys::SDL_HAPTIC_CONSTANT as u16;
-                e.constant.direction.type_ = sys::SDL_HAPTIC_CARTESIAN as u8;
-                e.constant.direction.dir[0] = 1;
-                e.constant.length = sys::SDL_HAPTIC_INFINITY;
                 let lvl = (clampf(finite_or_zero(sig.torque), -1.0, 1.0) * SDL_FORCE_MAX as f32) as i32;
-                e.constant.level = lvl.clamp(-SDL_FORCE_MAX, SDL_FORCE_MAX) as i16;
-                self.last_send_rc = sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e);
-                if self.last_send_rc < 0 && self.error.is_empty() {
-                    self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
+                let lvl = lvl.clamp(-SDL_FORCE_MAX, SDL_FORCE_MAX);
+                if lvl != self.last_constant_lvl {
+                    let mut e: sys::SDL_HapticEffect = std::mem::zeroed();
+                    e.constant.type_ = sys::SDL_HAPTIC_CONSTANT as u16;
+                    e.constant.direction.type_ = sys::SDL_HAPTIC_CARTESIAN as u8;
+                    e.constant.direction.dir[0] = 1;
+                    e.constant.length = sys::SDL_HAPTIC_INFINITY;
+                    e.constant.level = lvl as i16;
+                    self.last_send_rc = sys::SDL_HapticUpdateEffect(self.haptic, self.eff_constant, &mut e);
+                    if self.last_send_rc < 0 && self.error.is_empty() {
+                        self.error = format!("SDL_HapticUpdateEffect: {}", sdl_error());
+                    }
+                    // Only cache a level the device actually ACCEPTED. Caching a
+                    // failed send is how a force gets stranded on the wheel: if
+                    // the send that failed was the safety release (torque 0.0 →
+                    // lvl 0) because the game had just stolen the device, the
+                    // cache then claims 0, the base still holds its last level,
+                    // and every later tick computes 0, matches the cache and
+                    // skips the send — forever, since only rearm()/open_device()
+                    // clear it and poll_health won't rearm an untrusted device.
+                    if self.last_send_rc >= 0 {
+                        self.last_constant_lvl = lvl;
+                    }
                 }
             }
 
@@ -586,8 +603,13 @@ impl WheelOutput {
                         e.condition.right_sat[a] = SDL_FORCE_MAX as u16;
                         e.condition.left_sat[a] = SDL_FORCE_MAX as u16;
                     }
-                    sys::SDL_HapticUpdateEffect(self.haptic, self.eff_damper, &mut e);
-                    self.last_damper_lvl = coeff;
+                    // Same rule as the constant channel, and the return code was
+                    // being discarded entirely here.
+                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_damper, &mut e) >= 0 {
+                        self.last_damper_lvl = coeff;
+                    } else if self.error.is_empty() {
+                        self.error = format!("SDL_HapticUpdateEffect (damper): {}", sdl_error());
+                    }
                 }
             }
 
@@ -609,12 +631,11 @@ impl WheelOutput {
                     e.periodic.period = self.last_sine_period as u16;
                     e.periodic.magnitude = mag as i16;
                     e.periodic.length = sys::SDL_HAPTIC_INFINITY;
-                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_sine, &mut e) < 0
-                        && self.error.is_empty()
-                    {
+                    if sys::SDL_HapticUpdateEffect(self.haptic, self.eff_sine, &mut e) >= 0 {
+                        self.last_sine_lvl = mag;
+                    } else if self.error.is_empty() {
                         self.error = format!("SDL_HapticUpdateEffect (rumble): {}", sdl_error());
                     }
-                    self.last_sine_lvl = mag;
                 }
             }
         }

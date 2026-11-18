@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { readFileSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 // Single source of truth for the running build's version: read it straight from
@@ -37,10 +37,38 @@ function stripVoiceAssets() {
   };
 }
 
+// The desktop build shipped the 21.6 MB ORT wasm TWICE: once as the vendored
+// copy in dist/ort/ (from public/ort/, which scripts/copy-ort.mjs fills), and
+// once as a hashed asset Vite emits because onnxruntime-web references the wasm
+// with `new URL(…, import.meta.url)`. Production never fetches the hashed one —
+// kokoroWorker.js points `wasmPaths` at /ort/ (the CSP blocks ORT's own CDN, and
+// the hashed copy sits beside a glue .mjs that isn't emitted) — so it was 21.6 MB
+// of installer for nothing. Delete it, but ONLY when the vendored copy is really
+// there: if copy-ort ever stops running, the hashed asset is the one left.
+function stripDuplicateOrt() {
+  return {
+    name: "strip-duplicate-ort",
+    apply: "build",
+    closeBundle() {
+      if (isAndroid) return; // stripVoiceAssets removes both there
+      const vendored = resolve(import.meta.dirname, "dist", "ort", "ort-wasm-simd-threaded.jsep.wasm");
+      if (!existsSync(vendored)) return;
+      const assets = resolve(import.meta.dirname, "dist", "assets");
+      if (!existsSync(assets)) return;
+      for (const f of readdirSync(assets)) {
+        if (/^ort-wasm-simd-threaded\.jsep-[\w-]+\.wasm$/.test(f)) {
+          rmSync(resolve(assets, f), { force: true });
+          this.info?.(`[strip-duplicate-ort] removed dist/assets/${f}`);
+        }
+      }
+    },
+  };
+}
+
 // Port 1420 is Tauri's conventional dev port — keeping it here means the
 // Tauri shell we add later can point at this same dev server with no changes.
 export default defineConfig({
-  plugins: [react(), stripVoiceAssets()],
+  plugins: [react(), stripVoiceAssets(), stripDuplicateOrt()],
   clearScreen: false,
   resolve: {
     // Swap the Kokoro client for a stub on Android. This has to be an ALIAS, not

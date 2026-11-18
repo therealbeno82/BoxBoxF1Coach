@@ -24,10 +24,14 @@ export function useTauriEvents(handlers) {
     const unlistens = [];
     (async () => {
       for (const name of Object.keys(ref.current)) {
-        const un = await listen(name, (e) => ref.current[name]?.(e));
-        // If the component unmounted while we were awaiting, detach immediately.
-        if (disposed) un();
-        else unlistens.push(un);
+        // One rejected listen() must not leave the later events unsubscribed or
+        // surface an unhandled rejection.
+        try {
+          const un = await listen(name, (e) => ref.current[name]?.(e));
+          // If the component unmounted while we were awaiting, detach immediately.
+          if (disposed) un();
+          else unlistens.push(un);
+        } catch { /* ignore */ }
       }
     })();
     return () => {

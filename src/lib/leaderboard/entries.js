@@ -21,7 +21,6 @@
 // Pure.
 
 import { boardIdForLap, compoundToken, conditionToken } from "./boardKey.js";
-import { tyreLabel } from "../tyres.js";
 import { isDemoLap, isRankable } from "../driverStats.js";
 
 export const msOf = (seconds) =>
@@ -39,14 +38,20 @@ export function entryFromLap(lap, { driver } = {}) {
     displayName: driver?.name || lap.meta?.driver || "You",
     team: driver?.team || null,
     lapTimeMs: ms,
-    sectorMs: Array.isArray(lap.sectorTimes) && lap.sectorTimes.length === 3
-      ? lap.sectorTimes.map(msOf) : null,
+    sectorMs: (() => {
+      // All-three-or-null, matching the server row path — a partially-recorded
+      // sector must not surface as a NaN downstream.
+      if (!Array.isArray(lap.sectorTimes) || lap.sectorTimes.length !== 3) return null;
+      const ms = lap.sectorTimes.map(msOf);
+      return ms.every((v) => v != null) ? ms : null;
+    })(),
     compound: compoundToken(lap),
     condition: conditionToken(lap),
     tyreVisual: lap.tyre?.visual ?? null,
     tyreAge: lap.tyre?.age ?? null,
     recordedAt: lap.recordedAt ?? null,
     verdict: "ok",
+    assists: lap.assists ?? null,
     isYou: true,
     lap,
   };
@@ -69,6 +74,8 @@ export function entryFromRow(row, { myDriverId } = {}) {
     tyreAge: row.tyre_age ?? null,
     recordedAt: row.created_at ? Date.parse(row.created_at) : null,
     verdict: row.verdict || "ok",
+    // Driver aids the lap reported (submit-lap stores them in `checks`).
+    assists: row.checks?.assists ?? null,
     isYou: !!myDriverId && row.driver_id === myDriverId,
     boardId: row.board_id,
     tracePath: row.trace_path || null,
@@ -114,6 +121,9 @@ export function localBoardEntries(laps = [], boardId, { driver, onePerDriver = f
   const mine = [];
   for (const lap of laps) {
     if (lap?.archived) continue;
+    // Demo replays and game-invalidated laps are stored but are not publishable;
+    // ranking them here would tell the driver a replay "would rank P1".
+    if (isDemoLap(lap) || !isRankable(lap)) continue;
     const board = boardIdForLap(lap);
     if (board.boardId !== boardId) continue;
     const entry = entryFromLap(lap, { driver });
@@ -121,23 +131,6 @@ export function localBoardEntries(laps = [], boardId, { driver, onePerDriver = f
   }
   const ranked = rankEntries(mine);
   return onePerDriver ? ranked.slice(0, 1) : ranked;
-}
-
-// Every board the driver has at least one lap on, fastest-first within each.
-// → Map<boardId, entry[]>
-export function localBoardIndex(laps = [], { driver } = {}) {
-  const byBoard = new Map();
-  for (const lap of laps) {
-    if (lap?.archived) continue;
-    const { boardId } = boardIdForLap(lap);
-    if (!boardId) continue;
-    const entry = entryFromLap(lap, { driver });
-    if (!entry) continue;
-    if (!byBoard.has(boardId)) byBoard.set(boardId, []);
-    byBoard.get(boardId).push(entry);
-  }
-  for (const [k, v] of byBoard) byBoard.set(k, rankEntries(v));
-  return byBoard;
 }
 
 // The board this driver most recently ran on, plus their best lap for it.
@@ -174,9 +167,4 @@ function eligibilityLite(lap) {
   if (isDemoLap(lap) || !isRankable(lap) || !(lap?.lapTime > 0)) return { ok: false };
   const board = boardIdForLap(lap);
   return board.boardId ? { ok: true, board } : { ok: false };
-}
-
-// Display label for an entry's compound, e.g. "Soft" / "Inter" / null.
-export function entryCompoundLabel(entry) {
-  return entry?.tyreVisual != null ? tyreLabel({ visual: entry.tyreVisual }) : null;
 }

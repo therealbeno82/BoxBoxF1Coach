@@ -1,8 +1,8 @@
 // ─── COACH GUARDRAILS ─────────────────────────────────────────────────────────
-// Input gating, output shaping, prompt-injection sanitization, and numeric
-// grounding — the deterministic guardrails that wrap every LLM call so the small
-// local model can't coach on garbage telemetry, leak markdown/preamble, follow
-// instructions hidden in a trace file, or cite figures the data doesn't support.
+// Output shaping, prompt-injection sanitization, and numeric grounding — the
+// deterministic guardrails around the between-lap debrief, so the model can't leak
+// markdown/preamble, follow instructions hidden in a trace file, or cite figures
+// the lap evidence doesn't support.
 
 // ── Output shaping ──
 const LEAD_FILLER =
@@ -51,7 +51,13 @@ export function collectAllowedNumbers(ctx = {}) {
   const set = new Set();
   const add = (v) => { if (typeof v === "number" && !Number.isNaN(v)) set.add(Math.round(v)); };
   if (ctx.evidence) {
-    for (const m of String(ctx.evidence).matchAll(/\d+(?:\.\d+)?/g)) add(parseFloat(m[0]));
+    const text = String(ctx.evidence);
+    for (const m of text.matchAll(/\d+(?:\.\d+)?/g)) add(parseFloat(m[0]));
+    // Clock-formatted times ("1:32.461") name a figure the model may restate as
+    // seconds ("92.5 s") — add that too, or a faithful restatement is stripped.
+    for (const m of text.matchAll(/(\d+):(\d+(?:\.\d+)?)/g)) {
+      add(parseFloat(m[1]) * 60 + parseFloat(m[2]));
+    }
   }
   return set;
 }

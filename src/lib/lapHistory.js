@@ -30,6 +30,7 @@
 // ({ dist, throttle, brake, speed, steer, gear, ersMode, ersSpent }).
 
 import { isRankable } from "./driverStats.js";
+import { asc, quantile, median } from "./stats.js";
 
 const GRID_STEP = 25;          // m, resolution the reference speed curve is read at
 const CORNER_HALF = 90;        // m either side of an apex that counts as "the corner"
@@ -45,15 +46,6 @@ const BASELINE_OFFSET_KMH = 3.5;
 
 // ── small numeric helpers ────────────────────────────────────────────────────
 
-const asc = (nums) => [...nums].sort((a, b) => a - b);
-
-function quantile(sortedAsc, q) {
-  if (!sortedAsc.length) return null;
-  const pos = (sortedAsc.length - 1) * q;
-  const lo = Math.floor(pos), hi = Math.ceil(pos);
-  return lo === hi ? sortedAsc[lo] : sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
-}
-const median = (nums) => quantile(asc(nums), 0.5);
 
 // Seconds lost covering `len` metres at `vu` instead of `vr` (km/h in, s out).
 // Positive = slower than the reference. The same physical model as lapAnalysis.

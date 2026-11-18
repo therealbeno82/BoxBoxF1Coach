@@ -48,4 +48,3 @@ export const TIMEOUT_MS = 6000;
 // localStorage keys, following the app's f1coach.* convention.
 export const LS_ENABLED = "f1coach.leaderboard.enabled";
 export const LS_SESSION = "f1coach.leaderboard.session";
-export const LS_DISPLAY_NAME = "f1coach.leaderboard.name";

@@ -18,6 +18,66 @@ on the default livery. Team skins restyle the whole app.</sub>
 
 ---
 
+## What's new in 4.2.0 (beta)
+
+> **This is a beta.** It has had rough testing, not a full pass, and it is published so the
+> community can find what's left. It is marked as a pre-release on GitHub, so nobody on 4.1.0
+> is prompted to install it. Please report problems on the
+> [Discord](https://discord.gg/2bZGXGBZj9) or the
+> [issue tracker](https://github.com/therealbeno82/BoxBoxF1Coach/issues). For force feedback,
+> attach an **Export trace** file (see [Tuning the force feedback](#tuning-the-force-feedback)).
+
+**Force feedback, rebuilt for direct drive.**
+- **The wheel is updated on its own clock**, 200 times a second by default. In 4.1 it was
+  updated once per game packet, a staircase of 60 steps a second that a direct-drive base
+  feels as grain or "cogging".
+- **A smooth curve between the game's frames** (*Frame Interpolation → Cubic*), with the
+  old behaviour one click away for comparison.
+- **New settings:** Slew Limit, Damper, Reconstruction Delay.
+- **New diagnostics:** the game's real frame rate, update timing, and an exportable output
+  trace.
+
+See [Tuning the force feedback](#tuning-the-force-feedback).
+
+**FFB safety fixes:**
+- The force could stay on, with a green light, after the game took the wheel.
+- Releasing *Test force* mid-drive could snap the wheel.
+- *Test force* ignored your Max Output cap.
+- An imported or hand-edited profile could carry values that reverse the steering force.
+  Every setting is now clamped to its slider's range.
+
+**Coaching:**
+- **The coach works from your first comparable lap.** With no reference picked, your own
+  fastest comparable lap at that track is used automatically (shown as *Auto · your best*),
+  so corner calls and the debrief no longer wait for you to load one.
+- **A live gap to the reference** while you drive.
+- **Where the time went:** a Δt trace in Analytics, corners ranked by time lost with jump
+  buttons, and *Show on lap* from any Coach insight.
+
+**Laps:**
+- **Driver aids, flashbacks and penalties are recorded** on every lap, read from the game.
+- A lap with a flashback can't be published. Assisted laps show an **Aids** tag on the
+  leaderboards.
+
+**Fixes:**
+- **2026 sector boundaries were wrong.** Every 2026 session fell back to even thirds for
+  sectors and mini-sectors. They are now read from the game.
+- **Live sector deltas compared against the right track.** They used the best sectors of
+  whichever circuit held your fastest lap overall.
+- **Deleting a lap in Analytics asks first.**
+- **Leaderboards switched off now means no requests at all,** publishing included.
+- **The UDP pill turns green when the game was already running** before the app opened.
+  Settings now says when the telemetry port is taken or the game's UDP Format is wrong.
+- **A crashed voice engine no longer silences the coach** for the rest of the session.
+- **AI coach errors say what went wrong** (no credits, wrong model, rate limit) instead of
+  "check your API key".
+- **Smaller fixes:**
+  - Playback in Analytics no longer redraws the whole app every frame.
+  - Choosing or opening a wheel no longer freezes the window.
+  - The installer is about 4 MB smaller.
+
+---
+
 ## What it does
 
 - **Live telemetry dashboard** — speed, throttle/brake, gear, ERS mode, tyre & brake temps,
@@ -25,7 +85,8 @@ on the default livery. Team skins restyle the whole app.</sub>
   30 Hz.
 - **Reference-trace comparison** — pick a reference lap (a hot lap you drove, a `.json`
   trace file, or someone else's lap off a leaderboard) and see where you're losing time,
-  corner by corner, sector by sector.
+  corner by corner, sector by sector. Pick nothing and your own fastest comparable lap is
+  used, with a running gap to it while you drive.
 - **Driving Lines — watch the two laps drive** against each other from four cameras: a
   top-down map, a free-orbit 3D view, an onboard T-Cam from either seat, and a stacked
   Compare showing both seats at once. Both cars are real 3D models on real circuit
@@ -38,8 +99,9 @@ on the default livery. Team skins restyle the whole app.</sub>
     deployment) the instant they're needed.
   - An **LLM race engineer** acts as a between-lap analyst — a grounded debrief of the lap
     you just completed, plus a next-lap focus.
-- **Force feedback** — a Rust FFB engine drives your wheel from the raw telemetry via SDL2,
-  with its own live monitor and a full set of tunable parameters.
+- **Force feedback** — a Rust FFB engine drives your wheel from the raw telemetry via SDL2
+  at up to 360 Hz, rebuilding a smooth force from the game's 60 Hz frames, with its own
+  live monitor, a full set of tunable parameters and an exportable output trace.
 - **Voice out** — local **Kokoro** text-to-speech (ONNX, self-hosted, runs offline) so the
   calls come at you as radio, hands on the wheel. There is no voice input.
 - **Speech arbiter** so the engine and the AI never talk over each other — urgent real-time
@@ -60,6 +122,11 @@ normal Windows installer — no runtime to install separately (WebView2 ships wi
 Windows). To build it yourself instead, see
 [Building from source](#getting-started-development).
 
+Betas are on the same page, marked **Pre-release**. They install over a stable version and
+your laps, settings and driver profiles carry over. If you want a safety copy first, use
+**⚙ Settings → Driver Profile → Export Profile**. The app's update banner only announces
+stable releases, so a beta never appears there.
+
 ### 2. Turn on UDP telemetry in the game
 
 In **F1 25/26**: *Settings → Telemetry Settings*
@@ -70,10 +137,12 @@ In **F1 25/26**: *Settings → Telemetry Settings*
 | UDP Format       | **2026** (the app parses the 2026 packet format only) |
 | IP Address       | `127.0.0.1` on PC — or your PC's LAN IP on console (see below) |
 | Port             | `20777`                                            |
-| Send Rate        | **60 Hz** (smoothest force feedback)               |
+| Send Rate        | **60 Hz** (most FFB data per second)               |
 
 The app is always listening — there's no "connect" button. The **UDP** pill in the header
-goes green when packets arrive.
+goes green when packets arrive. If it doesn't, **⚙ Settings → Telemetry · UDP** says
+why when it can tell: another telemetry tool already holds the port, or the game is
+sending a UDP Format other than 2026.
 
 ### 3. Sign a driver
 
@@ -92,8 +161,11 @@ key the real-time rule engine still runs in full — you just lose the between-l
 
 ### 5. Set up your wheel (optional)
 
-Open the **FFB** tab, pick your wheel under *Wheel Device*, and choose a profile. The live
-monitor shows wheel torque, clipping and the grip gauges so you can tune with feedback.
+**Set the game's own force feedback strength to 0%** — the app replaces it, and the two
+can't share a wheel. Then open the **FFB** tab, pick your wheel under *Wheel Device*, and
+choose a profile. The live monitor shows wheel torque, clipping and the grip gauges so you
+can tune with feedback; [Tuning the force feedback](#tuning-the-force-feedback) walks
+through the settings.
 
 ### 6. Try it without the game
 
@@ -157,7 +229,10 @@ The cockpit view while you're on track — speed, gear, revs, ERS, tyre and brak
 DRS, delta and the 18 mini-sectors colouring live as you cross them, plus the track map with
 numbered corners. This is where the rule engine's in-corner calls fire. The map colours each
 zone by the call it carries — brake, lift-and-coast, lift, boost — and the sector strip
-shows where the lap is going against the reference. (Screenshot at the top of this page.)
+shows where the lap is going against the reference. **Live Δ vs Ref** is a running gap to
+the reference at the point of the lap you're on: minus is ahead, plus is behind. It goes
+quiet when the reference isn't comparable with what you're driving. (Screenshot at the top
+of this page.)
 
 ### Analytics
 Post-session analysis in one view. Pick a **Reference** and a **Driven Lap** from the two
@@ -169,15 +244,24 @@ readouts and a per-corner time-loss breakdown.
 - Any lap you've driven can be the reference; **⬆ Load** imports `.json` trace files
   (multiple at once) and **⬇ Save** exports the lap on screen so you can share it or keep it
   as a benchmark.
+- **Auto · your best** is the default reference. It's your fastest lap at this circuit
+  that's comparable with the one you're looking at, so the coach works without you loading
+  anything. Pick a lap to override it, or **None** for no reference at all.
 - The reference only counts if it's **comparable** — same circuit, same wet/dry, same
   race-vs-push intent, same compound. If it isn't, the app tells you and withholds both the
   insights *and* the corner calls, since both are derived from that reference.
+- **Δt** is the top trace in the stack: the running time gap to the reference across the
+  lap. Where it climbs you're losing time; where it falls you're gaining it.
+- **Most time lost**, under the Driving Lines playback, names the three stretches of the lap
+  that gave away the most to the reference. Click one to jump straight there.
+- Deleting a lap with the 🗑 asks first. The ✕ beside a *loaded* reference only unloads it.
 
 #### Driving Lines
 
 The left half of Analytics replays the two laps against each other on the real circuit.
 Press play and both cars drive the lap; scrub the timeline, or step corner by corner with
-the segment card. One scene, four cameras:
+the segment card. The timeline also takes the arrow keys, and the mouse wheel zooms the Map
+as well as the 3D view. One scene, four cameras:
 
 | View | What it's for |
 |------|---------------|
@@ -211,26 +295,115 @@ is a driver's best lap with the gap to the leader and the tyre they ran.
   survive a restart and keep working offline.
 - **No sign-up**, one lap per driver per board, and every submission is re-validated
   server-side from its own telemetry before it lands.
-- Opt-in: turned off in Settings, the app makes no leaderboard request at all.
+- **Flashback laps can't be published.** The game reports every flashback, and the lap
+  records it.
+- **Aids are disclosed, not refused.** A lap driven with traction control, ABS, assisted
+  braking or steering, an automatic gearbox, the racing line or equal car performance shows
+  an **Aids** tag; hover over it to see which. Only laps recorded with 4.2 or later carry
+  this.
+- Opt-in: turned off in Settings, the app makes no leaderboard request at all — publishing
+  included.
 
 ### Coach
 The debrief. A structured read of one completed lap per telemetry channel, a
 qualifying/race-pace assessment, and a next-lap focus. It follows your newest lap by
 default; the **Lap analysed** selector pins it to any lap of the session. The deterministic
 analysis is free and instant; the LLM debrief costs an API call and sits behind a button.
+**Show on lap** on any insight opens Analytics with the playback at that spot. If the AI
+debrief fails, the panel says why: no credits, an unknown model, a rate limit or a bad key.
 
 ![Coach — per-channel findings with potential gain, pace by session type and compound, recurring patterns and the next-lap focus](docs/screenshots/coach.png)
 
 ### FFB
 Wheel setup and live monitoring — device and profile pickers, wheel torque and clip meters,
-an output scope, grip gauges, and the full parameter set (strength, ceiling, full-scale
+an output scope, grip gauges, and the full parameter set (strength, output rate, full-scale
 force, load sensitivity and the rest) with hover hints explaining each one.
 
+The wheel is driven by a fixed-rate output loop, **not** by the game's UDP packets. The
+engine rebuilds a smooth force from the game's ~60 Hz physics frames and updates the wheel
+at the chosen **Update Rate** (200–360 Hz for direct-drive bases), so force changes
+continuously instead of stepping once per packet — the usual cause of a notchy, cogging
+feel.
+
 ![FFB — wheel device list, torque and clip meters, output scope and the full parameter set](docs/screenshots/ffb.png)
+
+#### Tuning the force feedback
+
+**Before you start**
+
+- Set the game's own force feedback strength to **0%**. Windows gives a wheel's force
+  feedback to one program at a time, so the app replaces the game's FFB instead of adding
+  to it.
+- Set the game's telemetry **Send Rate to 60 Hz**. That rate is the raw material for
+  everything below.
+- Pick your wheel under **Wheel Device**. Hold **Test force** to confirm it responds. Hold
+  **Test rumble** to confirm the vibration channel works.
+- If the device shows **RECONNECTING**, something else took the wheel (usually the game
+  starting up). The app reconnects it by itself when telemetry starts flowing.
+
+**Coming from 4.1?** Your saved settings carry over. New settings start at their defaults.
+
+- **Update Rate:** a saved rate below 200 Hz is raised to 200 once (4.1's default was 90).
+  Saved **profiles** keep the rate they were saved with, so check Update Rate after loading
+  an old profile.
+- **Frame Interpolation:** starts on **Cubic**.
+
+**The new settings**
+
+| Setting (group) | Default | What it does | When to change it |
+|---|---|---|---|
+| **Frame Interpolation** (Reconstruction) | Cubic | How the force is drawn between the game's frames. *Linear* joins them with straight lines, which leaves a small kink in the force at every frame, 60 times a second. *Cubic* draws a smooth curve through the last four frames that still passes exactly through each one and never overshoots. | Leave it on Cubic. Switching to Linear for a few laps is the quickest way to feel what Cubic does. |
+| **Reconstruction Delay** (Reconstruction) | 0.5 frame (≈ 8 ms) | How far behind the newest frame the wheel is drawn. At 0.5 the last half-frame is predicted; nearer 1.0 the curve always has a real frame on both sides. | Raise towards 0.75–1.0 if there's still grain after the rest of this guide. Each step adds delay. The **Est. chain latency** readout below it shows the total. |
+| **Update Rate** (Output) | 200 Hz | How often the wheel receives a new force, independent of the game's 60 Hz. | 200–360 Hz for direct drive. Lower it if a belt or gear wheel drops force at high rates. |
+| **Slew Limit** (Output) | 0 (off) | Caps how fast the force can change, in full-scale per second. It removes fast, small grain but leaves steady force and weight alone. | Try it **before** Smoothing. Start around **5/s** and raise it until the grain calms. Lower it if real kerb strikes and snaps start to feel slow. |
+| **Smoothing** (Output) | 15% | A low-pass filter on the force. It is now two gentle stages instead of one, so it removes more grain for the same delay and never overshoots. | Lower it for a crisper wheel, raise it to calm oscillation. It costs up to ~40 ms of delay at maximum, and it softens detail along with grain. |
+| **Damper** (Output) | 100% | The friction effect your wheel base adds as it turns. Some direct-drive bases render it coarsely at low speed, which feels like notches around centre. | Set it to **0** to rule it out if the centre feels notchy or grainy. |
+
+**A tuning order for a grainy or notchy wheel.** Change one thing at a time and drive the
+same corners after each change.
+
+1. Open **TELEMETRY** on the FFB tab and check two readings while driving:
+   - **Physics** should read about **60 Hz**. Lower means the game's Send Rate is lower, or
+     packets are being lost on the network.
+   - **Knot Clock** should read **GAME**. *ARRIVAL* is normal in demo mode and for a moment
+     after a session change; if it stays on ARRIVAL while you drive, report it.
+2. **Frame Interpolation → Cubic.**
+3. **Damper → 0.** If that fixes it, the grain was your base's damper. Leave it low.
+4. **Slew Limit → 5/s**, then adjust.
+5. Only then raise **Smoothing**.
+6. Still grainy? Raise **Reconstruction Delay** towards 1.0.
+
+**Simucube 2 owners:**
+- Keep the base's Reconstruction Filter low (0–1); the app is already doing that job.
+- In the base's own software, mute *Game Effects → Sine Wave* and *Damper* to hear only
+  what the app sends.
+- Use the base's Notch Filter for a single offending frequency.
+
+**Diagnostics on the FFB tab**
+
+- **Tick Late** is how late the average wheel update is, in microseconds. It turns yellow
+  if any update in the last window was more than 1.5 ms late, which usually means a busy
+  PC.
+- **CLIP** on Wheel Torque is how often the force is hitting 100%. If it's high, use
+  **Auto-Set** beside **Full-Scale Force** after 2–3 clean laps.
+- **The status pill** says when force is deliberately off: *PAUSED · FFB RELEASED*,
+  *AI DRIVING · FFB RELEASED* (the qualifying run-up) and *AI START · FFB HELD* (the Time
+  Trial start hold).
+- **Export trace** saves the last ~45 seconds of output while a wheel is open. If the wheel
+  feels wrong, drive the corner that shows it, press Export trace straight away, and attach
+  the file to your report with your wheel model and settings.
+  `node scripts/analyze-ffb-trace.mjs <trace.json>` measures the fine grain from it (two
+  files compare an A/B).
+
+Profiles you import, or edit by hand, are clamped to each slider's range when loaded. A
+value outside it can't reverse the steering force or remove the Max Output cap.
 
 ### ⚙ Settings
 UDP port and device addresses, demo mode, units (speed, tyre temps), the coach's API key and
 model, voice engine and voice, team skins, the driver roster, and profile backup/import.
+When no telemetry is arriving, the UDP panel says why if it can tell (port taken, or the
+wrong UDP Format). Profile backups now include the leaderboard laps you've downloaded as
+references.
 
 ---
 
@@ -346,7 +519,13 @@ npm run tauri:dev
 > lap log. `npm run dev` alone previews the web UI in a browser with no native core — so no
 > telemetry and no FFB.
 
-There are no tests and no linter configured; verify changes by running the app.
+```bash
+npm test                                  # pure JS modules (node --test, no dependencies)
+cd src-tauri && cargo test --lib          # the Rust core, incl. FFB safety tests
+```
+
+There is no linter. UI changes are verified by running the app — demo mode covers most of
+it.
 
 ---
 
@@ -386,10 +565,10 @@ References you've already downloaded keep working offline.
 
 ## Security notes
 
-A full review lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
+The standing summary lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
-- The Tauri attack surface is minimal — capabilities grant only `core:default` and
-  `opener:default`, and the CSP is tightly scoped (`object-src 'none'`, `frame-src 'none'`,
+- The Tauri attack surface is minimal — capabilities grant only `core:default`,
+  `opener:default` and `dialog:default`, and the CSP is tightly scoped (`object-src 'none'`, `frame-src 'none'`,
   `base-uri 'self'`).
 - The LLM layer has real prompt-injection defenses (grounding, scope rule, `<< >>` data
   wrapping, output sanitization).
@@ -403,20 +582,24 @@ A full review lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
 ## Status
 
-**v4.0.0.** Live telemetry, reference comparison, Driving Lines with its four cameras,
-online leaderboards, the two-layer coach, force feedback and voice out all work.
+**v4.2.0 beta.** Live telemetry, reference comparison, Driving Lines with its four cameras,
+online leaderboards, the two-layer coach, force feedback and voice out all work. This
+release is a beta: see [What's new](#whats-new-in-420-beta) for what's changed and what
+to report.
 
 Known limitations worth stating plainly:
 
-- The leaderboard validator re-derives every published lap from its own telemetry, but the
-  app can't yet read the game's driving-assist flags, so a genuinely-driven lap with
-  assists on will pass.
+- The leaderboard validator re-derives every published lap from its own telemetry. Driving
+  aids are read from the game and **shown** on a board entry, not refused. Since the aids
+  are reported by the app that submits the lap, a modified client could hide them.
+- The byte positions of the new aid, flashback and penalty fields come from the published
+  2026 packet layout. They haven't been checked against a capture from every game mode yet.
 - Your OpenRouter API key is stored in plaintext locally (see [Security notes](#security-notes)).
 - On console, the coach's audio comes out of the PC, not the console (see
   [Playing on console](#playing-on-console-ps5--xbox)).
 
-See [CODE_REVIEW.md](CODE_REVIEW.md) for hardening items and the issue tracker for the
-roadmap.
+See [CODE_REVIEW.md](CODE_REVIEW.md) for the attack surface and known limits, and the issue
+tracker for the roadmap.
 
 ---
 

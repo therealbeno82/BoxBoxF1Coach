@@ -58,7 +58,11 @@ export const TRACK_FLOOR_S = {
 export const CEILING_MULTIPLIER = 3;
 
 export function floorFor(slug) {
-  return TRACK_FLOOR_S[slug] ?? null;
+  // hasOwn, not a bare index: `slug` reaches here from lap metadata, and
+  // TRACK_FLOOR_S is an object literal, so "constructor" would resolve to a
+  // Function off Object.prototype and sail through every numeric comparison as
+  // NaN. Matches the hardening in tyres.js / cornerData.js / refMatch.js.
+  return Object.hasOwn(TRACK_FLOOR_S, slug) ? (TRACK_FLOOR_S[slug] ?? null) : null;
 }
 
 export function ceilingFor(slug) {
@@ -173,6 +177,15 @@ export const THRESHOLDS = {
   crawlSpeedKmh: 5,
   crawlFractionMax: 0.02, // more than 2% of the lap below crawl speed is not a lap
 
+  // Declared track length. `meta.trackLengthM` is client-supplied and gates the
+  // coverage / sample-count checks, so a fabricated trace could previously
+  // declare a short "circuit" and clear them all. The declaration must sit
+  // within this fraction of the circuit's committed length (TRACK_LENGTH_M),
+  // which is also the length those checks actually use. ±10% is far wider than
+  // the geometry-vs-odometer gap (~0.3%) and still rejects a 2 km "Monaco" lap.
+  lengthMinFrac: 0.90,
+  lengthMaxFrac: 1.10,
+
   // Structural minimums.
   minSamples: 200,
   maxInflatedBytes: 2 * 1024 * 1024, // zip-bomb guard on the upload
@@ -180,4 +193,41 @@ export const THRESHOLDS = {
   // Display name.
   nameMinLen: 1,
   nameMaxLen: 24,
+};
+
+// ─── Circuit lengths (metres) ─────────────────────────────────────────────────
+// Measured from the committed centerlines in public/tracks/<slug>.json, which
+// sit within a fraction of a percent of the real circuits (Monaco 3328 vs 3337,
+// Silverstone 5883 vs 5891). Regenerate with:
+//
+//   node scripts/measure-track-lengths.mjs
+//
+// Keyed by the slug from lib/trackData.js. The board key already refuses any
+// circuit off the calendar, so every slug a submission can carry is listed here.
+export const TRACK_LENGTH_M = {
+  abudhabi:     5296,
+  australia:    5276,
+  austria:      4305,
+  azerbaijan:   5946,
+  bahrain:      5423,
+  belgium:      6983,
+  brazil:       4300,
+  canada:       4368,
+  china:        5453,
+  hungary:      4378,
+  imola:        4901,
+  italy:        5788,
+  japan:        5816,
+  lasvegas:     6226,
+  madring:      5440,
+  mexico:       4305,
+  miami:        5423,
+  monaco:       3328,
+  netherlands:  4261,
+  qatar:        5425,
+  saudiarabia:  6202,
+  silverstone:  5883,
+  singapore:    4947,
+  spain:        4667,
+  usa:          5522,
 };

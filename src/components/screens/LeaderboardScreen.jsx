@@ -17,7 +17,6 @@
 import { useMemo, useState } from "react";
 import { C, FONT, fmtDelta } from "../../lib/ui/tokens.js";
 import { formatLapTime } from "../../lib/format.js";
-import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { matchReference } from "../../lib/coach/refMatch.js";
 import {
   TRACK_SLUGS, SESSION_TOKENS, SESSION_LABELS, COMPOUND_LABELS,
@@ -26,6 +25,9 @@ import {
 import { localBoardEntries, entryAsRefLike, secOf } from "../../lib/leaderboard/entries.js";
 import { useLeaderboard } from "../../hooks/useLeaderboard.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import TyreChip from "../TyreChip.jsx";
+import { assistLabels } from "../../lib/leaderboard/validate.js";
+import { ConfirmDialog } from "../ModalShell.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 
@@ -71,22 +73,6 @@ const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month
 // Position colouring borrowed from the timing tower: the leader purple, the
 // podium green, everyone else neutral.
 const posColor = (pos) => (pos === 1 ? C.purple : pos <= 3 ? C.green : C.textMuted);
-
-// Compound chip. Data-meaning colours, so — like every tyre chip in the app —
-// these are fixed and never routed through the skin variables.
-const TyreChip = ({ visual }) => {
-  const label = visual != null ? tyreLabel({ visual }) : null;
-  const wet = visual != null && tyreCondition({ visual }) === "wet";
-  if (!label) return <span style={{ fontSize: 10, color: C.textFaintest }}>—</span>;
-  return (
-    <span style={{
-      fontSize: 9, letterSpacing: 0.5, fontWeight: 700, textTransform: "uppercase",
-      fontFamily: FONT.mono, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap",
-      color: wet ? "#bcdcff" : C.textDim, background: wet ? "rgba(68,145,210,0.18)" : C.surface,
-      border: `1px solid ${wet ? "rgba(68,145,210,0.5)" : C.line}`,
-    }}>{label}</span>
-  );
-};
 
 export default function LeaderboardScreen({
   laps = [],
@@ -155,7 +141,7 @@ export default function LeaderboardScreen({
 
   return (
     <div style={{
-      flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px 28px 26px",
+      flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px var(--screen-px) 26px",
       display: "flex", flexDirection: "column", gap: 16, fontFamily: FONT.ui,
     }}>
       {/* ── Board picker ── */}
@@ -230,7 +216,7 @@ export default function LeaderboardScreen({
                 before, the smallest target on the screen, and it is the only way
                 to re-read a stale board. A mouse still gets the compact box. */}
             {isLive && (
-              <button onClick={board.reload} title="Refresh this board" style={{
+              <button onClick={board.reload} title="Refresh this board" aria-label="Refresh this board" style={{
                 width: coarse ? 44 : 32, height: phone ? 26 : 32,
                 borderRadius: phone ? 7 : 8, cursor: "pointer",
                 border: `1px solid ${C.line}`, background: C.surface, color: C.textMuted,
@@ -296,6 +282,14 @@ export default function LeaderboardScreen({
                   {e.team && !phone && (
                     <span style={{ fontSize: 10, color: C.textFaint, whiteSpace: "nowrap" }}>{e.team}</span>
                   )}
+                  {assistLabels(e.assists).length > 0 && (
+                    <span title={`Set with: ${assistLabels(e.assists).join(", ")} (as the game reported it)`}
+                      style={{
+                        fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.textMuted,
+                        textTransform: "uppercase", border: `1px solid ${C.borderStrong}`,
+                        borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap",
+                      }}>Aids</span>
+                  )}
                   {e.verdict === "flagged" && (
                     <span title="This lap passed validation but one check was borderline."
                       style={{
@@ -326,14 +320,14 @@ export default function LeaderboardScreen({
 
                 {!phone && (
                   <span className="lb-secondary" style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                    <TyreChip visual={e.tyreVisual} />
+                    <TyreChip tyre={e.tyreVisual != null ? { visual: e.tyreVisual } : null} untagged="dash" />
                     <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono }}>
                       {fmtDate(e.recordedAt)}
                     </span>
                   </span>
                 )}
 
-                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} phone={phone} />
+                <UseButton entry={e} blocked={blocked} verdict={verdict} onUse={onUseReference} phone={phone} coarse={coarse} />
               </div>
             );
           })}
@@ -347,15 +341,22 @@ export default function LeaderboardScreen({
 // the coach wouldn't accept it, the button still works — the driver may well want
 // to look at the traces — but it says so first, naming the actual mismatch rather
 // than letting the coach go quiet later with no explanation.
-function UseButton({ entry, blocked, verdict, onUse, phone = false }) {
+//
+// On a touch screen the reason can't live in a tooltip — a finger never hovers, so
+// a blocked row showed a bare ⚠ and nothing else. There the tap asks first, with
+// the reason written out, and "Use anyway" goes ahead.
+function UseButton({ entry, blocked, verdict, onUse, phone = false, coarse = false }) {
   const reason = blocked ? verdict.reasons[0] : null;
+  const [asking, setAsking] = useState(false);
+  const label = reason ? `${reason.title} — ${reason.detail}` : "Load this lap as your reference";
   return (
+    <>
     <button
-      onClick={() => onUse?.(entry)}
-      title={reason ? `${reason.title} — ${reason.detail}` : "Load this lap as your reference"}
+      onClick={() => (reason && coarse ? setAsking(true) : onUse?.(entry))}
+      title={label} aria-label={reason ? `Use anyway: ${label}` : label}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
-        padding: phone ? 0 : "0 10px", height: phone ? 26 : 32, ...(phone && { minHeight: 0, width: 32 }),
+        padding: phone ? 0 : "0 10px", height: phone ? 26 : 32, ...(phone && { width: coarse ? 44 : 32 }),
         borderRadius: 8, cursor: "pointer",
         fontFamily: FONT.ui, fontSize: phone ? 12 : 10, letterSpacing: 0.8, textTransform: "uppercase",
         fontWeight: 700, whiteSpace: "nowrap",
@@ -367,6 +368,16 @@ function UseButton({ entry, blocked, verdict, onUse, phone = false }) {
           blocked entry still declares itself with the warning glyph + colour. */}
       {phone ? (blocked ? "⚠" : "↧") : (blocked ? "⚠ Use anyway" : "↧ Use as ref")}
     </button>
+    {asking && (
+      <ConfirmDialog title={reason.title} confirmLabel="Use anyway"
+        onConfirm={() => { setAsking(false); onUse?.(entry); }} onCancel={() => setAsking(false)}>
+        {reason.detail}
+        <div style={{ marginTop: 10, color: C.textMuted }}>
+          You can still load it to look at the traces, but the coach won't compare your laps against it.
+        </div>
+      </ConfirmDialog>
+    )}
+    </>
   );
 }
 

@@ -17,7 +17,7 @@ mod telemetry;
 
 #[cfg(desktop)]
 use ffb::{DeviceInfo, FfbCommand, FfbGauges, FfbHandle, FfbSettings, FfbStatus, FfbSystem};
-use telemetry::{now_ms, TelemetryCore};
+use telemetry::{now_ms, CoreStatus, TelemetryCore};
 
 // Default UDP port the game broadcasts telemetry on.
 const DEFAULT_UDP_PORT: u16 = 20777;
@@ -79,20 +79,9 @@ fn get_local_ips() -> Vec<LocalAddr> {
             _ => None,
         })
         .collect();
-    out.sort_by_key(|a| !is_private_v4(&a.ip));
+    // RFC-1918 private ranges first — the addresses a LAN device would use.
+    out.sort_by_key(|a| !a.ip.parse::<std::net::Ipv4Addr>().is_ok_and(|v4| v4.is_private()));
     out
-}
-
-/// True for RFC-1918 private ranges — the addresses a LAN device would use.
-fn is_private_v4(ip: &str) -> bool {
-    ip.starts_with("192.168.")
-        || ip.starts_with("10.")
-        // 172.16.0.0–172.31.255.255
-        || ip
-            .strip_prefix("172.")
-            .and_then(|rest| rest.split('.').next())
-            .and_then(|oct| oct.parse::<u8>().ok())
-            .is_some_and(|second| (16..=31).contains(&second))
 }
 
 /// Toggle synthetic-telemetry mode (a fake lap for testing with no game).
@@ -101,6 +90,18 @@ fn set_fake_mode(enabled: bool, state: tauri::State<CoreState>) {
     if let Ok(core) = state.core.lock() {
         core.set_fake(enabled);
     }
+}
+
+/// The core's connection state — the same value the `core_status` event carries.
+/// That event is only emitted when the state CHANGES, and the emitter starts in
+/// `setup`, before the page has loaded and subscribed: with the game already
+/// streaming at launch (or `F1_FAKE=1`), "receiving" went out to nobody, the UDP
+/// pill sat on "waiting", the auto-switch to Live never fired and Android never
+/// took its keep-awake. The page asks for the current value on mount instead.
+#[tauri::command]
+fn get_core_status(state: tauri::State<CoreState>) -> Option<CoreStatus> {
+    let core = state.core.lock().ok()?;
+    Some(core.shared.core_status(now_ms()))
 }
 
 /// Current synthetic-telemetry state. The Settings toggle reads this once on
@@ -113,8 +114,12 @@ fn get_fake_mode(state: tauri::State<CoreState>) -> bool {
 
 // ── FFB commands (desktop only) ─────────────────────────────────────────────
 
+// `async`: a plain (sync) Tauri command runs on the MAIN thread, and these two
+// block on a reply from the FFB thread — up to 2 s to enumerate and 5 s to open a
+// device. That froze the whole window (and every telemetry event) while SDL
+// talked to the wheel. Marked async they run on the async runtime instead.
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
     let (tx, rx) = sync_channel(1);
     if handle.cmd_tx.send(FfbCommand::Enumerate(tx)).is_err() {
@@ -124,7 +129,7 @@ fn get_ffb_devices(handle: tauri::State<Arc<FfbHandle>>) -> Vec<DeviceInfo> {
 }
 
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 fn open_ffb_device(index: i32, handle: tauri::State<Arc<FfbHandle>>) -> Result<String, String> {
     let (tx, rx) = sync_channel(1);
     handle
@@ -144,7 +149,18 @@ fn close_ffb_device(handle: tauri::State<Arc<FfbHandle>>) {
 #[cfg(desktop)]
 #[tauri::command]
 fn set_ffb_settings(settings: FfbSettings, handle: tauri::State<Arc<FfbHandle>>) {
-    handle.settings.store(Arc::new(settings));
+    // Clamped on the way in — see FfbSettings::sanitized for why the UI's own
+    // slider ranges aren't enough (imported and stale profiles).
+    handle.settings.store(Arc::new(settings.sanitized()));
+}
+
+/// The FFB status as it stands — `ffb_status` has the same emit-on-change gap as
+/// `core_status` (see get_core_status), so an "SDL init failed" raised at startup
+/// was lost before the page could listen.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ffb_status(handle: tauri::State<Arc<FfbHandle>>) -> FfbStatus {
+    handle.status.load().as_ref().clone()
 }
 
 /// The engine's default tuning — the single source of truth the UI seeds its
@@ -166,6 +182,24 @@ fn set_ffb_enabled(enabled: bool, handle: tauri::State<Arc<FfbHandle>>) {
 #[tauri::command]
 fn reset_ffb_peak(handle: tauri::State<Arc<FfbHandle>>) {
     let _ = handle.cmd_tx.send(FfbCommand::ResetPeak);
+}
+
+/// Bounded history of the output the wheel actually received (reconstructed
+/// input force and steer → final torque), recorded while a wheel is open.
+/// Exported from the FFB tab and analysed offline with
+/// `scripts/analyze-ffb-trace.mjs`.
+#[cfg(desktop)]
+#[tauri::command]
+fn get_ffb_trace(handle: tauri::State<Arc<FfbHandle>>) -> ffb::TraceDump {
+    // The configured rate is only a FALLBACK for a trace too short to measure —
+    // `snapshot` derives the real rate from the samples' own timestamps, which is
+    // what makes an A/B of two output rates label each export correctly.
+    let fallback_hz = handle.settings.load().ffb_update_hz as f32;
+    handle
+        .trace
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot(fallback_hz)
 }
 
 // ── File export ───────────────────────────────────────────────────────────────
@@ -238,6 +272,16 @@ impl FfbEmit {
     fn tick(&mut self, _app: &tauri::AppHandle) {}
 }
 
+/// The car setup is emitted when it changes AND re-sent this often regardless:
+/// a change that lands before the page has subscribed (a session already running
+/// at launch) would otherwise never arrive. Half a kilobyte every few seconds.
+const SETUP_RESEND: Duration = Duration::from_secs(3);
+
+/// How often the emitter samples shared state and emits to the webview. The FFB
+/// gauge producer is gated to the same period, so the two have to agree or a
+/// publish is built and dropped unread.
+const EMIT_PERIOD: Duration = Duration::from_millis(33);
+
 fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let shared = {
         let core = app.state::<CoreState>();
@@ -247,33 +291,43 @@ fn spawn_emitter(app: tauri::AppHandle, running: Arc<AtomicBool>) {
     let mut ffb = FfbEmit::new(&app);
 
     std::thread::spawn(move || {
-        let mut last_core: Option<(bool, u16)> = None;
+        let mut last_core: Option<CoreStatus> = None;
         let mut last_snap = None;
+        let mut last_setup = None;
+        let mut setup_sent = std::time::Instant::now();
         while running.load(Ordering::Relaxed) {
+            let tick_start = std::time::Instant::now();
             let now = now_ms();
             let got_packet = shared.got_packet.load(Ordering::Relaxed);
-            let core = (
-                shared.stats.receiving(now, 1500),
-                shared.udp_port.load(Ordering::Relaxed),
-            );
-            if last_core != Some(core) {
+            let core = shared.core_status(now);
+            if last_core.as_ref() != Some(&core) {
+                let _ = app.emit("core_status", &core);
                 last_core = Some(core);
-                let _ = app.emit(
-                    "core_status",
-                    serde_json::json!({
-                        "receiving": core.0,
-                        "udpPort": core.1,
-                    }),
-                );
             }
-            if got_packet {
+            // Once anything has been emitted, keep emitting on change even with no
+            // packets — that is how the cleared snapshot reset_after_demo builds
+            // reaches the screen when demo mode is switched off, instead of the
+            // replay's last frame staying up until the game starts sending.
+            if got_packet || last_snap.is_some() {
                 let snap = shared.ui.load_full();
                 if changed(&mut last_snap, &snap) {
                     let _ = app.emit("telemetry", snap.as_ref());
                 }
+                let setup = shared.setup.load_full();
+                if changed(&mut last_setup, &setup) || setup_sent.elapsed() >= SETUP_RESEND {
+                    let _ = app.emit("car_setup", setup.as_ref());
+                    setup_sent = std::time::Instant::now();
+                }
             }
             ffb.tick(&app);
-            std::thread::sleep(Duration::from_millis(33));
+            // Sleep to a DEADLINE, not for a fixed interval. `sleep(33)` plus this
+            // loop's own work ran at ~29 Hz against a gauge producer gated at
+            // exactly 33 ms, so a few percent of gauge publishes were built and
+            // then dropped unread.
+            let spent = tick_start.elapsed();
+            if spent < EMIT_PERIOD {
+                std::thread::sleep(EMIT_PERIOD - spent);
+            }
         }
     });
 }
@@ -311,6 +365,8 @@ pub fn run() {
             get_local_ips,
             set_fake_mode,
             get_fake_mode,
+            get_core_status,
+            get_ffb_status,
             get_ffb_devices,
             open_ffb_device,
             close_ffb_device,
@@ -318,6 +374,7 @@ pub fn run() {
             get_ffb_defaults,
             set_ffb_enabled,
             reset_ffb_peak,
+            get_ffb_trace,
             write_text_file,
         ]);
 
@@ -331,18 +388,26 @@ pub fn run() {
             get_local_ips,
             set_fake_mode,
             get_fake_mode,
+            get_core_status,
             write_text_file,
         ]);
 
     builder
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Logging in EVERY build. It used to be debug-only, so in a shipped
+            // build every `[core]` / `[ffb]` warning — a port that wouldn't bind,
+            // a wheel that wouldn't open — went nowhere, and a driver's bug report
+            // had nothing behind it. Release keeps warnings and errors only, in
+            // the plugin's default targets (stdout + the app's log directory).
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Info
+                    } else {
+                        log::LevelFilter::Warn
+                    })
+                    .build(),
+            )?;
             let running = Arc::new(AtomicBool::new(true));
             app.manage(EmitterState { running: running.clone() });
             spawn_emitter(app.handle().clone(), running);

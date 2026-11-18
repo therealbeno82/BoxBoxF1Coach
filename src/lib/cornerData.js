@@ -327,14 +327,18 @@ export function resolveSlug(ref) {
   const s = String(ref).trim();
   if (!s) return null;
   const lower = s.toLowerCase();
-  if (CORNERS_BY_TRACK[lower]) return lower;     // already a slug
+  // hasOwn, not a truthiness test: CORNERS_BY_TRACK is an object literal, so
+  // `CORNERS_BY_TRACK["constructor"]` is inherited from Object.prototype and
+  // would resolve an attacker-supplied or hand-edited track string to a Function
+  // that later dies on `.map`.
+  if (Object.hasOwn(CORNERS_BY_TRACK, lower)) return lower; // already a slug
   return getTrackByName(s)?.slug ?? null;        // a display name
 }
 
 // The corner list for a track reference (slug | name | id), or [] when unknown.
 export function getCorners(ref) {
   const slug = resolveSlug(ref);
-  return (slug && CORNERS_BY_TRACK[slug]) || [];
+  return (slug && Object.hasOwn(CORNERS_BY_TRACK, slug) && CORNERS_BY_TRACK[slug]) || [];
 }
 
 // "T1 – Abbey", or just "T7" when the corner has no real-world name.

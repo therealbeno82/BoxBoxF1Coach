@@ -23,7 +23,7 @@
 // uploaded payload rather than trusting the client's.
 
 import { TRACKS, CALENDAR_SLUGS, getTrack, getTrackByName, trackFullName } from "../trackData.js";
-import { SESSION_GROUP } from "../sessionGroups.js";
+import { sessionGroupOf } from "../sessionGroups.js";
 import { tyreLabel, tyreCondition } from "../tyres.js";
 
 export const BOARD_SEP = "__";
@@ -40,10 +40,6 @@ const BOARDABLE = {
 export const SESSION_TOKENS = ["qualifying", "time-trial"];
 export const SESSION_LABELS = { "qualifying": "Qualifying", "time-trial": "Time Trial" };
 
-// Compound tokens. NOT part of the board key — used for the entry's displayed
-// column and the client-side filter chips. Ordered softest-first, matching
-// COMPOUND_ORDER in lib/lapBuckets.js.
-export const COMPOUND_TOKENS = ["soft", "medium", "hard", "superhard", "inter", "wet"];
 export const COMPOUND_LABELS = {
   soft: "Soft", medium: "Medium", hard: "Hard",
   superhard: "Super Hard", inter: "Inter", wet: "Wet",
@@ -82,8 +78,8 @@ export function trackSlugForLap(lap) {
 // Sprint Shootout folds into qualifying via SESSION_GROUP; Race, Practice and
 // untagged laps all return null.
 export function boardSession(lap) {
-  const group = SESSION_GROUP[lap?.meta?.sessionType];
-  return group ? (BOARDABLE[group] ?? null) : null;
+  const group = sessionGroupOf(lap);
+  return Object.hasOwn(BOARDABLE, group) ? BOARDABLE[group] : null;
 }
 
 // The compound token for a lap's tyre tag, or null when untagged. Display only.
@@ -159,17 +155,6 @@ export function trackNameForSlug(slug) {
 // What the driver reads: "silverstone" → "Great Britain – Silverstone".
 export function trackDisplayName(slug) {
   return trackFullName(trackForSlug(slug)) ?? slug;
-}
-
-// Every board id, in calendar order then session order. The Leaderboard screen
-// builds its selects from this rather than from whatever happens to have entries,
-// so an empty board is still reachable.
-export function allBoardIds() {
-  const out = [];
-  for (const slug of TRACK_SLUGS) {
-    for (const session of SESSION_TOKENS) out.push(`${slug}${BOARD_SEP}${session}`);
-  }
-  return out;
 }
 
 // ─── A note on compound, for whoever wires the download button ────────────────

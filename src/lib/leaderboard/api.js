@@ -18,6 +18,7 @@ import { REST_URL, ANON_KEY, STORAGE_URL, FUNCTIONS_URL, TRACE_BUCKET, TIMEOUT_M
 import { entryFromRow, rankEntries } from "./entries.js";
 import { buildSubmission, gzipJson } from "./payload.js";
 import { getAccessToken, diagnoseAuthFailure, currentUserId } from "./identity.js";
+import { validateSubmission } from "./validate.js";
 
 // Is the feature usable right now? Configured, enabled by the user, and the
 // browser believes it has a network. The onLine check is the cheap one that
@@ -28,47 +29,34 @@ export function available({ enabled = true } = {}) {
 }
 
 // One fetch, with a timeout and no way to throw.
-// → parsed JSON | null. `head` returns the Content-Range count instead.
-async function request(url, { headers = {}, signal, count = false } = {}) {
+// → parsed JSON | null. `count` returns the Content-Range count INSTEAD of the
+// body; `withCount` returns { rows, total } so one request can serve both — a
+// page of rows and the board's real size — rather than two.
+async function request(url, { headers = {}, signal, count = false, withCount = false } = {}) {
   try {
+    const wantCount = count || withCount;
     const res = await fetch(url, {
       headers: {
         apikey: ANON_KEY,
         Authorization: `Bearer ${ANON_KEY}`,
         Accept: "application/json",
-        ...(count ? { Prefer: "count=exact" } : {}),
+        ...(wantCount ? { Prefer: "count=exact" } : {}),
         ...headers,
       },
       signal: signal ?? AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    if (count) {
-      // PostgREST reports an exact count in Content-Range as "0-24/518".
-      const range = res.headers.get("content-range") || "";
-      const total = Number(range.split("/")[1]);
+    // PostgREST reports an exact count in Content-Range as "0-24/518".
+    const totalOf = () => {
+      const total = Number((res.headers.get("content-range") || "").split("/")[1]);
       return Number.isFinite(total) ? total : null;
-    }
+    };
+    if (count) return totalOf();
+    if (withCount) return { rows: await res.json(), total: totalOf() };
     return await res.json();
   } catch {
     return null; // offline, timeout, DNS, CORS, malformed JSON — all the same here
   }
-}
-
-// Every board that has at least one entry, with its count and leader time.
-// → [{ boardId, trackSlug, sessionGroup, entryCount, bestTimeMs }] (never null)
-export async function listBoards({ enabled, signal } = {}) {
-  if (!available({ enabled })) return [];
-  const rows = await request(
-    `${REST_URL}/boards?select=board_id,track_slug,session_group,entry_count,best_time_ms`,
-    { signal });
-  if (!Array.isArray(rows)) return [];
-  return rows.map((r) => ({
-    boardId: r.board_id,
-    trackSlug: r.track_slug,
-    sessionGroup: r.session_group,
-    entryCount: r.entry_count,
-    bestTimeMs: r.best_time_ms,
-  }));
 }
 
 // One board's ranked rows, fastest first.
@@ -79,15 +67,22 @@ export async function getBoard(boardId, { limit = 50, offset = 0, myDriverId, en
   const cols = [
     "board_id", "driver_id", "display_name", "team", "lap_time_ms",
     "s1_ms", "s2_ms", "s3_ms", "compound", "condition", "tyre_visual", "tyre_age",
-    "verdict", "trace_path", "created_at",
+    "verdict", "checks", "trace_path", "created_at",
   ].join(",");
   const url = `${REST_URL}/entries` +
     `?select=${cols}&board_id=eq.${encodeURIComponent(boardId)}` +
     `&order=lap_time_ms.asc&limit=${limit}&offset=${offset}`;
-  const rows = await request(url, { signal });
+  // `total` is the whole board, not the page length — a board with more than
+  // `limit` entries must report its real size for pagination/rank. PostgREST
+  // returns that count in Content-Range on the SAME request as the rows, so this
+  // is one round trip: a separate count query doubled the request load on a path
+  // that includes the Dashboard card, which runs at every launch.
+  const page = await request(url, { signal, withCount: true });
+  if (!page) return null;
+  const { rows, total } = page;
   if (!Array.isArray(rows)) return null;
   const entries = rankEntries(rows.map((r) => entryFromRow(r, { myDriverId })).filter(Boolean));
-  return { entries, total: entries.length };
+  return { entries, total: total ?? entries.length };
 }
 
 // Where a given time would sit on a board, as a 1-based position, without
@@ -155,6 +150,20 @@ export async function submitLap(lap, { displayName, team, enabled, signal } = {}
   if (!payload) return { ok: false, reason: "This lap can't be published." };
   if (displayName) payload.meta.driver = displayName;
   if (team) payload.meta.team = team;
+
+  // Courtesy pre-check with the SAME shared validator the server runs, so a lap
+  // that cannot pass (no sector splits, a truncated trace, a length that
+  // disagrees with the circuit) is refused with the reason before spending a
+  // round trip — which is what the comment below already promises. The server's
+  // answer is still the one that decides.
+  const verdict = validateSubmission({
+    samples: payload.samples,
+    lapTime: payload.meta.lapTime,
+    sectorTimes: payload.meta.sectorTimes ?? null,
+    trackLengthM: payload.meta.trackLengthM,
+    slug: payload.meta.trackSlug,
+  });
+  if (!verdict.ok) return { ok: false, reason: verdict.reason };
 
   // Minting the account is deferred to exactly here: the first time the driver
   // actually chooses to publish something, never on app start.

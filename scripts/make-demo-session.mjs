@@ -168,8 +168,11 @@ let agree = 0;
 for (const lap of laps) for (const p of lap.samples) if (Math.abs(p.st) > 10) agree += Math.sign(p.lg) * p.st;
 if (agree < 0) for (const lap of laps) for (const p of lap.samples) p.lg = p.lg === 0 ? 0 : -p.lg;
 
-// Track length: the S/F line sits just past the last bin of a lap.
-const maxDist = Math.max(...laps.flatMap((l) => l.samples.map((p) => p.d)));
+// Track length: the S/F line sits just past the last bin of a lap. Plain loops,
+// not Math.max(...spread) — a long export puts tens of thousands of samples in
+// the argument list and blows the call stack.
+let maxDist = 0;
+for (const lap of laps) for (const p of lap.samples) if (p.d > maxDist) maxDist = p.d;
 const trackLength = Math.round(maxDist) + 1;
 
 const out = {
@@ -190,7 +193,8 @@ mkdirSync(dirname(outFile), { recursive: true });
 writeFileSync(outFile, JSON.stringify(out));
 
 const total = laps.reduce((a, l) => a + l.lapTime, 0);
-const peakG = Math.max(...laps.flatMap((l) => l.samples.map((p) => Math.abs(p.lg))));
+let peakG = 0;
+for (const lap of laps) for (const p of lap.samples) if (Math.abs(p.lg) > peakG) peakG = Math.abs(p.lg);
 console.log(`${basename(outFile)}: ${laps.length} laps${dropped ? ` (${dropped} unreplayable, skipped)` : ""}`);
 console.log(`  ${out.driver} · ${out.track} (id ${out.trackId}, ${trackLength} m) · session type ${out.sessionType}`);
 console.log(`  ${laps.reduce((a, l) => a + l.samples.length, 0)} samples · ${(total / 60).toFixed(1)} min of replay · peak ${peakG.toFixed(1)} g`);

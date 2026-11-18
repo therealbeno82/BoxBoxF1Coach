@@ -5,14 +5,16 @@
 // legend chips + an audio-cue toggle), the session-laps list, and the AI "Next Lap
 // Focus" card. All data comes from the live telemetry snapshot + this driver's laps.
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback, memo } from "react";
 import { C, FONT, eyebrow } from "../../lib/ui/tokens.js";
 import { formatLapTime, toSpeed, speedUnitLabel, boostStateName, aeroModeName, conditionsLabel, MINI_SECTORS, MINI_PER_SECTOR } from "../../lib/format.js";
-import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey } from "../../lib/driverStats.js";
+import { computeDriverStats, isRankable, isDemoLap, visibleSessionLaps, lapRunKey, bestSectorsAt } from "../../lib/driverStats.js";
 import { tyreCondition, tyreLabel, tyreColor, tyreWearPct, tyreWearWheels } from "../../lib/tyres.js";
 import { lapFuel, fuelDeltaLabel } from "../../lib/fuel.js";
 import { ERS_MODES } from "../../lib/coach/config.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import { WrenchIcon } from "../icons.jsx";
+import { lapClockAxis, timeAtDist } from "../../lib/timeAxis.js";
 import Hint from "../Hint.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -66,7 +68,9 @@ function StatusChip({ label, value, color, hint }) {
 // and in what conditions. The laps under it count from 1, so a weekend reads as
 // "QUALIFYING · Bahrain · Clear" then "RACE · Bahrain · Light Rain" — the context
 // you need to judge a strategy call after the fact.
-function RunHeader({ run }) {
+// memo: this screen re-renders at the telemetry rate (~30 Hz) because the root
+// holds the live snapshot in state, and a run header's data changes once a run.
+const RunHeader = memo(function RunHeader({ run }) {
   const m = run.meta || {};
   const conditions = conditionsLabel(m);
   return (
@@ -89,12 +93,19 @@ function RunHeader({ run }) {
       </span>
     </div>
   );
-}
+});
 
 // One lap in the log: number, time, the three sector splits (F1 timing-tower
 // colours via the `sectorColor` the screen owns), the tyre it was set on with its
 // wear, the fuel it burned, and the gap to the run's best.
-function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
+// memo, for the same reason as RunHeader and with more at stake: each row builds
+// ~45 elements (three sector spans, a four-wheel wear grid inside a Hint, a fuel
+// Hint, a 44px setup button with an inline SVG), and Hint is itself a component
+// with a context read, state and an effect. At the 25-lap case that was ~1,100
+// element reconciliations plus ~75 Hint renders PER TELEMETRY TICK, to redisplay
+// rows whose data changes once a lap. Both props it takes are stabilised by the
+// screen (sectorColor via useCallback) and the parent (onOpenSetup).
+const LapRow = memo(function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
   const invalid = !!l.invalid;
   const isPB = !invalid && best != null && Math.abs(l.lapTime - best) < 1e-6;
   const delta = best != null ? l.lapTime - best : null;
@@ -200,15 +211,13 @@ function LapRow({ lap: l, best, sectorColor, onOpenSetup }) {
           <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
             borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: l.setup ? "#7ea6e6" : C.textFaintest,
             opacity: l.setup ? 1 : 0.5 }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-            </svg>
+            <WrenchIcon size={14} />
           </span>
         </button>
       </span>
     </div>
   );
-}
+});
 
 // How much of the Session Laps list a phone shows before it starts scrolling.
 //
@@ -239,7 +248,7 @@ const PHONE_LAP_LIST_MAX =
 
 export default function LiveScreen({
   tel, units = "km/h", trackName, sessionLabel, liveLapNumber,
-  laps = [], sessionId, activeTrace, lastAdvice, refMismatch = null,
+  laps = [], sessionId, activeTrace, refIsAuto = false, lastAdvice, refMismatch = null,
   liveMini = { durations: [], current: -1, tyre: null },
   mapSlot, legendChips = [], audioOn, onToggleAudio,
   // Call lead: seconds of warning on every cue the legend chips above govern.
@@ -372,7 +381,9 @@ export default function LiveScreen({
   }, [laps]);
 
   const SECTOR_EPS = 1e-4; // seconds — float tolerance for "ties the min"
-  const sectorColor = (lap, i) => {
+  // useCallback, because LapRow is memo'd and takes this as a prop: a fresh arrow
+  // every render would change the prop every tick and defeat the memo entirely.
+  const sectorColor = useCallback((lap, i) => {
     const v = lap?.sectorTimes?.[i];
     if (typeof v !== "number" || v <= 0) return SECTOR_GREY;
     // PURPLE first: v is folded into recordBests, so the bucket min is ≤ v — within
@@ -382,7 +393,7 @@ export default function LiveScreen({
     const best = sessionBests.get(lapRunKey(lap.meta))?.[i];
     if (best != null && v <= best + SECTOR_EPS) return C.green; // best of this session
     return C.yellow; // beaten this session
-  };
+  }, [recordBests, sessionBests]);
 
   // ── Live mini-sectors ─────────────────────────────────────────────────────
   // The pips inside each S1/S2/S3 card are MINI_PER_SECTOR slices of that third of
@@ -445,14 +456,33 @@ export default function LiveScreen({
   const refLapTime = activeTrace ? (activeTrace.lapTime ?? activeTrace.meta?.lapTime ?? null) : null;
   const lapDelta = (!refMismatch && lastLap && typeof refLapTime === "number")
     ? lastLap.lapTime - refLapTime : null;
+  // Running delta: where the reference was on ITS lap clock at the distance the car
+  // is at now, against the live lap clock. The figure that tells a driver mid-lap
+  // whether the lap is coming together — the box above only ever compared the
+  // LAST completed lap. The reference's time axis is built once per reference
+  // (lib/timeAxis.js: the game's own clock when the lap carries it, else the
+  // reconstruction rescaled to its real lap time); each tick is a binary search.
+  // Same gate as everything else measured against the reference: blank when it
+  // isn't comparable, and blank off the stretch the reference recorded.
+  const refAxis = useMemo(() => (activeTrace ? lapClockAxis(activeTrace) : null), [activeTrace]);
+  const refAtHere = (!refMismatch && refAxis && tel.lapDistance > 0)
+    ? timeAtDist(activeTrace.samples, refAxis, tel.lapDistance) : null;
+  const liveDelta = refAtHere != null && tel.lapTime > 0 ? tel.lapTime - refAtHere : null;
+
+  // An automatic reference (no lap chosen — the hub picked the driver's own best
+  // comparable lap) says so, with the lap it is.
   const refLabel = activeTrace
-    ? `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
+    ? (refIsAuto
+      ? `AUTO REF · your lap ${activeTrace.lapNumber ?? ""}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`
+      : `REF · ${activeTrace.meta?.driver || activeTrace.meta?.track || "trace"}${refLapTime ? " " + formatLapTime(refLapTime, 3) : ""}`)
     : "No reference loaded";
 
-  // Sector cards: the last completed lap's splits vs this driver's best sectors.
+  // Sector cards: the last completed lap's splits vs this driver's best sectors
+  // at the SAME circuit, on the same side of the dry/wet split.
+  const sectorBests = bestSectorsAt(stats, lastLap?.meta?.track || trackName, tyreCondition(lastLap?.tyre) ?? "dry");
   const sectors = [0, 1, 2].map((i) => {
     const t = lastLap?.sectorTimes?.[i];
-    const best = stats.bestSectors[i];
+    const best = sectorBests[i];
     const delta = (typeof t === "number" && typeof best === "number" && best > 0) ? t - best : null;
     return {
       name: `S${i + 1}`,
@@ -558,12 +588,29 @@ export default function LiveScreen({
             <div style={{ fontSize: 9, letterSpacing: 2, color: C.textDim, textTransform: "uppercase" }}>Lap {liveLapNumber ?? "—"}</div>
             <div style={{ fontFamily: FONT.mono, fontSize: 36, fontWeight: 800, lineHeight: 1, marginTop: 3 }}>{formatLapTime(tel.lapTime, 3)}</div>
           </div>
-          <div style={{ background: "#2a1f08", border: "1px solid #6b5410", borderRadius: 8, padding: "7px 13px" }}>
-            <div style={{ fontSize: 9, letterSpacing: 1, color: "#9a8330", textTransform: "uppercase" }}>vs Reference</div>
-            <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
-              color: lapDelta == null ? C.textFaint : lapDelta <= 0 ? C.green : C.yellow }}>
-              {lapDelta == null ? "—" : (lapDelta <= 0 ? "" : "+") + lapDelta.toFixed(3)}
+          <div style={{ background: "#2a1f08", border: "1px solid #6b5410", borderRadius: 8, padding: "7px 13px" }}
+            title="Live: this lap against the reference at the same point on track. Last: the previous lap's total.">
+            <div style={{ fontSize: 9, letterSpacing: 1, color: "#9a8330", textTransform: "uppercase" }}>
+              {liveDelta != null ? "Live Δ vs Ref" : "vs Reference"}
             </div>
+            {liveDelta != null ? (
+              <>
+                <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
+                  color: liveDelta <= 0 ? C.green : C.yellow }}>
+                  {(liveDelta <= 0 ? "−" : "+") + Math.abs(liveDelta).toFixed(2)}
+                </div>
+                {lapDelta != null && (
+                  <div style={{ fontFamily: FONT.mono, fontSize: 10, color: C.textDim, marginTop: 2 }}>
+                    last {(lapDelta <= 0 ? "−" : "+") + Math.abs(lapDelta).toFixed(3)}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontFamily: FONT.mono, fontSize: 20, fontWeight: 800, marginTop: 2,
+                color: lapDelta == null ? C.textFaint : lapDelta <= 0 ? C.green : C.yellow }}>
+                {lapDelta == null ? "—" : (lapDelta <= 0 ? "" : "+") + lapDelta.toFixed(3)}
+              </div>
+            )}
           </div>
         </div>
         {!phone && <div style={{ flex: 1 }} />}
@@ -580,11 +627,11 @@ export default function LiveScreen({
           (BoxBoxApp's liveCalls gate). Say so explicitly — a coach that just goes
           quiet mid-session reads as a broken app, not a deliberate decision. */}
       {refMismatch && (
-        <div style={{ flex: "none", background: "#2a1113", border: `1px solid ${C.red || "#ff4d5e"}`,
+        <div style={{ flex: "none", background: "#2a1113", border: `1px solid ${C.red}`,
           borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "flex-start", gap: 11 }}>
           <span style={{ fontSize: 15, lineHeight: 1.2 }}>⚠️</span>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.red || "#ff4d5e" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: C.red }}>
               Corner calls muted — reference isn't comparable
             </div>
             <div style={{ fontSize: 11, color: C.textMid, marginTop: 3, lineHeight: 1.5 }}>
@@ -697,8 +744,16 @@ export default function LiveScreen({
                 (minWidth 0) rather than wrap. */}
             <div style={{ display: "flex", gap: phone ? 3 : 7, flexWrap: phone ? "nowrap" : "wrap",
               ...(phone && { minWidth: 0, justifyContent: "space-between" }) }}>
+              {/* Real buttons (they were clickable divs, unreachable by keyboard
+                  and silent to a screen reader). `minHeight: 0` keeps them exactly
+                  the size they were: seven of them share one line on a phone, the
+                  case CLAUDE.md lists for opting a line-of-text control out of the
+                  coarse-pointer tap floor. */}
               {legendChips.map((l) => (
-                <div key={l.label} onClick={l.onToggle || undefined} style={{
+                <button key={l.label} type="button" onClick={l.onToggle || undefined}
+                  aria-pressed={l.on} disabled={!l.onToggle}
+                  title={`${l.on ? "Mute" : "Unmute"} ${l.label} cues and markings`} style={{
+                  font: "inherit", color: "inherit", minHeight: 0,
                   display: "flex", alignItems: "center", gap: phone ? 3 : 8,
                   padding: phone ? "4px 5px" : "6px 10px", borderRadius: phone ? 6 : 8,
                   // Sized to their own label, not forced equal: equal widths make the
@@ -713,7 +768,7 @@ export default function LiveScreen({
                   <span style={{ fontSize: phone ? 8.5 : 11, fontWeight: 600, letterSpacing: phone ? 0 : .3,
                     color: l.on ? C.textBody2 : C.textDim,
                     ...(phone && { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }) }}>{l.label}</span>
-                </div>
+                </button>
               ))}
               {onSaveMap && (
                 <button onClick={onSaveMap} title="Save this map as a PNG" style={{
@@ -732,7 +787,11 @@ export default function LiveScreen({
           {!phone && leadControl}
           <div style={{ flex: 1, position: "relative", minHeight: 240 }}>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{mapSlot}</div>
-            <div onClick={onToggleAudio} title="Toggle track audio cues" style={{
+            {/* A button, so it takes the coarse-pointer tap floor: as a div the
+                phone's "CUES ON" pill was ~25px tall. It floats over the map, so
+                the extra height costs no layout. */}
+            <button type="button" onClick={onToggleAudio} title="Toggle track audio cues" aria-pressed={!!audioOn} style={{
+              font: "inherit", color: "inherit",
               position: "absolute", right: 8, bottom: 8, zIndex: 5, display: "flex", alignItems: "center",
               gap: phone ? 5 : 9,
               background: audioOn ? C.elevated : C.inset, border: `1px solid ${audioOn ? C.blue : C.line}`,
@@ -742,7 +801,7 @@ export default function LiveScreen({
               <span style={{ fontSize: phone ? 9 : 11, fontWeight: 700, letterSpacing: 1, color: audioOn ? C.textBody2 : C.textDim }}>
                 {phone ? (audioOn ? "CUES ON" : "CUES OFF") : (audioOn ? "AUDIO CUES ON" : "AUDIO CUES OFF")}
               </span>
-            </div>
+            </button>
           </div>
         </div>
 
@@ -852,17 +911,18 @@ export default function LiveScreen({
               <span style={{ width: 22, height: 22, borderRadius: 6, background: "#b45bff22", border: `1px solid ${C.purple}`,
                 display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>✦</span>
               <span style={{ fontSize: 10, letterSpacing: 2, color: "#c39bff", textTransform: "uppercase", fontWeight: 700 }}>Next Lap Focus</span>
-              <div
-                onClick={onToggleFocusAudio}
+              <button type="button"
+                onClick={onToggleFocusAudio} disabled={!onToggleFocusAudio} aria-pressed={!!focusAudioOn}
                 title={focusAudioOn ? "Audio hints on — read through your headset. Click to mute." : "Audio hints off. Click to read hints aloud."}
-                style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
+                style={{ font: "inherit", color: "inherit",
+                  marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "5px 9px", borderRadius: 8,
                   background: focusAudioOn ? "#b45bff1f" : C.inset, border: `1px solid ${focusAudioOn ? C.purple : C.line}`,
                   cursor: onToggleFocusAudio ? "pointer" : "default" }}>
                 <span style={{ fontSize: 12 }}>{focusAudioOn ? "🎧" : "🔇"}</span>
                 <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1, color: focusAudioOn ? "#c39bff" : C.textDim }}>
                   {focusAudioOn ? "AUDIO ON" : "AUDIO OFF"}
                 </span>
-              </div>
+              </button>
             </div>
             <div style={{ fontSize: 14, lineHeight: 1.55, color: focus ? C.textBody : C.textDim }}>
               {focus ? focus.text : "Drive a lap with a reference loaded — the coach's per-lap focus appears here."}

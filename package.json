@@ -1,7 +1,7 @@
 {
   "name": "box-box",
   "private": true,
-  "version": "4.1.0",
+  "version": "4.2.0-beta.1",
   "type": "module",
   "description": "EA F1 driving coach — compares your telemetry against Esports reference traces and coaches you with an LLM race engineer.",
   "scripts": {
@@ -14,7 +14,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "deploy:functions": "node scripts/deploy-functions.mjs",
+    "test": "node --test --import ./tests/setup.mjs \"tests/*.test.mjs\""
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

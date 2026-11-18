@@ -54,6 +54,11 @@ function locate(line, fd) {
 // this is where the car ACTUALLY was, so it's what the drawn ribbons use.
 export function posAtFrac(line, fd) {
   const { pts } = line;
+  // Degenerate lines: with one point `locate` clamps i to 0 and this would read
+  // pts[-1]; with none there is no answer at all. Both are cheap to define and
+  // keep a hand-edited or truncated trace from throwing inside a render.
+  if (!pts?.length) return { x: 0, z: 0 };
+  if (pts.length === 1) return { x: pts[0].x, z: pts[0].z };
   const { i, t } = locate(line, fd);
   return {
     x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t,

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri, isAndroid } from "../lib/env.js";
+import { saveJson } from "../lib/lapExport.js";
 import { useTauriEvents } from "./useTauriEvents.js";
 
 // Is there a native FFB engine on the other end of the IPC at all? `inTauri`
@@ -35,8 +36,10 @@ export const DEFAULT_FFB_SETTINGS = {
   oversteerStrength: 0.90,
   peakEmphasis: 0.0,
   smoothing: 0.15,
+  interpolation: "cubic",
+  interpDelayFrac: 0.5,
   minSpeedKmh: 10,
-  ffbUpdateHz: 90,
+  ffbUpdateHz: 200,
   maxForceN: 12000,
   invertForce: false,
   lockupStrength: 0.60,
@@ -45,6 +48,8 @@ export const DEFAULT_FFB_SETTINGS = {
   wheelspinHz: 10,
   scrubStrength: 0.50,
   scrubHz: 45,
+  damping: 1.0,
+  slewLimit: 0.0,
   brakingStrength: 0.50,
   brakingInvert: false,
   maxOutput: 1.0,
@@ -62,6 +67,7 @@ const SETTINGS_KEY = "f1coach.ffbSettings";
 const PROFILES_KEY = "f1coach.ffbProfiles";
 const ACTIVE_KEY = "f1coach.ffbActiveProfile";
 const ENABLED_KEY = "f1coach.ffbEnabled";
+const RATE_MIGRATED_KEY = "f1coach.ffbRateMigrated";
 
 const clean = (s) => ({ ...s, testForce: 0, testRumble: 0 });
 
@@ -70,6 +76,16 @@ const hasSavedSettings = () => !!localStorage.getItem(SETTINGS_KEY);
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    // One-time: 90 Hz used to be an unreachable "ceiling" — the loop was pinned
+    // to the game's 60 Hz packets. Now that it free-runs, lift a legacy saved
+    // value to the direct-drive default once, without blocking a later choice.
+    if (!localStorage.getItem(RATE_MIGRATED_KEY)) {
+      localStorage.setItem(RATE_MIGRATED_KEY, "1");
+      if (saved.ffbUpdateHz != null && saved.ffbUpdateHz < DEFAULT_FFB_SETTINGS.ffbUpdateHz) {
+        saved.ffbUpdateHz = DEFAULT_FFB_SETTINGS.ffbUpdateHz;
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean(saved)));
+      }
+    }
     return clean({ ...DEFAULT_FFB_SETTINGS, ...saved });
   } catch {
     return { ...DEFAULT_FFB_SETTINGS };
@@ -96,11 +112,27 @@ export function useFfbEngine() {
   const [devices, setDevices] = useState([]);
   const [enabled, setEnabledState] = useState(() => localStorage.getItem(ENABLED_KEY) !== "0");
   const [profiles, setProfiles] = useState(loadProfiles);
+  // Latest profiles for the profile actions below, so their localStorage writes
+  // can stay OUTSIDE the state updater (the same rule setSetting follows).
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
   const [activeProfile, setActiveProfile] = useState(() => localStorage.getItem(ACTIVE_KEY) || "");
 
+  // ffb_status is emitted on CHANGE only, and the engine starts before this page
+  // listens — an "SDL init failed" raised at startup went out to nobody. Ask for
+  // the current value on mount too; an event that has already arrived wins.
+  const sawStatusRef = useRef(false);
   useTauriEvents({
-    ffb_status: (e) => setStatus(e.payload),
+    ffb_status: (e) => { sawStatusRef.current = true; setStatus(e.payload); },
   });
+  useEffect(() => {
+    if (!ffbAvailable) return;
+    let cancelled = false;
+    invoke("get_ffb_status")
+      .then((st) => { if (!cancelled && st && !sawStatusRef.current) setStatus(st); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const refreshDevices = useCallback(async () => {
     if (!ffbAvailable) { setDevices([]); return; }
@@ -110,10 +142,12 @@ export function useFfbEngine() {
   // On mount: hand the engine our persisted settings + enabled state, list wheels,
   // and pull its default tuning (a fresh install adopts it as the live settings).
   useEffect(() => {
+    let cancelled = false;
     pushSettings(settingsRef.current);
     if (ffbAvailable) {
       invoke("set_ffb_enabled", { enabled }).catch(() => {});
       invoke("get_ffb_defaults").then((d) => {
+        if (cancelled) return;
         const merged = clean({ ...DEFAULT_FFB_SETTINGS, ...d });
         defaultsRef.current = merged;
         if (!hasSavedSettings()) {
@@ -123,6 +157,7 @@ export function useFfbEngine() {
       }).catch(() => {});
     }
     refreshDevices();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -179,15 +214,28 @@ export function useFfbEngine() {
 
   const resetPeak = useCallback(() => { if (ffbAvailable) invoke("reset_ffb_peak").catch(() => {}); }, []);
 
+  // Snapshot the engine's bounded output history (motion → torque) and save it
+  // for offline analysis with scripts/analyze-ffb-trace.mjs. Resolves false if
+  // there is nothing recorded or the save dialog was cancelled.
+  const exportTrace = useCallback(async () => {
+    if (!ffbAvailable) return false;
+    try {
+      const trace = await invoke("get_ffb_trace");
+      if (!trace || !Array.isArray(trace.samples) || trace.samples.length === 0) return false;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      return await saveJson(trace, `ffb-trace-${stamp}.json`);
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Profiles (localStorage map name → settings).
   const saveProfileAs = useCallback((name) => {
     const nm = (name || "").trim();
     if (!nm) return;
-    setProfiles((prev) => {
-      const next = { ...prev, [nm]: clean(settingsRef.current) };
-      localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
-      return next;
-    });
+    const next = { ...profilesRef.current, [nm]: clean(settingsRef.current) };
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
+    setProfiles(next);
     setActiveProfile(nm);
     localStorage.setItem(ACTIVE_KEY, nm);
   }, []);
@@ -205,17 +253,15 @@ export function useFfbEngine() {
   }, [profiles, applySettings]);
 
   const deleteProfile = useCallback((name) => {
-    setProfiles((prev) => {
-      const next = { ...prev };
-      delete next[name];
-      localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
-      return next;
-    });
-    setActiveProfile((cur) => {
-      if (cur === name) { localStorage.removeItem(ACTIVE_KEY); return ""; }
-      return cur;
-    });
-  }, []);
+    const next = { ...profilesRef.current };
+    delete next[name];
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(next));
+    setProfiles(next);
+    if (activeProfile === name) {
+      localStorage.removeItem(ACTIVE_KEY);
+      setActiveProfile("");
+    }
+  }, [activeProfile]);
 
   // "MODIFIED": current sliders differ from the active profile's saved values.
   const dirty = useMemo(() => {
@@ -226,7 +272,7 @@ export function useFfbEngine() {
   return {
     settings, setSetting, applySettings, resetSettings,
     status, devices, refreshDevices,
-    openDevice, closeDevice, resetPeak,
+    openDevice, closeDevice, resetPeak, exportTrace,
     enabled, setEnabled,
     profiles, activeProfile, dirty, saveProfileAs, saveActive, loadProfile, deleteProfile,
     // "Open" is not the same as "producing force" — another app acquiring the

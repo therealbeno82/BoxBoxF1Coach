@@ -36,6 +36,7 @@
 // start/finish line and traversal direction are recoverable, so loadTrackModel
 // records them for src/lib/cornerAnchors.js.)
 import { setAnchor } from "./cornerAnchors.js";
+import { loadTrackFile } from "./trackFile.js";
 
 const FIT_N = 512;          // resample count for the alignment solve
 const RMSE_ACCEPT = 12;     // meters — reject fits worse than this (line legitimately
@@ -386,6 +387,13 @@ function drapeElevation(rows, lines, closed) {
       y[i] = y[i0] + ((y[i1] - y[i0]) * d) / gap;
     }
   }
+  // Open tracks: the fill above can't wrap, so rows before the first hit and after
+  // the last stay null. Clamp each end to its NEAREST hit, not the first one.
+  if (!closed) {
+    const first = y[hits[0]], last = y[hits[hits.length - 1]];
+    for (let i = 0; i < hits[0]; i++) if (y[i] == null) y[i] = first;
+    for (let i = hits[hits.length - 1] + 1; i < n; i++) if (y[i] == null) y[i] = last;
+  }
   for (let i = 0; i < n; i++) if (y[i] == null) y[i] = y[hits[0]];
   // ~27 m smoothing window at 2.5 m spacing kills curb strikes and bin noise
   // while keeping real gradients (Eau Rouge climbs ~40 m over 500 m — survives).
@@ -544,6 +552,18 @@ function finishModel(rows, { status, closed, rmse = null, attribution = null, re
   const kappa = boxBlur(signedCurvature(rows, kStep, closed), Math.round(kStep * 2.5), 2, closed);
   rows.forEach((r, i) => { r.k = kappa[i]; });
 
+  // Cumulative chordal arc from row 0, stamped on every row. World-fixed, so
+  // anything striped along the road (the T-cam's kerb blocks) can anchor its
+  // phase to the circuit instead of to wherever the camera's window happens to
+  // begin — the same accumulation orbitScene.kerbMesh walks from row 0, so the
+  // two views put a stripe in the same place. Computed AFTER the seating/drape
+  // passes, i.e. on the geometry that actually gets drawn.
+  let rowArc = 0;
+  rows.forEach((r, i) => {
+    if (i > 0) rowArc += hyp(rows[i - 1].x, rows[i - 1].z, r.x, r.z);
+    r.s = rowArc;
+  });
+
   // Start/finish = the row nearest the anchor lap's first point (lap distance ≈ 0).
   const anchor = anchorLine(lines);
   let startIndex = 0;
@@ -564,7 +584,9 @@ function finishModel(rows, { status, closed, rmse = null, attribution = null, re
     const lead = p0.dist;
     if (closed && typeof lead === "number" && isFinite(lead) && lead > 0) {
       let back = 0;
-      while (back < lead) {
+      // Bounded by the row count: on degenerate geometry (zero-length rows)
+      // `back` would never grow and this would spin forever on the UI thread.
+      for (let steps = 0; steps < rows.length && back < lead; steps++) {
         const prev = (startIndex - 1 + rows.length) % rows.length;
         back += hyp(rows[prev].x, rows[prev].z, rows[startIndex].x, rows[startIndex].z);
         startIndex = prev;
@@ -695,12 +717,10 @@ export async function loadTrackModel(slug, lines) {
   let model = null;
   if (slug) {
     try {
-      const res = await fetch(`/tracks/${slug}.json`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.points) && data.points.length > 100) {
-          model = fitRealTrack(data, anchor, lines);
-        }
+      // Parsed once per circuit (lib/trackFile.js) — a refit used to re-fetch it.
+      const data = await loadTrackFile(slug);
+      if (Array.isArray(data?.points) && data.points.length > 100) {
+        model = fitRealTrack(data, anchor, lines);
       }
     } catch (e) {
       console.warn(`[trackGeometry] ${slug}: load failed (${e.message}) — using heuristic road`);

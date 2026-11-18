@@ -11,16 +11,23 @@
 
 import { C, FONT } from "../lib/ui/tokens.js";
 import { formatLapTime } from "../lib/format.js";
-import { boardLabel } from "../lib/leaderboard/boardKey.js";
-import { boardIdForLap } from "../lib/leaderboard/boardKey.js";
+import { boardLabel, boardIdForLap } from "../lib/leaderboard/boardKey.js";
+import { useViewport } from "../hooks/useViewport.jsx";
 
 export default function PublishPrompt({ lap, onPublish, onDismiss }) {
+  const { phone } = useViewport();
   if (!lap) return null;
   const { boardId } = boardIdForLap(lap);
 
   return (
     <div style={{
-      position: "fixed", right: 22, bottom: 22, zIndex: 120, width: 320,
+      position: "fixed", zIndex: 120,
+      // On a phone the bottom of the screen is the tab bar (44px+ of buttons plus
+      // the gesture inset), and a card pinned 22px up sat across the top half of
+      // every tab. It rides just above the bar there, edge to edge.
+      ...(phone
+        ? { left: 10, right: 10, bottom: "calc(58px + env(safe-area-inset-bottom))" }
+        : { right: 22, bottom: 22, width: 320 }),
       background: C.modal, border: `1px solid ${C.borderModal}`, borderRadius: 13,
       boxShadow: "0 20px 60px rgba(0,0,0,.55)", fontFamily: FONT.ui, overflow: "hidden",
     }}>

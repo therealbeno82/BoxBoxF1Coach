@@ -18,7 +18,7 @@
 // (as the decision). Returns findings rather than throwing, so the caller can
 // distinguish "reject" from "accept but flag".
 
-import { THRESHOLDS as T, plausibleLapTime } from "./limits.js";
+import { THRESHOLDS as T, plausibleLapTime, TRACK_LENGTH_M } from "./limits.js";
 
 const SPEED_FLOOR_MS = 1; // stopped-car guard on the 1/v integrand
 
@@ -97,6 +97,16 @@ export function checkCoverage(samples, trackLengthM = null) {
     return { ok: false, reason: `Only ${samples?.length ?? 0} trace samples — too few to be a full lap.` };
   }
   const first = samples[0], last = samples[samples.length - 1];
+  // A non-object sample is a REFUSAL, not a throw. sanitizeTraceSamples passes
+  // non-objects through untouched, and the server hands us its output directly
+  // (the client path only survives because payload.js re-spreads every sample,
+  // turning a null into {}). Without this, a payload of `[null, null, …]`
+  // cleared the length check and then died on `first.dist` — an uncaught
+  // TypeError out of the Edge Function handler, so a generic 500 instead of
+  // this module's documented "return findings rather than throw" contract.
+  if (!first || typeof first !== "object" || !last || typeof last !== "object") {
+    return { ok: false, reason: "This lap's trace is malformed — it can't be verified for the board." };
+  }
 
   if (first.dist > T.firstDistMaxM) {
     return { ok: false, reason: `The trace starts ${Math.round(first.dist)}m past the line — it isn't a complete lap.` };
@@ -178,9 +188,21 @@ export function checkErs(samples) {
 // that arrived via a session file or a profile import preserve the relation too.
 // That makes this the tightest check here and the cheapest to run — an edited lap
 // time almost always forgets to move the sectors with it.
+//
+// REQUIRED, not optional. This used to accept a missing/invalid split set by
+// flagging it, which meant stripping the field was a one-line bypass of the only
+// precise check we have (the integral backstop only catches >3.5% shaves).
+// A live recorder lap that reached the line always carries splits; the rare
+// splitless lap (a mid-lap join) is refused with a message rather than ranked
+// unverified. Note this makes the check a completeness policy as much as a
+// security one: a determined forger can fabricate three consistent values, but
+// no longer by omission.
 export function checkSectors(sectorTimes, lapTimeS) {
-  if (!Array.isArray(sectorTimes) || sectorTimes.length !== 3 || sectorTimes.some((s) => typeof s !== "number")) {
-    return { ok: true, flagged: true, reason: null }; // untagged: skip, but flag
+  if (!Array.isArray(sectorTimes) || sectorTimes.length !== 3 || sectorTimes.some((s) => !Number.isFinite(s))) {
+    return {
+      ok: false, flagged: false,
+      reason: "This lap has no complete sector splits, so it can't be verified for the board.",
+    };
   }
   const [s1, s2, s3] = sectorTimes;
   if (s1 < T.sectorMinS || s2 < T.sectorMinS || s3 < T.sectorMinS) {
@@ -229,6 +251,48 @@ export function sanitizeDisplayName(raw) {
   return cleaned;
 }
 
+// ─── (h) Declared track length ────────────────────────────────────────────────
+// `meta.trackLengthM` is client-supplied AND it gates the coverage and
+// sample-count checks, so without this a fabricated trace declares a short
+// "circuit", clears them, and lands at the track's lap-time floor. The board
+// slug was re-derived server-side from the payload's own identity, so it is the
+// one field here that can be trusted — compare the declaration against the
+// circuit's committed length, and use that committed length for the structural
+// checks rather than the client's number.
+//
+// A circuit missing from the table fails CLOSED, unlike the lap-time floor.
+// That is deliberate and it is the whole point of the check: the only other
+// option is to fall back on the client's own `declaredM`, which is exactly the
+// number this function exists to stop trusting — a synthetic trace could then
+// declare a 2 km "Monaco" and clear every structural gate by measuring itself
+// against its own claim. Nothing reachable hits this branch (TRACK_LENGTH_M
+// covers all 25 CALENDAR_SLUGS and boardIdForLap refuses anything off the
+// calendar), so arriving here means that invariant has been broken — adding a
+// circuit to TRACKS without running scripts/measure-track-lengths.mjs. Better
+// to refuse that circuit's laps loudly than to silently re-open the hole.
+export function checkTrackLength(slug, declaredM) {
+  const expected = Object.hasOwn(TRACK_LENGTH_M, slug) ? TRACK_LENGTH_M[slug] : null;
+  if (expected == null) {
+    return {
+      ok: false, flagged: false, expected: null,
+      reason: "This circuit has no verified length on record, so a lap here can't be checked for the board.",
+    };
+  }
+  const declared = Number(declaredM);
+  if (!(declared > 0)) {
+    // Old laps don't carry the field: accept, and let callers use `expected`.
+    return { ok: true, flagged: false, expected, reason: null };
+  }
+  const ratio = declared / expected;
+  if (ratio < T.lengthMinFrac || ratio > T.lengthMaxFrac) {
+    return {
+      ok: false, flagged: false, expected,
+      reason: `This trace claims a ${Math.round(declared)}m lap of ${slug}, which isn't that circuit.`,
+    };
+  }
+  return { ok: true, flagged: false, expected, reason: null };
+}
+
 // ─── The whole battery ────────────────────────────────────────────────────────
 // → { ok, verdict: "ok"|"flagged", reason, checks }
 // `reason` is written to be shown to the driver verbatim when ok is false.
@@ -238,7 +302,18 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   const plausible = plausibleLapTime(slug, lapTime);
   if (!plausible.ok) return { ok: false, verdict: null, reason: plausible.reason, checks };
 
-  const coverage = checkCoverage(samples, trackLengthM);
+  const length = checkTrackLength(slug, trackLengthM);
+  checks.lengthM = length.expected ?? null;
+  checks.declaredLengthM = Number(trackLengthM) > 0 ? Number(trackLengthM) : null;
+  if (!length.ok) return { ok: false, verdict: null, reason: length.reason, checks };
+  // The length the structural checks measure against. ALWAYS the circuit's own
+  // committed value — checkTrackLength refuses outright when it has none, so
+  // there is no path where this falls back to the client's declaration. It used
+  // to, and that made `meta.trackLengthM` gate the very checks it was supposed
+  // to be verified by.
+  const effectiveLengthM = length.expected;
+
+  const coverage = checkCoverage(samples, effectiveLengthM);
   checks.coverage = { span: coverage.span ?? null, maxGap: coverage.maxGap ?? null };
   if (!coverage.ok) return { ok: false, verdict: null, reason: coverage.reason, checks };
 
@@ -249,7 +324,7 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   const sectors = checkSectors(sectorTimes, lapTime);
   if (!sectors.ok) return { ok: false, verdict: null, reason: sectors.reason, checks };
 
-  const integral = checkLapTimeIntegral(samples, lapTime, trackLengthM);
+  const integral = checkLapTimeIntegral(samples, lapTime, effectiveLengthM);
   checks.derivedLapTime = integral.derived ?? null;
   checks.integralRatio = integral.ratio ?? null;
   if (!integral.ok) return { ok: false, verdict: null, reason: integral.reason, checks };
@@ -261,4 +336,39 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
 
   const flagged = integral.flagged || sectors.flagged || ers.flagged;
   return { ok: true, verdict: flagged ? "flagged" : "ok", reason: null, checks };
+}
+
+// ─── Driver aids ──────────────────────────────────────────────────────────────
+// What the game reported about assists on the lap: traction control, ABS,
+// steering and braking assist, the gearbox mode and the racing line (see the
+// Rust core's Car Status / Session parsing). CLIENT-REPORTED — the client builds
+// the payload — so this is an honesty signal shown on the board, not
+// anti-tamper, and it never refuses a lap: it records what the lap says about
+// itself, in the stored checks, so every row can show it.
+//
+// Each value is clamped to its own range; anything else is dropped. Null when
+// nothing usable was sent (laps recorded before aids were captured).
+const AID_RANGE = { tc: 2, abs: 1, steering: 1, braking: 3, gearbox: 3, racingLine: 2 };
+
+export function cleanAssists(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const [k, max] of Object.entries(AID_RANGE)) {
+    const v = raw[k];
+    if (Number.isInteger(v) && v >= 0 && v <= max) out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// Short labels for the aids that were ON — what a board row shows.
+export function assistLabels(a) {
+  if (!a) return [];
+  const out = [];
+  if (a.tc > 0) out.push(a.tc === 2 ? "Full TC" : "TC");
+  if (a.abs > 0) out.push("ABS");
+  if (a.gearbox === 3) out.push("Auto gears");
+  if (a.braking > 0) out.push("Brake assist");
+  if (a.steering > 0) out.push("Steering assist");
+  if (a.racingLine > 0) out.push("Racing line");
+  return out;
 }

@@ -7,6 +7,9 @@
 //   • their profile photo (avatar)                [IndexedDB, keyed by name]
 //   • every recorded lap, with its full telemetry samples  [IndexedDB]
 //   • every saved circuit outline (track map)      [IndexedDB]
+//   • every reference downloaded off a leaderboard  [IndexedDB]
+//     — those are what make a race weekend work offline, so moving to a new PC
+//     without them meant re-downloading before the first session.
 //
 // The OpenRouter API key is deliberately NOT included — it's a global app secret,
 // not a per-driver value, and a profile file is meant to be portable/shareable.
@@ -19,6 +22,7 @@
 
 import * as lapStore from "./lapStore.js";
 import { saveJson, fileSafe } from "./lapExport.js";
+import { sanitizeTraceSamples } from "./traceSamples.js";
 
 const PROFILE_KIND = "boxbox-profile";
 const PROFILE_VERSION = 1;
@@ -31,11 +35,14 @@ export async function exportProfile(d) {
   const name = (d?.name || "").trim();
   if (!name) throw new Error("No active driver to export.");
 
-  const [laps, avatar, trackMaps] = await Promise.all([
+  const [laps, avatar, trackMaps, refRows] = await Promise.all([
     lapStore.getLaps(name),
     lapStore.getAvatar(name),
     lapStore.getTrackMaps(name),
+    lapStore.getRefTraces(name),
   ]);
+  const refTraces = refRows.map(({ boardId, entryId, displayName, lapTime, trace, savedAt }) =>
+    ({ boardId, entryId, displayName, lapTime, trace, savedAt }));
 
   const payload = {
     kind: PROFILE_KIND,
@@ -52,7 +59,8 @@ export async function exportProfile(d) {
     avatar: avatar || null, // downscaled data URL, or null
     laps,                   // full stored shape incl. samples
     trackMaps,              // [{ slug, track, path, savedAt }]
-    counts: { laps: laps.length, trackMaps: trackMaps.length },
+    refTraces,              // [{ boardId, entryId, displayName, lapTime, trace, savedAt }]
+    counts: { laps: laps.length, trackMaps: trackMaps.length, refTraces: refTraces.length },
   };
 
   const dateTag = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, filename-safe
@@ -84,15 +92,23 @@ export async function importProfile(payload, { name } = {}) {
   if (!target) throw new Error("No driver name to import under.");
 
   // Laps: re-mint ids and re-own to the target so an import can never overwrite an
-  // unrelated existing lap. Keep the rest of each lap's stored shape intact.
-  const laps = Array.isArray(payload.laps) ? payload.laps : [];
-  for (const l of laps) {
-    if (!l || typeof l !== "object") continue;
-    await lapStore.putLap({
+  // unrelated existing lap. Keep the rest of each lap's stored shape intact, but
+  // clamp the samples the same way every other import path does — a profile file
+  // is just as hand-editable as a trace, and these laps can become references.
+  // Written in ONE transaction, and the count reported is what COMMITTED: one
+  // put per lap with errors swallowed used to report the file's size even when
+  // storage ran out halfway.
+  const laps = (Array.isArray(payload.laps) ? payload.laps : [])
+    .filter((l) => l && typeof l === "object")
+    .map((l) => ({
       ...l,
       id: `lap-${crypto.randomUUID()}`,
       meta: { ...(l.meta || {}), driver: target },
-    });
+      ...(Array.isArray(l.samples) ? { samples: sanitizeTraceSamples(l.samples) } : {}),
+    }));
+  const lapsWritten = await lapStore.putLaps(laps);
+  if (laps.length && !lapsWritten) {
+    throw new Error("Couldn't write the laps — the app's storage may be full.");
   }
 
   // Avatar (putAvatar overwrites any existing photo for this name).
@@ -106,6 +122,19 @@ export async function importProfile(payload, { name } = {}) {
     }
   }
 
+  // Downloaded leaderboard references (absent from files made before they were
+  // backed up). Third-party data, so sanitised like a fresh download.
+  const refs = Array.isArray(payload.refTraces) ? payload.refTraces : [];
+  let refsWritten = 0;
+  for (const r of refs) {
+    if (!r?.boardId || !r?.entryId || !r?.trace || !Array.isArray(r.trace.samples)) continue;
+    const key = await lapStore.putRefTrace(target, {
+      boardId: r.boardId, entryId: r.entryId, displayName: r.displayName, lapTime: r.lapTime,
+      trace: { ...r.trace, samples: sanitizeTraceSamples(r.trace.samples) },
+    });
+    if (key) refsWritten++;
+  }
+
   const src = payload.driver || {};
   return {
     name: target,
@@ -114,6 +143,6 @@ export async function importProfile(payload, { name } = {}) {
     color: src.color || null,
     prefs: src.prefs || null,
     avatar: payload.avatar || null,
-    counts: { laps: laps.length, trackMaps: maps.length },
+    counts: { laps: lapsWritten, trackMaps: maps.length, refTraces: refsWritten },
   };
 }

@@ -1,18 +1,18 @@
-// ─── DRIVING LINES VIEW (Analytics ▸ Overview) ────────────────────────────────
-// Top-down 2D "segment focus" view of both laps' racing lines — replaces the old
-// 3D chase-cam scene. The viewport auto-frames the segment (or sector) the
-// playhead is in and glides between segments as playback crosses a boundary;
-// a mini-map inset shows where on the circuit that segment sits, a zoom slider
-// widens/tightens the framing, and a bottom-left card steps segment-by-segment
-// with each lap's segment time and the delta between them.
+// ─── DRIVING LINES VIEW (Analytics) ──────────────────────────────────────────
+// Both laps' racing lines in ONE scene, seen through four cameras picked by the
+// pills at the top: Map (top-down SVG that auto-frames the segment the playhead
+// is in and glides between segments), 3D (free orbit — TrackOrbitView), and the
+// T-Cam / Compare onboard views (TrackCamView). Around them: a mini-map inset
+// showing where on the circuit the segment sits, a zoom slider, and a card that
+// steps segment-by-segment with each lap's time and the delta between them. On a
+// phone those overlays become rows above and below the viewport (see CLAUDE.md).
 //
-// Playback is CONTROLLED: `playhead` (0–1 lap-distance fraction) + `playing`
-// come in as props with `onSeek`/`onSetPlaying` callbacks, and the rAF clock
-// that advances the shared timeline lives HERE (it knows lap duration and
-// speed; it plays through once and stops at the lap end). BoxBoxApp owns the
-// state and feeds the same playhead to the
-// TelemetryStudio trace stack, so pressing Play moves the telemetry cursor and
-// the cars along the driving lines together.
+// Playback: the playhead (0–1 lap-distance fraction) lives in lib/playheadStore.js
+// and `playing` comes in as a prop with an `onSetPlaying` callback. The rAF clock
+// that advances the shared timeline lives HERE (it knows lap duration and speed;
+// it plays through once and stops at the lap end). The TelemetryStudio trace
+// stack reads the same store, so pressing Play moves the telemetry cursor and the
+// cars along the driving lines together — and nothing else re-renders per frame.
 //
 // Only laps that carry their own world positions get a line + car (calibrator
 // references have no x/z — their car is hidden with a note). Sync modes:
@@ -31,6 +31,8 @@ import { pedalT, pedalColor, posAtFrac, posAtFracSmooth, headingAtDeg, catmullRo
 import TrackCamView from "./TrackCamView.jsx";
 import TrackOrbitView from "./TrackOrbitView.jsx";
 import { useViewport } from "../hooks/useViewport.jsx";
+import { recordedTimeAxis, integratedTimeAxis } from "../lib/timeAxis.js";
+import { usePlayhead, setPlayhead } from "../lib/playheadStore.js";
 
 const COMP_COLOR = "#34c8ff";   // cyan — driven / comparison lap (cockpit token)
 const REF_COLOR  = "#ffffff";   // white — reference / benchmark lap (dotted on the map)
@@ -198,58 +200,9 @@ function monoAt(xs, ys, ms, x) {
 }
 
 // ─── The time axis ────────────────────────────────────────────────────────────
-// Pace-sync stands entirely on knowing WHEN each car was where, and there are two
-// ways to know it.
-//
-// The good way is to have written it down. The recorder now stamps every 10 m bin
-// with the game's own lap clock (BoxBoxApp), so for those laps this is a read, not a
-// calculation, and it carries no error at all.
-//
-// The other way — the only one available for every lap recorded before that, which is
-// all of the existing history — is to reconstruct it by integrating Δdistance ÷ speed.
-// That works, but it is an approximation twice over: speed is a POINT sample at each
-// bin while the bin spans anywhere from 3 to 13 m, and the bins are 10 m apart in a
-// place where the car may be braking hard. Measured against the 25 demo laps the
-// integral runs ~1.9% long, and locally it is out by order 10 ms. 10 ms at Spa's
-// 66 m/s is two thirds of a metre — and since the ghost's position IS this curve,
-// that error is visible as the ghost drifting fore and aft against a car it should be
-// holding station with.
-function recordedTimeAxis(pts) {
-  // All-or-nothing: a lap that only half-carries the clock would splice a measured
-  // curve onto a derived one, and the seam is worse than either.
-  if (pts.length < 2 || !pts.every(p => typeof p.t === "number")) return null;
-  const t0 = pts[0].t;
-  const cum = pts.map(p => p.t - t0);
-  // A flashback or a stationary spell can send the clock backwards or flat; the curve
-  // has to stay non-decreasing for the monotone lookups built on it.
-  for (let i = 1; i < cum.length; i++) if (!(cum[i] > cum[i - 1])) cum[i] = cum[i - 1];
-  return cum[cum.length - 1] > 0 ? cum : null;
-}
-
-// Trapezoid, not the end-point speed. The time to cross a bin at constant
-// acceleration is its length over the MEAN of the two speeds; charging the whole bin
-// at the speed it ended on overstates a braking zone and understates the exit by as
-// much. Across the 25 demo laps it tightens how consistently the curve reproduces the
-// game's real lap time (spread 0.338% → 0.278%), which is the figure pace-sync depends
-// on. Same rule the demo session's own time axis uses (scripts/make-demo-session.mjs).
-function integratedTimeAxis(pts) {
-  const cum = [0];
-  for (let i = 1; i < pts.length; i++) {
-    const dd = Math.max(0, pts[i].dist - pts[i - 1].dist);
-    const v1 = Math.max(pts[i].speed / 3.6, 1);       // km/h → m/s, floor 1
-    const v0 = Math.max(pts[i - 1].speed / 3.6, 1);
-    cum[i] = cum[i - 1] + dd / ((v0 + v1) / 2);
-  }
-  return cum;
-}
-
-// NOT SMOOTHED: pre-filtering the speed channel before integrating was tried and
-// rejected. It does buy a little more smoothness (worst frame-to-frame jump 1.29 →
-// 0.83 m/s at ±2 samples), but measured across the 25 demo laps it WIDENS the
-// lap-to-lap spread of the derived lap time (0.278% → 0.317%) even as it lowers the
-// mean bias. Pace-sync reads the RATIO of two laps' curves, so a bias they share
-// cancels and only the spread between them survives — a filter that trades spread for
-// bias is trading away the only part that matters here.
+// recordedTimeAxis / integratedTimeAxis live in lib/timeAxis.js, shared with the
+// Live screen's running delta and the trace stack's Δt channel. The reasoning for
+// both (and for NOT smoothing the speed channel first) is written there.
 
 // Build per-lap racing lines. For each drawable lap (≥20 own x/z samples) returns
 // its captured WORLD points plus the two addressing curves the timeline uses:
@@ -279,7 +232,18 @@ function buildLines(laps) {
     const cum = recordedTimeAxis(pts) || integratedTimeAxis(pts);
     const total = cum[cum.length - 1] || 1;
     const timeAt = cum.map(t => t / total);
-    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen,
+    // Cumulative chordal arc over the raw samples, from the line's own start.
+    // World-fixed, so anything striped/dashed along the line keeps its phase as
+    // the playhead advances — the T-cam seeds its reference dashes from this,
+    // and orbitScene's dashedRibbon walks the same accumulation. Not the
+    // odometer: `dist` and geometry disagree by up to ±20% per bin.
+    const arcAt = new Array(pts.length);
+    let arc = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0) arc += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+      arcAt[i] = arc;
+    }
+    out.push({ id: d.id, label: d.label, color: d.color, pts, distAt, timeAt, timeTotal: total, lapLen, arcAt,
       // Both directions of the time↔distance pair, precomputed once per line.
       tdSlopes: monoSlopes(timeAt, distAt), dtSlopes: monoSlopes(distAt, timeAt),
       // The arc-length-even resample the cars and the onboard camera are placed
@@ -360,8 +324,12 @@ const fmtSeg = (t) => (typeof t === "number" && isFinite(t) ? t.toFixed(3) : "�
 export default function DrivingLinesView({
   referenceLap, comparisonLap, referenceLabel, comparisonLabel,
   trackName, trackSlug = null, zones = [], corners: cornerDb = [], lapLength = 0,
-  playhead = 0, playing = false, onSeek, onSetPlaying,
+  playing = false, onSetPlaying,
 }) {
+  // Read here, at the top: this component returns early when there are no lines
+  // to draw, and a hook below that return would change the hook count.
+  const playhead = usePlayhead();
+  const onSeek = setPlayhead;
   // `phone` decides LAYOUT (overlays becoming stacked rows); `coarse` decides TAP
   // SIZE. They are not the same question and a landscape phone is exactly where
   // they diverge: at 873×393 it is above the 639px `phone` breakpoint, so it
@@ -637,8 +605,15 @@ export default function DrivingLinesView({
       accent: compLine ? COMP_COLOR : REF_COLOR,
       other: compLine ? ghost(refCar, refAngle, REF_COLOR) : ghost(compCar, compAngle, COMP_COLOR),
     }];
+  // Depend on the car positions by VALUE, not by object identity. posAtFracSmooth
+  // returns a fresh {x, z} literal and it is called in the render body, so
+  // listing refCar/compCar here meant this memo never hit once — `panes` was a
+  // brand-new array on every render, which at 30 Hz telemetry made the T-cam's
+  // "has anything actually moved?" question unanswerable from its props and kept
+  // its render loop permanently awake.
   }, [camMode, compLine, refLine, camLine, camFrac, playhead, refFrac,
-      comparisonLabel, referenceLabel, refCar, compCar, refAngle, compAngle]);
+      comparisonLabel, referenceLabel, refAngle, compAngle,
+      refCar?.x, refCar?.z, compCar?.x, compCar?.z]);
 
   // ── Viewport: fit the current segment's bounding box (both lines), padded;
   // the zoom slider tightens/widens the framing around the same centre. ──
@@ -690,9 +665,19 @@ export default function DrivingLinesView({
   // Glide the live viewBox toward the target. The target moves continuously while
   // the cars run (camera-follow pan), so this is per-frame exponential smoothing
   // rather than a one-shot tween — segment jumps ease in with the same motion.
-  const [vb, setVb] = useState(null);
+  //
+  // The glide writes the map SVG's viewBox attribute DIRECTLY (mapSvgRef) and
+  // commits to React state only once it settles. It used to setState every
+  // frame, which during playback was a SECOND full render of this whole view per
+  // frame on top of the playhead's — re-reconciling the transport, the segment
+  // card and both car markers just to move a viewBox. vbRef is the live value;
+  // `vb` (state) is the last committed one, which React's own viewBox prop reads
+  // — and since that prop is unchanged between commits, React never writes over
+  // the glide.
+  const [vb, setVbState] = useState(null);
   const vbRef = useRef(null);
-  vbRef.current = vb;
+  const setVb = useCallback((v) => { vbRef.current = v; setVbState(v); }, []);
+  const mapSvgRef = useRef(null);
   const targetVbRef = useRef(null);
   targetVbRef.current = targetVb;
 
@@ -716,22 +701,32 @@ export default function DrivingLinesView({
       if (!cur) { camRafRef.current = 0; setVb(to); return; }
       const diff = Math.max(Math.abs(to.x - cur.x), Math.abs(to.y - cur.y),
         Math.abs(to.w - cur.w), Math.abs(to.h - cur.h));
-      if (diff < 0.05) { camRafRef.current = 0; return; } // settled — sleep until the target moves
+      // Settled — commit where the glide ended to state, then sleep until the
+      // target moves. (React bails out if it is already the committed object.)
+      if (diff < 0.05) { camRafRef.current = 0; setVbState(cur); return; }
       const k = 1 - Math.exp(-dt / TAU);
-      setVb({
+      const next = {
         x: cur.x + (to.x - cur.x) * k, y: cur.y + (to.y - cur.y) * k,
         w: cur.w + (to.w - cur.w) * k, h: cur.h + (to.h - cur.h) * k,
-      });
+      };
+      vbRef.current = next;
+      const svg = mapSvgRef.current;
+      if (svg) svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.w} ${next.h}`);
+      else setVbState(next);   // no map on screen (another camera): keep state current for when it mounts
       camRafRef.current = requestAnimationFrame(step);
     };
     camRafRef.current = requestAnimationFrame(step);
   }, []);
 
-  // Wake the camera whenever a new target exists. Deliberately has no dep array:
-  // targetVb is recomputed every render, and every way it can move (playback,
-  // scrubbing, a segment step, zoom, a sync-mode switch) goes through a render.
-  // Costs one no-op call while the loop is already running.
-  useEffect(() => { if (targetVb) startCamera(); });
+  // Wake the camera whenever its TARGET moves. Keyed on the target's four numbers
+  // rather than on nothing: targetVb is a fresh literal every render, and the root
+  // re-renders at the telemetry rate, so a depless effect re-armed the loop ~30
+  // times a second on a paused, settled camera — reintroducing exactly the
+  // wakeups the self-terminating rewrite above removed. Each wake is cheap (a
+  // four-number diff, then it sleeps again), which is why this one was the least
+  // costly of the three, but it is the same mistake.
+  useEffect(() => { if (targetVbRef.current) startCamera(); },
+    [startCamera, targetVb?.x, targetVb?.y, targetVb?.w, targetVb?.h]);
   useEffect(() => () => { cancelAnimationFrame(camRafRef.current); camRafRef.current = 0; }, []);
 
   // ── Mini-map: whole circuit scaled into the inset, current segment highlighted ──
@@ -793,6 +788,24 @@ export default function DrivingLinesView({
   const refSegT  = segTimeOf(refLine, refTime);
   const segDelta = compSegT != null && refSegT != null ? compSegT - refSegT : null;
 
+  // ── Where the time went ──
+  // The card above answers "how did THIS segment go", one at a time. This ranks
+  // all of them: time lost per segment, driven minus reference (+ = lost), on the
+  // same pace curves the card reads. It colours the scrubber under each segment
+  // and names the three costliest, each a jump to the segment it means.
+  const segLosses = useMemo(() => {
+    if (!compLine || !refLine || !compTime || !refTime) return [];
+    return segments.map((sg, i) => ({
+      i, name: sg.sub || sg.name, start: sg.start, end: sg.end,
+      loss: (distFracToTimeFrac(compLine, sg.end) - distFracToTimeFrac(compLine, sg.start)) * compTime
+          - (distFracToTimeFrac(refLine, sg.end) - distFracToTimeFrac(refLine, sg.start)) * refTime,
+    }));
+  }, [segments, compLine, refLine, compTime, refTime]);
+  const worstLosses = useMemo(
+    () => segLosses.filter((s) => s.loss > 0.02).sort((a, b) => b.loss - a.loss).slice(0, 3),
+    [segLosses]);
+  const lossColor = (loss) => (loss > 0.1 ? C.red : loss > 0.02 ? C.yellow : loss < -0.02 ? C.green : null);
+
   const gotoSeg = (dir) => {
     const n = segments.length; if (!n) return;
     const i = (segIdx + dir + n) % n;
@@ -806,6 +819,24 @@ export default function DrivingLinesView({
     const el = barRef.current; if (!el) return;
     const r = el.getBoundingClientRect();
     onSeek?.(clamp((clientX - r.left) / r.width, 0, 1));
+  };
+  const onBarKey = (e) => {
+    const step = e.shiftKey ? 0.05 : 0.01;
+    let next = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = playhead + step;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = playhead - step;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = 1;
+    else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      if (!playing && playhead >= 0.999) onSeek?.(0);
+      onSetPlaying?.(!playing);
+      return;
+    }
+    if (next == null) return;
+    e.preventDefault();
+    onSetPlaying?.(false);
+    onSeek?.(clamp(next, 0, 1));
   };
   // ── Pinch to zoom the MAP. The 3D view does its own (it owns a camera, not a
   // viewBox) and the T-cam has no zoom at all, so this is map-only. Same `zoom`
@@ -833,6 +864,22 @@ export default function DrivingLinesView({
     pinchPts.current.delete(e.pointerId);
     if (pinchPts.current.size < 2) pinchGap.current = 0;
   };
+
+  // Mouse-wheel zoom on the map, the same state pinch and the slider write (the 3D
+  // view already zooms on the wheel; the map only took a pinch). Native and
+  // non-passive for the same reason TrackOrbitView's is: React's onWheel is
+  // passive, so preventDefault there can't stop the page scrolling instead.
+  const mapViewportRef = useRef(null);
+  useEffect(() => {
+    const el = mapViewportRef.current;
+    if (!el || camMode !== "map") return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0016), MIN_ZOOM, MAX_ZOOM));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [camMode, lines.length]);
 
   const onBarDown = (e) => { onSetPlaying?.(false); scrubFrom(e.clientX);
     const move = ev => scrubFrom(ev.clientX);
@@ -878,7 +925,12 @@ export default function DrivingLinesView({
   }
 
   const vbox = vb || targetVb;
-  const sc = vbox ? (vbox.w + vbox.h) / 1100 : 1; // world-units-per-pixel-ish overlay scale
+  // World-units-per-pixel-ish overlay scale, from the TARGET box: that only
+  // changes on a segment or zoom change (pans keep its size), so the overlays
+  // don't need the per-frame glide to reach React — see vbRef above. During a
+  // zoom glide the labels take their final size at its start, ~0.5 s early.
+  const scBox = targetVb || vbox;
+  const sc = scBox ? (scBox.w + scBox.h) / 1100 : 1;
   // Car marker size. Overlays like corner labels are scaled by `sc` to stay a
   // CONSTANT on-screen size — but a car that never changes size looks huge over a
   // zoomed-out track and tiny in a zoomed-in corner. So size the cars in REAL-WORLD
@@ -890,7 +942,13 @@ export default function DrivingLinesView({
   // The same two cars for the 3D view, in ITS units: heading in radians, and lap
   // distance in metres so the model's wheels roll. `main` marks the one the orbit
   // camera watches — the driven lap, since that's the car you're steering the
-  // comparison from. Rebuilt per render, which is per frame while playing anyway.
+  // comparison from.
+  //
+  // Rebuilt per render, and deliberately NOT a useMemo: this sits after the
+  // `if (!lines.length) return` above, so a hook here would change the hook count
+  // between the empty and populated renders ("Rendered more hooks than during the
+  // previous render"). TrackOrbitView instead compares these by VALUE to decide
+  // whether its render loop needs waking — see the key it builds.
   const orbitCars = [
     refCar && { x: refCar.x, z: refCar.z, yaw: refAngle * Math.PI / 180,
       color: REF_COLOR, dist: refFrac * (refLine?.lapLen || 0) },
@@ -1024,7 +1082,7 @@ export default function DrivingLinesView({
       {/* Where you are. Desktop stacks name, corner and distance; a phone puts all
           three on one line — they are one sentence, not three facts. */}
       <div style={{display:"flex",alignItems:"center",gap:8}}>
-        {!phone && <button style={{...navBtn,...tapSquare}} title="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Previous segment" aria-label="Previous segment" onClick={()=>gotoSeg(-1)}>‹</button>}
         <div style={{flex:1,minWidth:0,textAlign:"center",display:"flex",alignItems:"baseline",justifyContent:"center",gap:phone?6:8}}>
           <span style={{fontFamily:FONT.mono,fontSize:phone?11:13,fontWeight:800,color:"#e8edf5",whiteSpace:"nowrap"}}>{seg.name}</span>
           {phone && seg.sub && (
@@ -1039,7 +1097,7 @@ export default function DrivingLinesView({
               color:segDelta < 0 ? C.green : segDelta > 0 ? C.red : C.textMid}}>{fmtd(segDelta)}</span>
           )}
         </div>
-        {!phone && <button style={{...navBtn,...tapSquare}} title="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
+        {!phone && <button style={{...navBtn,...tapSquare}} title="Next segment" aria-label="Next segment" onClick={()=>gotoSeg(1)}>›</button>}
       </div>
       {!phone && seg.sub && (
         <div style={{textAlign:"center",fontSize:9,letterSpacing:1,color:"#8b94a8",textTransform:"uppercase",marginTop:2}}>{seg.sub}</div>
@@ -1075,16 +1133,16 @@ export default function DrivingLinesView({
       {/* 44 square on any touch screen, against 18×18 before — the smallest
           targets in the app, and sitting either side of a slider that swallows a
           stray drag. The slider itself stays 18 (below). */}
-      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom out"
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom out" aria-label="Zoom out"
         onClick={()=>setZoom(z=>clamp(z/1.25,MIN_ZOOM,MAX_ZOOM))}>−</button>
-      <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom"
+      <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom} title="Zoom" aria-label="Zoom"
         onChange={(e)=>setZoom(Number(e.target.value))}
         style={{width:phone?"100%":110,
           // 18px, not the 44px tap floor: the thumb is the target here and it is
           // full size either way, while the track's height buys nothing.
           ...(phone&&{flex:"1 1 0",minWidth:0,minHeight:0,height:18}),
           accentColor:COMP_COLOR}} />
-      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom in"
+      <button style={{...navBtn,border:"none",width:18,...tapSquare}} title="Zoom in" aria-label="Zoom in"
         onClick={()=>setZoom(z=>clamp(z*1.25,MIN_ZOOM,MAX_ZOOM))}>＋</button>
     </>
   );
@@ -1123,7 +1181,7 @@ export default function DrivingLinesView({
           there is a mouse — keyed on the pointer, because a landscape phone
           takes the desktop 38px path and would otherwise keep the opt-out with
           it, immune to the floor. */}
-      <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"}
+      <button onClick={()=>{ if (!playing && playhead >= 0.999) onSeek?.(0); onSetPlaying?.(!playing); }} title={playing?"Pause":"Play"} aria-label={playing?"Pause":"Play"}
         style={{width:38,height:38,...(coarse?tapSquare:{minHeight:0}),borderRadius:"50%",border:"none",background:COMP_COLOR,color:"#051018",
           fontSize:13,fontWeight:800,cursor:"pointer",flex:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
         {playing?"❚❚":"▶"}</button>
@@ -1158,7 +1216,15 @@ export default function DrivingLinesView({
           scrubbing is the only thing it does, so a drag that started on it can
           only have meant the playhead. Without it the browser claims the gesture
           as a page scroll and cancels the drag mid-lap. */}
-      <div ref={barRef} onPointerDown={onBarDown} style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
+      {/* Also a keyboard slider: it was a div with only a pointer handler, so
+          playback could not be reached without a mouse or a finger. Arrows step
+          1% of the lap (Shift: 5%), Home/End jump to the ends, Space plays. */}
+      <div ref={barRef} onPointerDown={onBarDown}
+        role="slider" tabIndex={0} aria-label="Playback position"
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(playhead * 100)}
+        aria-valuetext={distText}
+        onKeyDown={onBarKey}
+        style={{position:"relative",height:phone?28:34,display:"flex",alignItems:"center",cursor:"pointer",
         touchAction:"none",
         ...(phone ? {flex:"1 1 100%",minWidth:0} : {flex:1})}}>
         <div style={{position:"absolute",left:0,right:0,height:6,borderRadius:3,background:"#1c2230"}} />
@@ -1171,6 +1237,16 @@ export default function DrivingLinesView({
         {corners.map((c,i)=>(
           <div key={i} style={{position:"absolute",left:`${c.f*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:2,height:11,background:"#2b3346"}} />
         ))}
+        {/* Time lost / gained per segment, as a band under the track: red where
+            the driven lap lost more than a tenth, yellow for a smaller loss,
+            green where it gained. Level segments draw nothing. */}
+        {segLosses.map((s) => {
+          const col = lossColor(s.loss);
+          return col ? (
+            <div key={`loss-${s.i}`} style={{position:"absolute",left:`${s.start*100}%`,width:`${(s.end-s.start)*100}%`,
+              top:"calc(50% + 5px)",height:3,borderRadius:2,background:col,opacity:0.85,pointerEvents:"none"}} />
+          ) : null;
+        })}
         {/* Reference car position (diverges from the knob in pace-sync) */}
         {refLine && compLine && syncMode==="pace" && (
           <div title="Reference car" style={{position:"absolute",left:`${refFrac*100}%`,top:"50%",
@@ -1182,6 +1258,24 @@ export default function DrivingLinesView({
       </div>
     </div>
   );
+
+  // The three costliest segments as jumps (see segLosses). Under the transport on
+  // both layouts.
+  const lossRow = worstLosses.length > 0 ? (
+      <div style={{flex:"none",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",
+        fontFamily:FONT.ui,fontSize:phone?9:10,color:C.textDim}}>
+        <span style={{letterSpacing:1,textTransform:"uppercase"}}>Most time lost</span>
+        {worstLosses.map((s) => (
+          <button key={s.i} type="button" onClick={() => { onSetPlaying?.(false); onSeek?.(s.start + 1e-4); }}
+            title={`Jump to ${s.name}`}
+            style={{...pill(false),display:"inline-flex",alignItems:"center",gap:5,
+              border:`1px solid ${lossColor(s.loss)}55`,...(coarse?{minHeight:44}:{minHeight:0})}}>
+            <span style={{color:C.textBody2}}>{s.name}</span>
+            <span style={{fontFamily:FONT.mono,fontWeight:800,color:lossColor(s.loss)}}>+{s.loss.toFixed(2)}</span>
+          </button>
+        ))}
+      </div>
+  ) : null;
 
   return (
     <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",gap:phone?6:10,overflow:"hidden"}}>
@@ -1200,7 +1294,7 @@ export default function DrivingLinesView({
           to zoom with, while a one-finger vertical drag still scrolls the screen
           this panel sits in — on a phone the map is most of the viewport, so
           trapping the scroll would strand the page. */}
-      <div
+      <div ref={mapViewportRef}
         {...(camMode === "map" ? {
           onPointerDown: onMapDown, onPointerMove: onMapMove,
           onPointerUp: onMapUp, onPointerCancel: onMapUp,
@@ -1226,7 +1320,7 @@ export default function DrivingLinesView({
             onZoomBy={(f) => setZoom((z) => clamp(z * f, MIN_ZOOM, MAX_ZOOM))} />
         )}
         {camMode === "map" && vbox && (
-          <svg viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
+          <svg ref={mapSvgRef} viewBox={`${vbox.x} ${vbox.y} ${vbox.w} ${vbox.h}`} preserveAspectRatio="xMidYMid meet"
             style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block"}}>
             {road && (
               <>
@@ -1322,11 +1416,13 @@ export default function DrivingLinesView({
       {phone && (
         <>
           {transport}
+          {lossRow}
           {phonePanel}
         </>
       )}
 
       {!phone && transport}
+      {!phone && lossRow}
 
     </div>
   );

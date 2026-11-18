@@ -50,6 +50,10 @@ export default function TrackOrbitView({
   const targetRef = useRef(null);   // smoothed look-at point, in world units
   const trackRef  = useRef({});     // last inputs the static geometry was built from
   const [failed, setFailed] = useState(false);
+  // True until the three.js chunk (~560 kB) has loaded and the scene exists. The
+  // first open of 3D used to show an empty gradient for that whole time — only a
+  // failure ever got a note.
+  const [loading, setLoading] = useState(true);
 
   // Orbit pose. `az` starts null and is seeded from the car's heading on the first
   // frame, so the view opens looking up the road rather than at an arbitrary compass
@@ -160,6 +164,7 @@ export default function TrackOrbitView({
       // onReady fires when the car model lands, which is after this — the loop may
       // well have settled by then, so it forces one more frame.
       const scene = createOrbitScene(canvas, () => { keyRef.current = null; start(); });
+      setLoading(false);
       if (!scene) { setFailed(true); return; }   // no WebGL — say so, don't fail silently
       sceneRef.current = scene;
       // A new scene has an empty world, so the record of what was built into the last
@@ -169,7 +174,7 @@ export default function TrackOrbitView({
       resize();
       keyRef.current = null;
       start();
-    }).catch(() => { if (!cancelled) setFailed(true); });
+    }).catch(() => { if (!cancelled) { setLoading(false); setFailed(true); } });
 
     const ro = new ResizeObserver(() => { if (resize()) { keyRef.current = null; start(); } });
     ro.observe(wrap);
@@ -197,8 +202,19 @@ export default function TrackOrbitView({
     return () => wrap.removeEventListener("wheel", onWheel);
   }, [start]);
 
-  // Wake on every render — a moved playhead, a lap swap or a zoom all arrive that way.
-  useEffect(() => { start(); });
+  // Wake when the SCENE changes, not on every render.
+  //
+  // This used to have no dep array. The loop self-terminates once the camera has
+  // settled, but the root re-renders at the telemetry rate (~30 Hz) while the game
+  // is sending, so it re-armed a complete three.js scene.render() 30 times a
+  // second even with playback PAUSED — including an unconditional setCars().
+  //
+  // `cars` is rebuilt per render by the parent (it has to be: it sits after an
+  // early return there, so it cannot be a hook), so its identity says nothing.
+  // Compare the two cars by VALUE instead — it is four numbers each.
+  const carsKey = cars.map((c) => `${c.x},${c.z},${c.yaw},${c.dist}`).join("|");
+  useEffect(() => { start(); },
+    [start, model, driven, reference, cornerMarks, brakeMarks, carsKey, zoom]);
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   const dragRef = useRef(null);
@@ -207,6 +223,7 @@ export default function TrackOrbitView({
   const ptsRef = useRef(new Map());
   const pinchRef = useRef(null);
   const lastTapRef = useRef(0);
+  const pinchedRef = useRef(false); // a pinch ran during this gesture → don't count taps
 
   const pinchGap = () => {
     const [a, b] = [...ptsRef.current.values()];
@@ -227,9 +244,11 @@ export default function TrackOrbitView({
       // camera doesn't swing while the gap is being measured.
       dragRef.current = null;
       pinchRef.current = pinchGap();
+      pinchedRef.current = true;
       return;
     }
     if (ptsRef.current.size > 2) return;
+    pinchedRef.current = false;
     dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
     // Capture keeps the orbit alive when the cursor leaves the panel mid-drag, which
     // is most drags — but it is an optimisation, not the mechanism, so a browser that
@@ -283,9 +302,16 @@ export default function TrackOrbitView({
     // Double-TAP to reset, mirroring double-click. `touch-action: none` means the
     // browser synthesises no dblclick here, so it has to be counted by hand.
     if (e.type === "pointerup" && e.pointerType === "touch") {
-      const now = Date.now();
-      if (now - lastTapRef.current < 300) { resetPose(); lastTapRef.current = 0; }
-      else lastTapRef.current = now;
+      if (pinchedRef.current) {
+        // A lift that ended a pinch is not a tap — otherwise a pinch-zoom can
+        // read as a double-tap and snap the camera back mid-gesture.
+        pinchedRef.current = false;
+        lastTapRef.current = 0;
+      } else {
+        const now = Date.now();
+        if (now - lastTapRef.current < 300) { resetPose(); lastTapRef.current = 0; }
+        else lastTapRef.current = now;
+      }
     }
   };
 
@@ -297,7 +323,14 @@ export default function TrackOrbitView({
       title="Drag to orbit · scroll to zoom · double-click to reset"
       style={{ position: "absolute", inset: 0, overflow: "hidden", touchAction: "none",
         cursor: failed ? "default" : "grab" }}>
-      <canvas ref={canvasRef} style={{ display: "block" }} />
+      <canvas ref={canvasRef} role="img" aria-label="3D view of both racing lines; drag to orbit, wheel to zoom" style={{ display: "block" }} />
+      {loading && !failed && (
+        <div role="status" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: "center", pointerEvents: "none",
+          fontFamily: FONT.mono, fontSize: 11, letterSpacing: 1, color: "#5b6478" }}>
+          Loading 3D view…
+        </div>
+      )}
       {failed && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center",
           justifyContent: "center", textAlign: "center", padding: 24, lineHeight: 1.6,

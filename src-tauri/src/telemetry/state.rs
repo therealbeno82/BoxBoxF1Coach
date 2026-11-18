@@ -8,6 +8,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,23 @@ pub struct Latest {
     pub tyre_visual: i8,
     pub tyre_actual: i8,
     pub tyre_age: u8,
+    /// Driver aids, as the game reports them. Car Status: traction control
+    /// (0 off, 1 medium, 2 full) and ABS (0 off, 1 on). Session: steering assist
+    /// (0/1), braking assist (0 off … 3 high), gearbox (1 manual, 2 manual +
+    /// suggested, 3 automatic; 0 = not reported yet) and the racing line (0 off,
+    /// 1 corners, 2 full), plus the equal-car-performance rule.
+    pub tc_assist: u8,
+    pub abs_assist: u8,
+    pub steering_assist: u8,
+    pub braking_assist: u8,
+    pub gearbox_assist: u8,
+    pub racing_line_assist: u8,
+    pub equal_car_performance: u8,
+    /// Event packet tallies for this run of the core: flashbacks used (FLBK) and
+    /// penalties issued to the PLAYER (PENA). Cumulative — the UI diffs them
+    /// across a lap to know whether that lap had one.
+    pub flashback_count: u32,
+    pub penalty_count: u32,
 
     // ── Car Damage ──
     /// Per-wheel tyre wear (%), wheel order RL RR FL FR.
@@ -146,6 +164,15 @@ impl Default for Latest {
             tyre_visual: -1,
             tyre_actual: -1,
             tyre_age: 0,
+            tc_assist: 0,
+            abs_assist: 0,
+            steering_assist: 0,
+            braking_assist: 0,
+            gearbox_assist: 0,
+            racing_line_assist: 0,
+            equal_car_performance: 0,
+            flashback_count: 0,
+            penalty_count: 0,
             tyre_wear: [0.0; 4],
             overtake_available: 0,
             overtake_active: 0,
@@ -185,7 +212,7 @@ impl Default for Latest {
 /// Raw player car setup — field names mirror the F1 UDP spec (and the old
 /// bridge's forwarded object) so the existing CarSetupModal keeps working.
 /// `Deserialize` so the demo session's recorded setup loads straight into it.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[allow(non_snake_case)]
 pub struct CarSetup {
     pub m_frontWing: u8,
@@ -237,6 +264,19 @@ pub struct FfbTelemetry {
     pub brake: f32,
 }
 
+#[cfg_attr(mobile, allow(dead_code))]
+#[derive(Clone, Copy, Default)]
+pub struct FfbFrame {
+    /// This frame's number in the Motion Ex sequence, stamped by
+    /// `publish_ffb_frame`. The FFB thread accepts a frame when this differs from
+    /// the last one it took — one load, nothing to race (see engine.rs).
+    pub seq: u64,
+    pub telem: FfbTelemetry,
+    pub session_time: Option<f32>,
+    pub frame_identifier: u32,
+    pub arrival_s: f64,
+}
+
 /// The JSON telemetry snapshot the webview consumes. Field-for-field identical
 /// to the old bridge `snapshot()` so every downstream Coach consumer is unchanged.
 /// camelCase field names are deliberate — they are the serialized wire contract.
@@ -247,6 +287,10 @@ pub struct Snapshot {
     pub sessionType: u8,
     pub lapPct: f32,
     pub lapDistance: f32,
+    /// The circuit's length (m) from the Session packet. The UI used to recover
+    /// it three separate ways as lapDistance / lapPct — rounded to the metre and
+    /// noisy at small lapPct — although the core always had the exact value.
+    pub trackLength: u16,
     pub throttle: i32,
     pub brake: i32,
     pub steer: i32,
@@ -299,7 +343,19 @@ pub struct Snapshot {
     pub worldX: Option<f32>,
     pub worldY: Option<f32>,
     pub worldZ: Option<f32>,
-    pub setup: Option<CarSetup>,
+    /// Driver aids (see Latest) and the Event-packet tallies.
+    pub tcAssist: u8,
+    pub absAssist: u8,
+    pub steeringAssist: u8,
+    pub brakingAssist: u8,
+    pub gearboxAssist: u8,
+    pub racingLineAssist: u8,
+    pub equalCarPerformance: u8,
+    pub flashbacks: u32,
+    pub penalties: u32,
+    // The car setup is NOT here: it was ~35% of every 30 Hz emit while changing
+    // a handful of times a session. It goes out as its own `car_setup` event —
+    // see SharedTelemetry::setup and the emitter in lib.rs.
 }
 
 #[allow(non_snake_case)]
@@ -319,6 +375,7 @@ impl Snapshot {
             sessionType: l.session_type,
             lapPct: lap_pct,
             lapDistance: l.lap_distance.max(0.0).round(),
+            trackLength: l.track_length,
             throttle: (clamp(l.throttle, 0.0, 1.0) * 100.0).round() as i32,
             brake: (clamp(l.brake, 0.0, 1.0) * 100.0).round() as i32,
             steer: (clamp(l.steer, -1.0, 1.0) * 100.0).round() as i32,
@@ -372,25 +429,44 @@ impl Snapshot {
             worldX: l.world_x,
             worldY: l.world_y,
             worldZ: l.world_z,
-            setup: l.setup.clone(),
+            tcAssist: l.tc_assist,
+            absAssist: l.abs_assist,
+            steeringAssist: l.steering_assist,
+            brakingAssist: l.braking_assist,
+            gearboxAssist: l.gearbox_assist,
+            racingLineAssist: l.racing_line_assist,
+            equalCarPerformance: l.equal_car_performance,
+            flashbacks: l.flashback_count,
+            penalties: l.penalty_count,
         }
     }
 
     pub fn ffb(l: &Latest) -> FfbTelemetry {
+        // Everything the FFB engine touches is sanitised HERE, at the one point
+        // every frame enters the system. The game never sends NaN, but a
+        // malformed/crafted datagram can put one in a Motion Ex float, and every
+        // filter in the engine is an `x += a * (NaN - x)` recurrence — one bad
+        // sample would latch every smoothed state for the rest of the stint.
+        // wheel.rs already zeroes non-finite OUTPUT; this keeps the internal
+        // state finite so the engine can recover instead of going silently limp.
+        #[inline]
+        fn fin(v: f32) -> f32 {
+            if v.is_finite() { v } else { 0.0 }
+        }
         FfbTelemetry {
-            lateral_g: l.lateral_g,
-            front_slip_angle: l.front_slip_angle,
-            rear_slip_angle: l.rear_slip_angle,
-            front_lat_force: l.front_lat_force,
-            front_lon_force: l.front_lon_force,
-            front_vert_force: l.front_vert_force,
-            sideslip: l.sideslip,
-            front_slip_ratio: l.front_slip_ratio,
-            rear_slip_ratio: l.rear_slip_ratio,
-            speed_kmh: l.speed_kmh,
-            steer: l.steer,
-            throttle: l.throttle,
-            brake: l.brake,
+            lateral_g: fin(l.lateral_g),
+            front_slip_angle: fin(l.front_slip_angle),
+            rear_slip_angle: fin(l.rear_slip_angle),
+            front_lat_force: fin(l.front_lat_force),
+            front_lon_force: fin(l.front_lon_force),
+            front_vert_force: fin(l.front_vert_force),
+            sideslip: fin(l.sideslip),
+            front_slip_ratio: fin(l.front_slip_ratio),
+            rear_slip_ratio: fin(l.rear_slip_ratio),
+            speed_kmh: fin(l.speed_kmh),
+            steer: fin(l.steer),
+            throttle: fin(l.throttle),
+            brake: fin(l.brake),
         }
     }
 }
@@ -404,6 +480,7 @@ impl Snapshot {
 #[cfg_attr(mobile, allow(dead_code))]
 pub struct AppStats {
     pub udp_packets: AtomicU64,
+    pub motion_frames: AtomicU64,
     pub last_udp_ms: AtomicI64,
     pub last_frame_advance_ms: AtomicI64,
     pub frame_streak_start_ms: AtomicI64,
@@ -420,11 +497,13 @@ pub struct AppStats {
     pub lap_distance: AtomicU32, // f32 bits
     pub peak_lat_force_n: AtomicU32, // f32 bits
     pub clip_level: AtomicU32,   // f32 bits
-    pub ffb_updates: AtomicU64,
 
-    /// Event-driven FFB wake: bumped once per Motion Ex frame; the FFB thread
-    /// waits on the condvar so it computes on fresh data with minimal latency.
+    /// Motion Ex frame counter; each published FfbFrame carries its value.
     pub motion_seq: AtomicU64,
+    /// Parks the FFB thread between output ticks with no wheel open, and lets
+    /// `stop` wake it promptly. Telemetry no longer signals it: the output loop
+    /// free-runs on its own clock, so a per-frame notify only woke an idle thread
+    /// sixty times a second for nothing.
     pub wake: (Mutex<()>, Condvar),
 }
 
@@ -432,6 +511,7 @@ impl Default for AppStats {
     fn default() -> Self {
         AppStats {
             udp_packets: AtomicU64::new(0),
+            motion_frames: AtomicU64::new(0),
             last_udp_ms: AtomicI64::new(0),
             last_frame_advance_ms: AtomicI64::new(0),
             frame_streak_start_ms: AtomicI64::new(0),
@@ -448,7 +528,6 @@ impl Default for AppStats {
             lap_distance: AtomicU32::new(0),
             peak_lat_force_n: AtomicU32::new(0),
             clip_level: AtomicU32::new(0),
-            ffb_updates: AtomicU64::new(0),
             motion_seq: AtomicU64::new(0),
             wake: (Mutex::new(()), Condvar::new()),
         }
@@ -477,12 +556,6 @@ impl AppStats {
     pub fn get_clip_level(&self) -> f32 {
         f32::from_bits(self.clip_level.load(Ordering::Relaxed))
     }
-    /// Bump the motion sequence and wake the FFB engine (one fresh frame arrived).
-    pub fn notify_frame(&self) {
-        let _g = self.wake.0.lock().unwrap_or_else(|e| e.into_inner());
-        self.motion_seq.fetch_add(1, Ordering::Relaxed);
-        self.wake.1.notify_one();
-    }
     /// Is the UDP core currently receiving packets (any in the last `within_ms`)?
     pub fn receiving(&self, now_ms: i64, within_ms: i64) -> bool {
         let last = self.last_udp_ms.load(Ordering::Relaxed);
@@ -493,13 +566,24 @@ impl AppStats {
 /// The handle shared across threads: the latest snapshot (UI + FFB) and stats.
 pub struct SharedTelemetry {
     pub ui: ArcSwap<Snapshot>,
-    pub ffb: ArcSwap<FfbTelemetry>,
+    /// The player's car setup, republished only when it changes (compared on
+    /// every UI build). The emitter sends it as `car_setup`.
+    pub setup: ArcSwap<Option<CarSetup>>,
+    pub ffb_frame: ArcSwap<FfbFrame>,
     pub stats: AppStats,
     /// Whether any real packet has been seen (the UI keeps its own simulator
     /// until real telemetry starts flowing, mirroring the old bridge).
     pub got_packet: AtomicBool,
     /// UDP port the core is currently bound to (for the Settings readout).
     pub udp_port: AtomicU16,
+    /// Why the listener has no socket right now (another program holding the
+    /// port, usually), or None while bound. Surfaced in `core_status` — a bind
+    /// failure used to reach only the log, so the UI just said "waiting".
+    pub bind_error: Mutex<Option<String>>,
+    /// The packet format of the last datagram dropped for being unsupported
+    /// (e.g. 2024 when the game's UDP Format is set wrong), and when. 0 = none.
+    pub unsupported_format: AtomicU16,
+    pub unsupported_ms: AtomicI64,
     /// When the UI snapshot was last built, and whether packets have landed
     /// since — publish() throttles builds to ~30 Hz and flush_ui() catches the
     /// trailing update when the stream goes quiet.
@@ -512,26 +596,116 @@ impl SharedTelemetry {
         let seed = Latest::default();
         Arc::new(SharedTelemetry {
             ui: ArcSwap::from_pointee(Snapshot::from_latest(&seed)),
-            ffb: ArcSwap::from_pointee(Snapshot::ffb(&seed)),
+            setup: ArcSwap::from_pointee(None),
+            ffb_frame: ArcSwap::from_pointee(FfbFrame::default()),
             stats: AppStats::default(),
             got_packet: AtomicBool::new(false),
             udp_port: AtomicU16::new(port),
-            last_ui_build_ms: AtomicI64::new(0),
+            bind_error: Mutex::new(None),
+            unsupported_format: AtomicU16::new(0),
+            unsupported_ms: AtomicI64::new(0),
+            // Seeded a full interval in the past so the FIRST publish always
+            // builds. `now_ms` is monotonic from process start, so 0 is a real
+            // recent timestamp — seeding to 0 would throttle the first snapshot
+            // away for the first UI_BUILD_MIN_MS of life (and `now_ms()` may
+            // itself be 0 here, since this is often its first caller).
+            last_ui_build_ms: AtomicI64::new(now_ms() - UI_BUILD_MIN_MS),
             ui_dirty: AtomicBool::new(false),
         })
     }
 
-    /// Publish after a parsed packet. The FFB snapshot (small, Copy) is always
-    /// refreshed — it feeds the real-time thread. The UI snapshot is only
-    /// rebuilt at ~30 Hz; in-between packets just mark it dirty.
+    /// Publish after a parsed packet. The UI snapshot is only rebuilt at
+    /// ~30 Hz; in-between packets just mark it dirty. The FFB frame is NOT
+    /// published here — it is a Motion Ex frame, published only by
+    /// `publish_ffb_frame` so the real-time thread always reads one physics
+    /// frame's channels together.
     pub fn publish(&self, l: &Latest) {
-        self.ffb.store(Arc::new(Snapshot::ffb(l)));
         self.got_packet.store(true, Ordering::Relaxed);
         let now = now_ms();
         if now - self.last_ui_build_ms.load(Ordering::Relaxed) >= UI_BUILD_MIN_MS {
             self.build_ui(l, now);
         } else {
             self.ui_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Publish one Motion Ex frame for the FFB thread, stamped with the next
+    /// sequence number. The number travels INSIDE the frame, so the reader needs
+    /// one load to know both what the frame is and whether it has seen it.
+    /// Bumping a separate counter after the store left a window — two frames
+    /// back to back over Wi-Fi — where the reader paired frame N+2 with N+1's
+    /// number and then pushed N+2 again on its next tick: a duplicate knot, which
+    /// is the slope kink the predictor exists to remove.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub fn publish_ffb_frame(
+        &self,
+        l: &Latest,
+        session_time: Option<f32>,
+        frame_identifier: u32,
+        arrival_s: f64,
+    ) {
+        let seq = self.stats.motion_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        self.ffb_frame.store(Arc::new(FfbFrame {
+            seq,
+            telem: Snapshot::ffb(l),
+            session_time,
+            frame_identifier,
+            arrival_s,
+        }));
+    }
+
+    /// Forget everything the demo replay left behind. Entering demo starts from a
+    /// clean `Latest`; leaving it used to keep the replay's Singapore track id,
+    /// setup, lap data, fuel and wear in the snapshot until real packets happened
+    /// to overwrite each field — the Session and Setup packets only come every
+    /// ~500 ms, so the first live snapshots mixed the two. The FFB-facing stats go
+    /// back to their defaults for the same reason. The last FFB frame is left in
+    /// place: it stops advancing, which the engine already treats as frozen, and
+    /// replacing it would hand the predictor a fresh all-zero knot.
+    pub fn reset_after_demo(&self) {
+        let fresh = Latest::default();
+        self.got_packet.store(false, Ordering::Relaxed);
+        let s = &self.stats;
+        s.game_paused.store(false, Ordering::Relaxed);
+        s.ai_in_control.store(false, Ordering::Relaxed);
+        s.ai_run_up.store(false, Ordering::Relaxed);
+        s.ai_controls_car.store(false, Ordering::Relaxed);
+        s.session_type.store(0, Ordering::Relaxed);
+        s.track_length_m.store(0, Ordering::Relaxed);
+        s.driver_status.store(0xFF, Ordering::Relaxed);
+        s.pit_status.store(0, Ordering::Relaxed);
+        s.set_lap_distance(0.0);
+        self.build_ui(&fresh, now_ms());
+    }
+
+    /// Record a datagram dropped for an unsupported packet format.
+    pub fn note_unsupported(&self, format: u16) {
+        self.unsupported_format.store(format, Ordering::Relaxed);
+        self.unsupported_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    pub fn set_bind_error(&self, err: Option<String>) {
+        *self.bind_error.lock().unwrap_or_else(|e| e.into_inner()) = err;
+    }
+
+    /// What the UI's connection pill and Settings readout need. Compared by value
+    /// in the emitter (it is only emitted when it changes) and returned as-is by
+    /// the `get_core_status` command, so a page that subscribes AFTER the change
+    /// can still ask.
+    pub fn core_status(&self, now: i64) -> CoreStatus {
+        let receiving = self.stats.receiving(now, 1500);
+        let fmt = self.unsupported_format.load(Ordering::Relaxed);
+        // Only report a wrong format while it is actually what's arriving: once
+        // supported packets flow, the stale note means nothing.
+        let wrong_format = (fmt != 0
+            && !receiving
+            && now - self.unsupported_ms.load(Ordering::Relaxed) < 3000)
+            .then_some(fmt);
+        CoreStatus {
+            receiving,
+            udp_port: self.udp_port.load(Ordering::Relaxed),
+            bind_error: self.bind_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            wrong_format,
         }
     }
 
@@ -548,14 +722,97 @@ impl SharedTelemetry {
         self.last_ui_build_ms.store(now, Ordering::Relaxed);
         self.ui_dirty.store(false, Ordering::Relaxed);
         self.ui.store(Arc::new(Snapshot::from_latest(l)));
+        if **self.setup.load() != l.setup {
+            self.setup.store(Arc::new(l.setup.clone()));
+        }
     }
 }
 
-/// Milliseconds since the UNIX epoch (steady enough for the freeze/streak math).
+/// The core's connection state, as the UI receives it (`core_status` event and
+/// `get_core_status` command). camelCase is the wire contract.
+#[derive(Clone, Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreStatus {
+    pub receiving: bool,
+    pub udp_port: u16,
+    pub bind_error: Option<String>,
+    pub wrong_format: Option<u16>,
+}
+
+/// Milliseconds on a monotonic clock anchored at first use. Deliberately NOT
+/// wall time: every consumer subtracts two stamps (freeze/streak detection, the
+/// UI throttle, TT holds, `receiving`), so only the deltas matter — and a
+/// monotonic base keeps an NTP/clock step from turning a delta negative (a UI
+/// throttle that stalls until the clock catches up) or huge (a false pause).
 pub fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    mono_start().elapsed().as_millis() as i64
+}
+
+/// The same clock at sub-millisecond resolution, for the FFB frame stamps and
+/// the predictor's render-time axis.
+pub fn now_secs() -> f64 {
+    mono_start().elapsed().as_secs_f64()
+}
+
+/// Convert an `Instant` on the monotonic clock into seconds since its anchor.
+/// Only the FFB engine (desktop) reads it.
+#[cfg_attr(mobile, allow(dead_code))]
+pub fn mono_secs(t: Instant) -> f64 {
+    t.saturating_duration_since(mono_start()).as_secs_f64()
+}
+
+fn mono_start() -> Instant {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    *START.get_or_init(Instant::now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_status_names_a_wrong_packet_format_only_while_nothing_else_arrives() {
+        let shared = SharedTelemetry::new(20777);
+        let now = now_ms();
+        assert_eq!(shared.core_status(now).wrong_format, None);
+
+        shared.note_unsupported(2024);
+        let st = shared.core_status(now_ms());
+        assert!(!st.receiving);
+        assert_eq!(st.wrong_format, Some(2024));
+
+        // Supported packets flowing again → the stale note means nothing.
+        shared.stats.last_udp_ms.store(now_ms().max(1), Ordering::Relaxed);
+        assert_eq!(shared.core_status(now_ms()).wrong_format, None);
+    }
+
+    #[test]
+    fn a_bind_error_is_reported_until_cleared() {
+        let shared = SharedTelemetry::new(20777);
+        shared.set_bind_error(Some("in use".into()));
+        assert_eq!(shared.core_status(now_ms()).bind_error.as_deref(), Some("in use"));
+        shared.set_bind_error(None);
+        assert_eq!(shared.core_status(now_ms()).bind_error, None);
+    }
+
+    #[test]
+    fn leaving_demo_clears_the_replayed_session() {
+        let shared = SharedTelemetry::new(20777);
+        let mut l = Latest::default();
+        l.track_id = 12;
+        l.track_length = 4940;
+        l.lap_distance = 2000.0;
+        shared.publish(&l);
+        shared.stats.session_type.store(13, Ordering::Relaxed);
+        assert_eq!(shared.ui.load().trackId, 12);
+
+        shared.reset_after_demo();
+        let snap = shared.ui.load();
+        assert_eq!(snap.trackId, Latest::default().track_id as i32);
+        assert_eq!(snap.lapDistance, 0.0);
+        assert!(!shared.got_packet.load(Ordering::Relaxed));
+        assert_eq!(shared.stats.session_type.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.stats.track_length_m.load(Ordering::Relaxed), 0);
+    }
 }

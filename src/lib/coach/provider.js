@@ -3,9 +3,9 @@
 // { text, json }. OpenRouter (cloud) hits its OpenAI-compatible REST API with plain
 // fetch, fronting 300+ models from many vendors through one key.
 //
-//   complete({ system, messages, prompt, params, schema, signal }) -> { text, json }
-//     - messages present  → chat completion (system + history)
-//     - prompt present     → single-shot generation; with `schema` → structured JSON
+//   complete({ system, prompt, params, schema, signal }) -> { text, json }
+//     single-shot generation; with `schema` → structured JSON. (The multi-turn
+//     `messages` form went with the chat panel — the debrief is the only caller.)
 
 import { DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_URL } from "./config.js";
 
@@ -18,16 +18,40 @@ function tryParse(text) {
   return undefined;
 }
 
+// What a failed request means, in words a driver can act on. Every failure used
+// to surface as "not reachable — check your API key", which is wrong for most of
+// them: an account out of credits, a model slug OpenRouter no longer serves, a
+// model that can't do structured output, a rate limit. The status code says
+// which, and OpenRouter's error body usually adds the specifics.
+export function describeOpenRouterError(status, body) {
+  const detail = String(body?.error?.message || "").slice(0, 160);
+  if (status === 401) return "OpenRouter rejected the API key — check it in Settings.";
+  if (status === 402) return "Your OpenRouter account is out of credits.";
+  if (status === 403) return `OpenRouter refused the request${detail ? `: ${detail}` : "."}`;
+  if (status === 404) return "That model isn't available on OpenRouter — pick another in Settings.";
+  if (status === 408 || status === 429) return "OpenRouter is rate-limiting requests — try again shortly.";
+  if (status === 400 && /response_format|json_schema|structured/i.test(detail)) {
+    return "The selected model can't return structured replies — pick another model in Settings.";
+  }
+  if (status === 400) return `OpenRouter rejected the request${detail ? `: ${detail}` : "."}`;
+  if (status >= 500) return `OpenRouter is having trouble (HTTP ${status}) — try again shortly.`;
+  return `OpenRouter request failed (HTTP ${status}).`;
+}
+
 function openRouterProvider(cfg) {
   const base = (cfg.openRouterUrl || DEFAULT_OPENROUTER_URL).replace(/\/+$/, "");
   const model = cfg.openRouterModel || DEFAULT_OPENROUTER_MODEL;
 
-  async function complete({ system, messages, prompt, params = {}, schema, signal }) {
-    if (!cfg.openRouterKey) throw new Error("OpenRouter API key not set (Setup tab)");
+  async function complete({ system, prompt, params = {}, schema, signal }) {
+    if (!cfg.openRouterKey) {
+      const e = new Error("OpenRouter API key not set");
+      e.userMessage = "Add an OpenRouter API key in Settings to get a debrief.";
+      throw e;
+    }
 
-    // OpenAI-compatible chat schema: history goes in `messages`, system is just a
-    // message with role "system" prepended.
-    const chat = messages || [{ role: "user", content: prompt }];
+    // OpenAI-compatible chat schema; system is just a message with role "system"
+    // prepended.
+    const chat = [{ role: "user", content: prompt }];
     const body = {
       model,
       messages: system ? [{ role: "system", content: system }, ...chat] : chat,
@@ -50,7 +74,13 @@ function openRouterProvider(cfg) {
       },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`OpenRouter ${res.status}`);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => null);
+      const e = new Error(`OpenRouter ${res.status}`);
+      e.status = res.status;
+      e.userMessage = describeOpenRouterError(res.status, errBody);
+      throw e;
+    }
     const data = await res.json();
     const text = (data.choices?.[0]?.message?.content || "").trim();
     // Some models ignore response_format — tryParse recovers JSON from prose.
@@ -89,6 +119,11 @@ export function createProvider(cfg = {}) {
 // was never read, but fetch still transfers it) purely to look at res.ok.
 // /auth/key returns the key's own quota row: ~60 bytes, and 401 when the key is
 // bad — the question the dot is actually asking.
+//
+// A 200 is not the whole answer either: a key with no credits left is valid and
+// answers 200, then every debrief fails with a 402. The row carries
+// `limit_remaining` (null when the key has no limit), so a key that has spent its
+// limit reports as not usable too.
 export async function pingProvider(cfg = {}, { signal, timeoutMs = 3000 } = {}) {
   const timeout = AbortSignal.timeout(timeoutMs);
   const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -99,9 +134,10 @@ export async function pingProvider(cfg = {}, { signal, timeoutMs = 3000 } = {}) 
       signal: sig,
       headers: { Authorization: `Bearer ${cfg.openRouterKey}` },
     });
-    // Drain the (tiny) body so the connection returns to the pool promptly.
-    await res.arrayBuffer().catch(() => {});
-    return res.ok;
+    const body = await res.json().catch(() => null);
+    if (!res.ok) return false;
+    const remaining = body?.data?.limit_remaining;
+    return !(typeof remaining === "number" && remaining <= 0);
   } catch {
     return false;
   }

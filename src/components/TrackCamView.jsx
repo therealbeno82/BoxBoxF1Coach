@@ -204,15 +204,16 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
     // startup asset, so an offline launch never waits on them, and they fail soft the
     // same way the car layer does: no overlay and tcamScene draws its hoop instead;
     // overlay but no mask and the car renders untinted rather than wrongly tinted.
+    let cancelled = false;
     const load = (src, ref) => {
       const im = new Image();
-      im.onload = () => { ref.current = im; stRef.current.lastKey = null; start(); };
+      // Guard on unmount: an onload firing after cleanup must not reschedule the
+      // loop into a detached canvas.
+      im.onload = () => { if (cancelled) return; ref.current = im; stRef.current.lastKey = null; start(); };
       im.src = src;
     };
-    load("/tcam-ego.png", egoRef);
-    load("/tcam-ego-mask.png", egoMaskRef);
-
-    let cancelled = false;
+    load("/tcam-ego.webp", egoRef);
+    load("/tcam-ego-mask.webp", egoMaskRef);
     import("../lib/tcamCarLayer.js").then(({ createCarLayer }) => {
       if (cancelled) return;
       // The callback fires when the car model finishes loading, which is after this
@@ -234,13 +235,23 @@ export default function TrackCamView({ panes, model, driven, reference, cornerMa
     };
   }, [resize, start]);
 
-  // Wake on every render — a changed playhead, lap, or model all arrive that way.
-  useEffect(() => { start(); });
+  // Wake when the SCENE changes, not on every render. `panes` carries the
+  // playhead and both car positions and is memoised by the parent, so these
+  // identities move exactly when there is something new to draw.
+  //
+  // This used to have no dep array at all. That was fine in isolation — the loop
+  // self-terminates once settled — but the root re-renders at the telemetry rate
+  // (~30 Hz) while the game is sending, so it re-armed a full frame 30 times a
+  // second even with playback PAUSED: a camera build per pane, the road/line
+  // window polygon clipping, a WebGL car pass and a canvas blit, all to redraw an
+  // identical image. drawOnce decides "settled" only at the END, after drawing.
+  useEffect(() => { start(); },
+    [start, panes, model, driven, reference, cornerMarks, brakeMarks]);
   useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
   return (
     <div ref={wrapRef} style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
-      <canvas ref={canvasRef} style={{ display: "block" }} />
+      <canvas ref={canvasRef} role="img" aria-label="Onboard camera view of the selected laps" style={{ display: "block" }} />
     </div>
   );
 }

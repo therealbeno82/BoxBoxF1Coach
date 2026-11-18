@@ -235,6 +235,10 @@ export function createCarLayer(onReady) {
       cars.clear();
       template = null;
       renderer.dispose();
+      // `dispose()` frees GL resources but NOT the context; without forcing the
+      // loss, each camera-mode switch leaves a live context until Chrome's cap
+      // (~16) starts dropping them. Release it so the view can be remounted.
+      try { renderer.forceContextLoss(); } catch { /* context already gone */ }
     },
   };
 }

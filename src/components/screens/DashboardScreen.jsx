@@ -14,6 +14,9 @@ import { tyreLabel, tyreCondition } from "../../lib/tyres.js";
 import { getTrackByName } from "../../lib/trackData.js";
 import { openExternal, KOFI_URL } from "../../lib/env.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
+import { WrenchIcon, TrashIcon } from "../icons.jsx";
+import DeleteLapConfirm from "../DeleteLapConfirm.jsx";
+import TyreChip from "../TyreChip.jsx";
 
 // The swap arrows on the Switch Driver control, drawn at whatever size the
 // placement wants — a 19px glyph in the desktop card's tile, 17px inline in the
@@ -31,12 +34,12 @@ const switchIcon = (size) => (
 const SKIN_LOGOS = {
   anthra:   { src: "/Mclaren-logo.png",  alt: "McLaren", h: 160 },
   ferrari:  { src: "/ferrari-logo.png",  alt: "Ferrari" },
-  mercedes: { src: "/merc-logo.png",     alt: "Mercedes" },
+  mercedes: { src: "/merc-logo.webp",    alt: "Mercedes" },
   redbull:  { src: "/redbull-logo.png",  alt: "Red Bull Racing" },
-  wrl:      { src: "/wrl-logo.png",      alt: "Wallaby Racing League" },
+  wrl:      { src: "/wrl-logo.webp",     alt: "Wallaby Racing League" },
   // Square poster art rather than a wordmark — sized taller so it stays legible, and
   // `r` rounds its opaque edges (the other marks are transparent cut-outs, so no radius).
-  shitkickers: { src: "/shitkickers-logo.png", alt: "Shit Kickers", h: 104, r: 12 },
+  shitkickers: { src: "/shitkickers-logo.webp", alt: "Shit Kickers", h: 104, r: 12 },
 };
 
 // Boot-time "new version available" banner. `update` is null unless the GitHub
@@ -83,24 +86,6 @@ const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month
 const gapCol = (g) => (g == null ? C.textFaint : g <= 1e-6 ? C.green : g < 0.4 ? C.yellow : C.textMid);
 const gapText = (g) => (g == null ? "" : g <= 1e-6 ? "PB" : `+${g.toFixed(3)}`);
 
-// Compound chip for a PB row. Wet/Inter laps get a blue chip, dry laps a neutral
-// one; falls back to the dry/wet word when a lap predates compound tagging.
-const TyreChip = ({ lap }) => {
-  const label = tyreLabel(lap?.tyre);
-  const cond = tyreCondition(lap?.tyre);
-  // Always render a condition: laps with no compound data fold into "dry" (the
-  // default racing condition), matching computeDriverStats' bucketing.
-  const wet = cond === "wet";
-  return (
-    <span style={{ fontSize: 9, letterSpacing: 0.5, fontWeight: 700, textTransform: "uppercase",
-      fontFamily: FONT.mono, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap",
-      color: wet ? "#bcdcff" : C.textDim, background: wet ? "rgba(68,145,210,0.18)" : C.surface,
-      border: `1px solid ${wet ? "rgba(68,145,210,0.5)" : C.line}` }}>
-      {label || (wet ? "Wet" : "Dry")}
-    </span>
-  );
-};
-
 // A PB row's two buttons sit at its right end, 26px of chrome each. On a touch
 // screen the coarse-pointer floor lifts them to 44 TALL but never wider, and the
 // row is 275px with 2px to spare — two 44px targets side by side need 36 more
@@ -132,9 +117,7 @@ const WrenchBtn = ({ onClick, has }) => (
     cursor: has ? "pointer" : "default", opacity: has ? 1 : 0.5 }}>
     <span style={chrome({ border: `1px solid ${C.line}`, background: C.surface,
       color: has ? "#7ea6e6" : C.textFaintest })}>
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-      </svg>
+      <WrenchIcon size={13} />
     </span>
   </button>
 );
@@ -148,10 +131,7 @@ const TrashBtn = ({ onClick }) => (
     ...hitPad("right", 11),
     cursor: "pointer" }}>
     <span style={chrome({ border: "1px solid #4a2130", background: "rgba(255,71,87,0.08)", color: "#ff6b7d" })}>
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M10 11v6" /><path d="M14 11v6" />
-      </svg>
+      <TrashIcon size={13} />
     </span>
   </button>
 );
@@ -173,16 +153,11 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
   // is irreversible — the point is to purge false times that got recorded and
   // wrongly claimed a personal best, restoring the tallies' integrity. Removing
   // the lap re-derives every board (computeDriverStats), so the next-best real
-  // lap slides in as the new PB.
+  // lap slides in as the new PB. The same dialog guards Analytics' delete buttons.
+  const [pendingDelete, setPendingDelete] = useState(null);
   const confirmDelete = (lap) => {
     if (!onDeleteLap || !lap?.id) return;
-    const where = lap.meta?.track || "this track";
-    const type = lap.meta?.sessionType ? ` · ${lap.meta.sessionType}` : "";
-    const ok = window.confirm(
-      `Delete this lap from the boards?\n\n${where}${type}\n${fmt(lap.lapTime)}\n\n` +
-      `This permanently removes the lap and recalculates your personal bests and tallies. This cannot be undone.`
-    );
-    if (ok) onDeleteLap(lap.id);
+    setPendingDelete(lap);
   };
   const color = driver?.color || "#3671C6";
   const name = driver?.name || "—";
@@ -218,7 +193,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
   );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px 28px 26px",
+    <div style={{ flex: 1, minHeight: 0, background: C.bgRadial, padding: "20px var(--screen-px) 26px",
       display: "flex", flexDirection: "column", fontFamily: FONT.ui }}>
       <UpdateBanner update={update} />
       {/* `alignContent: flex-start` on a phone. The two columns WRAP onto
@@ -376,7 +351,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
               <div style={{ fontSize: 30, marginBottom: 10 }}>📊</div>
               <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6 }}>No laps yet for {name}</div>
               <div style={{ fontSize: 12, color: C.textMid, maxWidth: 400, lineHeight: 1.55 }}>
-                Start the game (or fake mode) and drive a lap — completed laps are saved to this driver's
+                Start the game (or Demo Mode in Settings) and drive a lap — completed laps are saved to this driver's
                 profile and their stats appear here.
               </div>
             </div>
@@ -542,7 +517,7 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
                                     {country ? (
                                       <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.5, fontFamily: FONT.mono, color: C.textFaint, flex: "none" }}>{country}</span>
                                     ) : null}
-                                    <TyreChip lap={lap} />
+                                    <TyreChip tyre={lap?.tyre} />
                                     <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
                                       <WrenchBtn onClick={() => onOpenSetup?.(lap)} has={!!lap.setup} />
                                       {onDeleteLap && <TrashBtn onClick={() => confirmDelete(lap)} />}
@@ -562,6 +537,10 @@ export default function DashboardScreen({ driver, avatar, update, laps = [], dri
           )}
         </div>
       </div>
+      {pendingDelete && (
+        <DeleteLapConfirm lap={pendingDelete} onCancel={() => setPendingDelete(null)}
+          onConfirm={(lap) => { setPendingDelete(null); onDeleteLap(lap.id); }} />
+      )}
     </div>
   );
 }

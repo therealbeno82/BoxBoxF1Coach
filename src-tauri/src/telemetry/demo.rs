@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
-use super::state::{now_ms, CarSetup, Latest, SharedTelemetry, MAX_ERS_JOULES};
+use super::state::{now_ms, now_secs, CarSetup, Latest, SharedTelemetry, MAX_ERS_JOULES};
 
 /// The replay session, compiled into the exe (~2 MB) so Demo Mode never depends
 /// on files next to the binary. Regenerate with `scripts/make-demo-session.mjs`.
@@ -251,7 +251,9 @@ impl Replay {
         l.ers_deployed_this_lap = lerp(a.ek, b.ek, u) * 1000.0; // kJ → J
         l.ers_harvest_limit = MAX_ERS_JOULES;
         l.overtake_active = a.bo;
-        l.overtake_available = 1 - a.bo;
+        // saturating: `bo` is a plain u8 off the JSON, so a value above 1 would
+        // panic a debug build (and wrap to 255 in release) on a subtraction.
+        l.overtake_available = 1u8.saturating_sub(a.bo);
         l.overtake_activation_distance = 0;
         l.active_aero_mode = a.ae;
         l.active_aero_available = 1;
@@ -361,13 +363,18 @@ impl Replay {
         stats.game_paused.store(false, Ordering::Relaxed);
         stats.ai_in_control.store(false, Ordering::Relaxed);
         stats.ai_run_up.store(false, Ordering::Relaxed);
+        // `ai_controls_car` is only ever set by real Participants packets, so it
+        // would otherwise stay latched from the previous session and mute FFB
+        // for the whole replay.
+        stats.ai_controls_car.store(false, Ordering::Relaxed);
         stats.session_type.store(l.session_type, Ordering::Relaxed);
         stats.track_length_m.store(l.track_length, Ordering::Relaxed);
         stats.driver_status.store(l.driver_status, Ordering::Relaxed);
         stats.pit_status.store(l.pit_status, Ordering::Relaxed);
         stats.set_lap_distance(l.lap_distance);
         shared.publish(l);
-        stats.notify_frame();
+        shared.publish_ffb_frame(l, None, 0, now_secs());
+        stats.motion_frames.fetch_add(1, Ordering::Relaxed);
         true
     }
 }
@@ -408,7 +415,7 @@ mod tests {
         assert_eq!(l.track_id, s.track_id);
         assert!(l.speed_kmh > 0.0);
         assert!(l.setup.is_some(), "the recorded garage setup reaches the UI");
-        assert!(shared.ui.load().setup.is_some());
+        assert!(shared.setup.load().is_some());
 
         // Skip past the first lap → the second lap of the recording, with the
         // first one's real time reported as the last lap.
