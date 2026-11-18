@@ -51,6 +51,7 @@ export function entryFromLap(lap, { driver } = {}) {
     tyreAge: lap.tyre?.age ?? null,
     recordedAt: lap.recordedAt ?? null,
     verdict: "ok",
+    assists: lap.assists ?? null,
     isYou: true,
     lap,
   };
@@ -73,6 +74,8 @@ export function entryFromRow(row, { myDriverId } = {}) {
     tyreAge: row.tyre_age ?? null,
     recordedAt: row.created_at ? Date.parse(row.created_at) : null,
     verdict: row.verdict || "ok",
+    // Driver aids the lap reported (submit-lap stores them in `checks`).
+    assists: row.checks?.assists ?? null,
     isYou: !!myDriverId && row.driver_id === myDriverId,
     boardId: row.board_id,
     tracePath: row.trace_path || null,

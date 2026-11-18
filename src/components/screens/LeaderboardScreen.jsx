@@ -26,6 +26,7 @@ import { localBoardEntries, entryAsRefLike, secOf } from "../../lib/leaderboard/
 import { useLeaderboard } from "../../hooks/useLeaderboard.js";
 import { useViewport } from "../../hooks/useViewport.jsx";
 import TyreChip from "../TyreChip.jsx";
+import { assistLabels } from "../../lib/leaderboard/validate.js";
 import { ConfirmDialog } from "../ModalShell.jsx";
 
 const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
@@ -280,6 +281,14 @@ export default function LeaderboardScreen({
                       is how "R…" ended up standing in for a driver. */}
                   {e.team && !phone && (
                     <span style={{ fontSize: 10, color: C.textFaint, whiteSpace: "nowrap" }}>{e.team}</span>
+                  )}
+                  {assistLabels(e.assists).length > 0 && (
+                    <span title={`Set with: ${assistLabels(e.assists).join(", ")} (as the game reported it)`}
+                      style={{
+                        fontSize: 7.5, fontWeight: 800, letterSpacing: 0.4, color: C.textMuted,
+                        textTransform: "uppercase", border: `1px solid ${C.borderStrong}`,
+                        borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap",
+                      }}>Aids</span>
                   )}
                   {e.verdict === "flagged" && (
                     <span title="This lap passed validation but one check was borderline."

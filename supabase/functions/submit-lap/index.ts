@@ -31,7 +31,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { boardIdForLap } from "../_shared/lib/leaderboard/boardKey.js";
 import { eligibility } from "../_shared/lib/leaderboard/eligibility.js";
 import { validateSubmission } from "../_shared/lib/leaderboard/validate.js";
-import { sanitizeDisplayName } from "../_shared/lib/leaderboard/validate.js";
+import { sanitizeDisplayName, cleanAssists } from "../_shared/lib/leaderboard/validate.js";
 import { sanitizeTraceSamples } from "../_shared/lib/traceSamples.js";
 import { THRESHOLDS } from "../_shared/lib/leaderboard/limits.js";
 
@@ -134,6 +134,9 @@ Deno.serve(async (req) => {
     sectorTimes: payload.meta.sectorTimes ?? null,
     invalid: false,
     source: "live",
+    // The game's Event packet said a flashback happened (client-reported, like
+    // every other field here). eligibility() refuses it, as it does in the app.
+    flashbacks: Number(payload.meta.flashbacks) || 0,
     samples,
     meta: {
       driver: payload.meta.driver,
@@ -162,6 +165,10 @@ Deno.serve(async (req) => {
     slug: board.slug,
   });
   if (!verdict.ok) return refuse(verdict.reason);
+  // The aids the lap reported travel in the stored checks (no schema change), so
+  // a board row can show them. Display only — see cleanAssists.
+  const assists = cleanAssists(payload.meta.assists);
+  if (assists) verdict.checks.assists = assists;
 
   const displayName = sanitizeDisplayName(payload.meta.driver) ?? "Anonymous";
   // `team` is rendered on every public board row right beside the driver name,
@@ -326,6 +333,8 @@ function canonicalMeta(m: any, { displayName, teamName, slug, sampleCount }:
     trackId: num(m?.trackId),
     trackSlug: slug,
     trackLengthM: num(m?.trackLengthM),
+    assists: cleanAssists(m?.assists) ?? undefined,
+    penalties: num(m?.penalties),
     lapTime: num(m?.lapTime),
     sectorTimes: numArray(m?.sectorTimes, 3),
     sectors: numArray(m?.sectors, 2),

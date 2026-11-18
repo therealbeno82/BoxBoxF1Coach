@@ -30,5 +30,10 @@ export function lapTraceMeta(lap) {
     // Sector boundary distances, so a reloaded or downloaded reference draws its
     // sector lines on the trace stack exactly as a local lap does.
     ...(m.sectors ? { sectors: m.sectors } : {}),
+    // Driver aids and the in-lap flashback / penalty counts (Event packet). Top-
+    // level on a stored lap; carried in meta in a trace file and an upload.
+    ...(lap?.assists ? { assists: lap.assists } : {}),
+    ...(lap?.flashbacks > 0 ? { flashbacks: lap.flashbacks } : {}),
+    ...(lap?.penalties > 0 ? { penalties: lap.penalties } : {}),
   };
 }

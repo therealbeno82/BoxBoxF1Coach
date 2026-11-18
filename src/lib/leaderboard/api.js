@@ -67,7 +67,7 @@ export async function getBoard(boardId, { limit = 50, offset = 0, myDriverId, en
   const cols = [
     "board_id", "driver_id", "display_name", "team", "lap_time_ms",
     "s1_ms", "s2_ms", "s3_ms", "compound", "condition", "tyre_visual", "tyre_age",
-    "verdict", "trace_path", "created_at",
+    "verdict", "checks", "trace_path", "created_at",
   ].join(",");
   const url = `${REST_URL}/entries` +
     `?select=${cols}&board_id=eq.${encodeURIComponent(boardId)}` +

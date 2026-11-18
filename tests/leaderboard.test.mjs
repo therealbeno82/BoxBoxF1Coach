@@ -68,3 +68,29 @@ test("bestSectorsAt grades against the same track and the same rubber", () => {
   assert.deepEqual(bestSectorsAt(stats, "Singapore", "wet"), [40, 50, 35]);
   assert.deepEqual(bestSectorsAt(stats, "Spa", "dry"), [null, null, null]);
 });
+
+// ── E6/E7: aids are recorded and shown; a flashback lap stays off the boards ──
+test("cleanAssists keeps only in-range aids and assistLabels names the ones on", async () => {
+  const { cleanAssists, assistLabels } = await import("../src/lib/leaderboard/validate.js");
+  assert.equal(cleanAssists(null), null);
+  assert.deepEqual(cleanAssists({ tc: 2, abs: 1, gearbox: 3, braking: 9, junk: 1, steering: "1" }),
+    { tc: 2, abs: 1, gearbox: 3 });
+  assert.deepEqual(assistLabels({ tc: 2, abs: 1, gearbox: 3, racingLine: 0 }), ["Full TC", "ABS", "Auto gears"]);
+  assert.deepEqual(assistLabels({ tc: 0, abs: 0, gearbox: 1, braking: 0, steering: 0, racingLine: 0 }), []);
+});
+
+test("a lap the game says used a flashback is not eligible", async () => {
+  const { eligibility } = await import("../src/lib/leaderboard/eligibility.js");
+  const lap = demoLap(3);
+  lap.meta.sessionType = "Qualifying";
+  assert.equal(eligibility(lap).ok, true);
+  assert.equal(eligibility({ ...lap, flashbacks: 1 }).ok, false);
+  assert.match(eligibility({ ...lap, flashbacks: 1 }).reason, /flashback/);
+});
+
+test("lapTraceMeta carries aids and in-lap flashbacks/penalties", () => {
+  const m = lapTraceMeta({ lapTime: 90, meta: {}, assists: { tc: 1 }, flashbacks: 2, penalties: 0 });
+  assert.deepEqual(m.assists, { tc: 1 });
+  assert.equal(m.flashbacks, 2);
+  assert.equal("penalties" in m, false);
+});

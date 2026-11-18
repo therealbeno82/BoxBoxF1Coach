@@ -337,3 +337,38 @@ export function validateSubmission({ samples, lapTime, sectorTimes, trackLengthM
   const flagged = integral.flagged || sectors.flagged || ers.flagged;
   return { ok: true, verdict: flagged ? "flagged" : "ok", reason: null, checks };
 }
+
+// ─── Driver aids ──────────────────────────────────────────────────────────────
+// What the game reported about assists on the lap: traction control, ABS,
+// steering and braking assist, the gearbox mode and the racing line (see the
+// Rust core's Car Status / Session parsing). CLIENT-REPORTED — the client builds
+// the payload — so this is an honesty signal shown on the board, not
+// anti-tamper, and it never refuses a lap: it records what the lap says about
+// itself, in the stored checks, so every row can show it.
+//
+// Each value is clamped to its own range; anything else is dropped. Null when
+// nothing usable was sent (laps recorded before aids were captured).
+const AID_RANGE = { tc: 2, abs: 1, steering: 1, braking: 3, gearbox: 3, racingLine: 2 };
+
+export function cleanAssists(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const [k, max] of Object.entries(AID_RANGE)) {
+    const v = raw[k];
+    if (Number.isInteger(v) && v >= 0 && v <= max) out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// Short labels for the aids that were ON — what a board row shows.
+export function assistLabels(a) {
+  if (!a) return [];
+  const out = [];
+  if (a.tc > 0) out.push(a.tc === 2 ? "Full TC" : "TC");
+  if (a.abs > 0) out.push("ABS");
+  if (a.gearbox === 3) out.push("Auto gears");
+  if (a.braking > 0) out.push("Brake assist");
+  if (a.steering > 0) out.push("Steering assist");
+  if (a.racingLine > 0) out.push("Racing line");
+  return out;
+}

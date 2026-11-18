@@ -8,7 +8,7 @@
 //! `payload` is the datagram *after* the 29-byte header.
 
 use super::header::Header;
-use super::raw::{f32_at, i16_at, i8_at, u16_at, u8_at};
+use super::raw::{f32_at, i16_at, i8_at, u16_at, u32_at, u8_at};
 use super::state::{CarSetup, Latest};
 
 // ── Per-car strides (bytes), format 2026 primary / 2025 fallback ──
@@ -147,6 +147,10 @@ pub fn parse_car_status(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()
     let tyre_age = u8_at(payload, base + 27)?;
     let ers_store_energy = f32_at(payload, base + 37)?;
     let ers_mode = u8_at(payload, base + 41)?;
+    // m_tractionControl @0 and m_antiLockBrakes @1 open the struct in both
+    // formats (the 2026 insertion is much further on).
+    let tc_assist = u8_at(payload, base)?;
+    let abs_assist = u8_at(payload, base + 1)?;
     // 2026 inserted m_ersHarvestLimitPerLap before m_ersDeployedThisLap.
     let (ers_harvest_limit, ers_deployed_this_lap) = if is26(h) {
         (f32_at(payload, base + 50)?, f32_at(payload, base + 54)?)
@@ -163,6 +167,8 @@ pub fn parse_car_status(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()
     l.ers_mode = ers_mode;
     l.ers_harvest_limit = ers_harvest_limit;
     l.ers_deployed_this_lap = ers_deployed_this_lap;
+    l.tc_assist = tc_assist;
+    l.abs_assist = abs_assist;
     Some(())
 }
 
@@ -277,15 +283,31 @@ pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
     l.session_type = session_type;
     l.track_id = track_id;
     l.game_paused = game_paused;
-    // The sector-2/3 lap-distance starts sit at the very tail of the packet, after
-    // the marshal-zone and weather-forecast arrays. Read them relative to the end
-    // so we don't have to walk the whole variable-length body — then sanity-check
-    // them (ordered, on-track) so a future format revision that appends trailing
-    // fields degrades to the UI's 1/3–2/3 fallback instead of silently misplacing
-    // the mini-sector boundaries for the whole session.
-    if payload.len() >= 8 {
-        let s3 = f32_at(payload, payload.len() - 4)?;
-        let s2 = f32_at(payload, payload.len() - 8)?;
+    // Assists and session rules — the fixed block after the forecast array,
+    // identical in 2025 and 2026 (body offsets from the 2026 field list:
+    // steering @656, braking @657, gearbox @658, racing line @663, equal car
+    // performance @679). Optional: a short packet just leaves them as they were.
+    if let (Some(st), Some(br), Some(gb), Some(rl), Some(eq)) = (
+        u8_at(payload, 656), u8_at(payload, 657), u8_at(payload, 658),
+        u8_at(payload, 663), u8_at(payload, 679),
+    ) {
+        l.steering_assist = st;
+        l.braking_assist = br;
+        l.gearbox_assist = gb;
+        l.racing_line_assist = rl;
+        l.equal_car_performance = eq;
+    }
+    // The sector-2/3 lap-distance starts, at FIXED body offsets 716 / 720 in both
+    // formats. They used to be read from the packet's last 8 bytes, which is where
+    // they sit in 2025 (a 724-byte body) — but 2026 appends active-aero zones, DRS
+    // zones and assist flags after them (an 897-byte body), so the "tail" read
+    // decoded assist bytes as floats, the sanity check below rejected them, and
+    // every 2026 session silently fell back to thirds: wrong sector lines and all
+    // 18 mini-sector boundaries misplaced. Still sanity-checked (ordered,
+    // on-track), so anything implausible degrades to the thirds fallback.
+    if payload.len() >= 724 {
+        let s2 = f32_at(payload, 716)?;
+        let s3 = f32_at(payload, 720)?;
         let track_len = l.track_length as f32;
         if s2 > 0.0 && s2 < s3 && s3 < track_len {
             l.sector2_start = s2;
@@ -302,6 +324,33 @@ pub fn parse_session(payload: &[u8], l: &mut Latest) -> Option<bool> {
         l.sector3_start = 0.0;
     }
     Some(game_paused)
+}
+
+// ── Event (id 3): flashbacks and the player's penalties ──
+// The body is a 4-character code, then a union whose layout depends on it
+// (2026 field list; unchanged from 2025 for these two):
+//   FLBK  u32 flashbackFrameIdentifier, f32 flashbackSessionTime
+//   PENA  u8 penaltyType, u8 infringementType, u8 vehicleIdx, …
+// Only these two matter here; any other code is ignored (returns None).
+pub fn parse_event(payload: &[u8], h: &Header, l: &mut Latest) -> Option<()> {
+    let code = payload.get(0..4)?;
+    match code {
+        b"FLBK" => {
+            // Read the frame id so a truncated packet is refused like any other.
+            let _frame = u32_at(payload, 4)?;
+            l.flashback_count = l.flashback_count.wrapping_add(1);
+            Some(())
+        }
+        b"PENA" => {
+            let vehicle = u8_at(payload, 6)?;
+            if vehicle != h.player_car_index {
+                return None;
+            }
+            l.penalty_count = l.penalty_count.wrapping_add(1);
+            Some(())
+        }
+        _ => None,
+    }
 }
 
 // ── Car Damage (id 10): per-wheel tyre wear % for the player car ──
@@ -615,34 +664,79 @@ mod tests {
         assert!((l.sideslip - 2.0f32.atan2(50.0)).abs() < 1e-6);
     }
 
-    #[test]
-    fn session_fields_and_sector_starts() {
-        let mut p = vec![0u8; 200];
+    /// A Session body of the given length (724 = 2025, 897 = 2026) with the
+    /// sector starts at their fixed offsets and the 2026 tail filled with bytes
+    /// that would decode as nonsense if read as floats.
+    fn session_body(len: usize, s2: f32, s3: f32) -> Vec<u8> {
+        let mut p = vec![0u8; len];
         put_u16(&mut p, 4, 5303); // track length
         p[6] = 7; // session type Q3
         p[7] = 3; // track id
         p[14] = 1; // game paused
-        let n = p.len();
-        put_f32(&mut p, n - 8, 1700.0); // sector2 start
-        put_f32(&mut p, n - 4, 3400.0); // sector3 start
+        put_f32(&mut p, 716, s2);
+        put_f32(&mut p, 720, s3);
+        for b in p.iter_mut().skip(724) { *b = 0x7f; }
+        p
+    }
+
+    #[test]
+    fn session_fields_and_sector_starts() {
+        for len in [724usize, 897] {
+            let p = session_body(len, 1700.0, 3400.0);
+            let mut l = Latest::default();
+            assert_eq!(parse_session(&p, &mut l), Some(true));
+            assert_eq!(l.track_length, 5303);
+            assert_eq!(l.session_type, 7);
+            assert_eq!(l.track_id, 3);
+            assert!((l.sector2_start - 1700.0).abs() < 1e-3, "len {len}: {}", l.sector2_start);
+            assert!((l.sector3_start - 3400.0).abs() < 1e-3, "len {len}: {}", l.sector3_start);
+        }
+    }
+
+    #[test]
+    fn session_reads_the_assist_block() {
+        let mut p = session_body(897, 1700.0, 3400.0);
+        p[656] = 1; // steering assist on
+        p[657] = 2; // braking assist medium
+        p[658] = 3; // automatic gearbox
+        p[663] = 2; // full racing line
+        p[679] = 1; // equal car performance
         let mut l = Latest::default();
-        assert_eq!(parse_session(&p, &mut l), Some(true));
-        assert_eq!(l.track_length, 5303);
-        assert_eq!(l.session_type, 7);
-        assert_eq!(l.track_id, 3);
-        assert!((l.sector2_start - 1700.0).abs() < 1e-3);
-        assert!((l.sector3_start - 3400.0).abs() < 1e-3);
+        parse_session(&p, &mut l);
+        assert_eq!((l.steering_assist, l.braking_assist, l.gearbox_assist, l.racing_line_assist, l.equal_car_performance),
+                   (1, 2, 3, 2, 1));
+    }
+
+    #[test]
+    fn event_counts_flashbacks_and_only_the_players_penalties() {
+        let h = hdr(3, 4);
+        let mut l = Latest::default();
+        let mut fb = vec![0u8; 12];
+        fb[0..4].copy_from_slice(b"FLBK");
+        assert!(parse_event(&fb, &h, &mut l).is_some());
+        assert_eq!(l.flashback_count, 1);
+        let mut pena = vec![0u8; 11];
+        pena[0..4].copy_from_slice(b"PENA");
+        pena[6] = 9; // someone else
+        assert!(parse_event(&pena, &h, &mut l).is_none());
+        pena[6] = 4; // the player
+        assert!(parse_event(&pena, &h, &mut l).is_some());
+        assert_eq!(l.penalty_count, 1);
+        // Truncated / unknown codes change nothing.
+        assert!(parse_event(b"FLB", &h, &mut l).is_none());
+        assert!(parse_event(&fb[..6], &h, &mut l).is_none());
+        let mut other = vec![0u8; 12];
+        other[0..4].copy_from_slice(b"SSTA");
+        assert!(parse_event(&other, &h, &mut l).is_none());
+        assert_eq!((l.flashback_count, l.penalty_count), (1, 1));
     }
 
     #[test]
     fn session_rejects_implausible_sector_starts() {
-        let mut p = vec![0u8; 200];
-        put_u16(&mut p, 4, 5303); // track length
-        let n = p.len();
-        // Tail decodes to out-of-order / off-track values (as it would if a future
-        // format appended fields) → both starts must clear to the thirds fallback.
-        put_f32(&mut p, n - 8, 9999.0); // "sector2" ≥ track length
-        put_f32(&mut p, n - 4, 120.0); // "sector3" < sector2
+        // Out-of-order / off-track values → both starts must clear to the thirds
+        // fallback.
+        let mut p = session_body(724, 9999.0, 120.0);
+        p[14] = 0; // not paused
         let mut l = Latest::default();
         l.sector2_start = 1700.0; // stale values from a previous circuit
         l.sector3_start = 3400.0;

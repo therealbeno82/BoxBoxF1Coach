@@ -65,6 +65,23 @@ pub struct Latest {
     pub tyre_visual: i8,
     pub tyre_actual: i8,
     pub tyre_age: u8,
+    /// Driver aids, as the game reports them. Car Status: traction control
+    /// (0 off, 1 medium, 2 full) and ABS (0 off, 1 on). Session: steering assist
+    /// (0/1), braking assist (0 off … 3 high), gearbox (1 manual, 2 manual +
+    /// suggested, 3 automatic; 0 = not reported yet) and the racing line (0 off,
+    /// 1 corners, 2 full), plus the equal-car-performance rule.
+    pub tc_assist: u8,
+    pub abs_assist: u8,
+    pub steering_assist: u8,
+    pub braking_assist: u8,
+    pub gearbox_assist: u8,
+    pub racing_line_assist: u8,
+    pub equal_car_performance: u8,
+    /// Event packet tallies for this run of the core: flashbacks used (FLBK) and
+    /// penalties issued to the PLAYER (PENA). Cumulative — the UI diffs them
+    /// across a lap to know whether that lap had one.
+    pub flashback_count: u32,
+    pub penalty_count: u32,
 
     // ── Car Damage ──
     /// Per-wheel tyre wear (%), wheel order RL RR FL FR.
@@ -147,6 +164,15 @@ impl Default for Latest {
             tyre_visual: -1,
             tyre_actual: -1,
             tyre_age: 0,
+            tc_assist: 0,
+            abs_assist: 0,
+            steering_assist: 0,
+            braking_assist: 0,
+            gearbox_assist: 0,
+            racing_line_assist: 0,
+            equal_car_performance: 0,
+            flashback_count: 0,
+            penalty_count: 0,
             tyre_wear: [0.0; 4],
             overtake_available: 0,
             overtake_active: 0,
@@ -317,6 +343,16 @@ pub struct Snapshot {
     pub worldX: Option<f32>,
     pub worldY: Option<f32>,
     pub worldZ: Option<f32>,
+    /// Driver aids (see Latest) and the Event-packet tallies.
+    pub tcAssist: u8,
+    pub absAssist: u8,
+    pub steeringAssist: u8,
+    pub brakingAssist: u8,
+    pub gearboxAssist: u8,
+    pub racingLineAssist: u8,
+    pub equalCarPerformance: u8,
+    pub flashbacks: u32,
+    pub penalties: u32,
     // The car setup is NOT here: it was ~35% of every 30 Hz emit while changing
     // a handful of times a session. It goes out as its own `car_setup` event —
     // see SharedTelemetry::setup and the emitter in lib.rs.
@@ -393,6 +429,15 @@ impl Snapshot {
             worldX: l.world_x,
             worldY: l.world_y,
             worldZ: l.world_z,
+            tcAssist: l.tc_assist,
+            absAssist: l.abs_assist,
+            steeringAssist: l.steering_assist,
+            brakingAssist: l.braking_assist,
+            gearboxAssist: l.gearbox_assist,
+            racingLineAssist: l.racing_line_assist,
+            equalCarPerformance: l.equal_car_performance,
+            flashbacks: l.flashback_count,
+            penalties: l.penalty_count,
         }
     }
 

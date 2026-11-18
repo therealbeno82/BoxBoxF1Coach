@@ -31,6 +31,13 @@ export function eligibility(lap) {
     return { ok: false, reason: "The game deleted this lap for track limits, so it can't be submitted." };
   }
 
+  // The game's own Event packet said a flashback happened during the lap. The
+  // validator can only infer one from a hole in the trace; this is the game
+  // saying so. (Read from the lap, or from meta on an uploaded trace.)
+  if ((lap.flashbacks ?? lap.meta?.flashbacks) > 0) {
+    return { ok: false, reason: "This lap used a flashback, so it can't go on a board." };
+  }
+
   if (typeof lap.lapTime !== "number" || !(lap.lapTime > 0)) {
     return { ok: false, reason: "This lap has no recorded lap time." };
   }

@@ -18,6 +18,7 @@ use super::state::{now_ms, now_secs, Latest, SharedTelemetry, FFB_PAUSE_FREEZE_M
 const PKT_MOTION: u8 = 0;
 const PKT_SESSION: u8 = 1;
 const PKT_LAP_DATA: u8 = 2;
+const PKT_EVENT: u8 = 3;
 const PKT_PARTICIPANTS: u8 = 4;
 const PKT_CAR_SETUPS: u8 = 5;
 const PKT_CAR_TELEM: u8 = 6;
@@ -252,6 +253,11 @@ fn handle_datagram(buf: &[u8], latest: &mut Latest, ls: &mut LoopState, shared: 
         PKT_LAP_DATA => {
             if let Some(result_status) = packets::parse_lap_data(payload, &hdr, latest) {
                 update_ai_from_lap(result_status, latest, ls, shared);
+                shared.publish(latest);
+            }
+        }
+        PKT_EVENT => {
+            if packets::parse_event(payload, &hdr, latest).is_some() {
                 shared.publish(latest);
             }
         }

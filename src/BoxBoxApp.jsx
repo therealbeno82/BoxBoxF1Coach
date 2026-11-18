@@ -693,6 +693,7 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
     // These survive a swap too: a lap frozen right after the switch could
     // otherwise inherit the previous driver's fallback lap time / tyre tag.
     buf.lastLapTime = 0; buf.lastSetup = null; buf.lastTyre = null;
+    buf.aids = null; buf.fbStart = null; buf.penStart = null;
     buf.lapLenEst = 0; buf.lapLenTrack = null;
     buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
     if (!driver) { setStoredLaps([]); lapNumRef.current = 0; lapNumSessionRef.current = null; return; }
@@ -719,6 +720,8 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
             weather, trackTemp, airTemp,
             worldX, worldY, worldZ,
             sector2Pct, sector3Pct, overtakeActive, activeAeroMode, trackLength,
+            tcAssist, absAssist, steeringAssist, brakingAssist, gearboxAssist, racingLineAssist,
+            flashbacks, penalties,
             tyreSurfaceTemps, tyreInnerTemps } = getTelemetry();
     if (typeof lapPct !== "number" || !isFinite(lapPct)) return;
     const buf = bufRef.current;
@@ -855,6 +858,13 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
           tyre: buf.lastTyre || null,   // compound worn on this lap → dry/wet PB split (lib/tyres.js)
           // kg burned on this lap + laps of fuel in hand at the flag (lib/fuel.js).
           fuel: (fuelUsed != null || fuelDelta != null) ? { used: fuelUsed, delta: fuelDelta } : null,
+          // Driver aids in use (the most-assisted value seen across the lap) and
+          // the Event packet's count of flashbacks / penalties DURING the lap —
+          // the game's own word on both, where the leaderboard validator could
+          // only infer a flashback from holes in the trace.
+          ...(buf.aids ? { assists: buf.aids } : {}),
+          flashbacks: Math.max(0, (flashbacks ?? 0) - (buf.fbStart ?? flashbacks ?? 0)),
+          penalties: Math.max(0, (penalties ?? 0) - (buf.penStart ?? penalties ?? 0)),
           samples,
         };
         setStoredLaps(prev => [...prev, lap]); // persisted history is uncapped per driver
@@ -865,6 +875,7 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
       buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
       buf.fuelStart = null; // re-armed at this tick's fuel capture = the new lap's start level
       buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
+      buf.aids = null; buf.fbStart = null; buf.penStart = null; // re-armed below, for the new lap
     }
 
     // A new clean lap began with no pct-wrap this tick — the car crossed the line
@@ -887,6 +898,25 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
     //     taint-set block below won't re-taint it.
     // No-op when lapNumber is absent/static (idle EMPTY_TEL, replays) or on a normal
     // completion (the wrap block above already saved + reset that boundary).
+    // Driver aids + flashback/penalty baselines for the lap in progress. The aids
+    // keep the MOST-assisted value seen (every scale here rises with assistance),
+    // so a lap that switched traction control off halfway still reads as assisted.
+    // The tallies are cumulative in the core; the lap's own count is the rise
+    // from its first tick.
+    {
+      const now = { tc: tcAssist, abs: absAssist, steering: steeringAssist, braking: brakingAssist,
+        gearbox: gearboxAssist, racingLine: racingLineAssist };
+      if (Object.values(now).some((v) => typeof v === "number")) {
+        if (!buf.aids) buf.aids = {};
+        for (const k in now) {
+          const v = now[k];
+          if (typeof v === "number" && !(v <= (buf.aids[k] ?? -1))) buf.aids[k] = v;
+        }
+      }
+      if (buf.fbStart == null && typeof flashbacks === "number") buf.fbStart = flashbacks;
+      if (buf.penStart == null && typeof penalties === "number") buf.penStart = penalties;
+    }
+
     const wrapped = buf.lastPct != null && buf.lastPct > 0.85 && lapPct < 0.15;
     const cleanNow = driverStatus === 1 || driverStatus === 4; // flying lap / on track
     const wasDirty = buf.lastDriverStatus === 0 || buf.lastDriverStatus === 2 ||
@@ -898,6 +928,7 @@ function useLapRecorder(trackName, driver, sessionId, sessionType, demoMode = fa
         buf.bins.clear();
         setBinVersion(v => v + 1);
         buf.lastS1 = 0; buf.lastS2 = 0; buf.tainted = false; buf.invalidated = false;
+        buf.aids = null; buf.fbStart = null; buf.penStart = null;
         buf.fuelStart = null;
         buf.miniBound = freshMiniBound(); buf.miniIdx = 0;
       }
@@ -2485,10 +2516,15 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
     if (tel.lapPct < a.lastPct - 0.5) a.set.clear();
     // Smaller backward jump = a flashback within the lap: re-arm only the calls
     // whose mark is now ahead again (already-passed calls must not instantly refire).
-    else if (tel.lapPct < a.lastPct - 0.02) {
+    // The game also SAYS when it flashed back (Event packet → tel.flashbacks), which
+    // catches a rewind too short for the 2% heuristic to see — one corner back is
+    // often less than that, and its call stayed silent on the retry.
+    else if (tel.lapPct < a.lastPct - 0.02
+             || (typeof tel.flashbacks === "number" && tel.flashbacks > (a.lastFlashbacks ?? tel.flashbacks))) {
       for (const call of liveCalls) if (tel.lapPct < call.atPct) a.set.delete(call.key);
     }
     a.lastPct = tel.lapPct;
+    if (typeof tel.flashbacks === "number") a.lastFlashbacks = tel.flashbacks;
 
     // Only fire cues when the car is genuinely driving on track. Paused, in the
     // garage, or in the pit lane, the game resets/freezes lap distance — which
