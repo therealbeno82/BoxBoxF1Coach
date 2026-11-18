@@ -788,6 +788,24 @@ export default function DrivingLinesView({
   const refSegT  = segTimeOf(refLine, refTime);
   const segDelta = compSegT != null && refSegT != null ? compSegT - refSegT : null;
 
+  // ── Where the time went ──
+  // The card above answers "how did THIS segment go", one at a time. This ranks
+  // all of them: time lost per segment, driven minus reference (+ = lost), on the
+  // same pace curves the card reads. It colours the scrubber under each segment
+  // and names the three costliest, each a jump to the segment it means.
+  const segLosses = useMemo(() => {
+    if (!compLine || !refLine || !compTime || !refTime) return [];
+    return segments.map((sg, i) => ({
+      i, name: sg.sub || sg.name, start: sg.start, end: sg.end,
+      loss: (distFracToTimeFrac(compLine, sg.end) - distFracToTimeFrac(compLine, sg.start)) * compTime
+          - (distFracToTimeFrac(refLine, sg.end) - distFracToTimeFrac(refLine, sg.start)) * refTime,
+    }));
+  }, [segments, compLine, refLine, compTime, refTime]);
+  const worstLosses = useMemo(
+    () => segLosses.filter((s) => s.loss > 0.02).sort((a, b) => b.loss - a.loss).slice(0, 3),
+    [segLosses]);
+  const lossColor = (loss) => (loss > 0.1 ? C.red : loss > 0.02 ? C.yellow : loss < -0.02 ? C.green : null);
+
   const gotoSeg = (dir) => {
     const n = segments.length; if (!n) return;
     const i = (segIdx + dir + n) % n;
@@ -1219,6 +1237,16 @@ export default function DrivingLinesView({
         {corners.map((c,i)=>(
           <div key={i} style={{position:"absolute",left:`${c.f*100}%`,top:"50%",transform:"translate(-50%,-50%)",width:2,height:11,background:"#2b3346"}} />
         ))}
+        {/* Time lost / gained per segment, as a band under the track: red where
+            the driven lap lost more than a tenth, yellow for a smaller loss,
+            green where it gained. Level segments draw nothing. */}
+        {segLosses.map((s) => {
+          const col = lossColor(s.loss);
+          return col ? (
+            <div key={`loss-${s.i}`} style={{position:"absolute",left:`${s.start*100}%`,width:`${(s.end-s.start)*100}%`,
+              top:"calc(50% + 5px)",height:3,borderRadius:2,background:col,opacity:0.85,pointerEvents:"none"}} />
+          ) : null;
+        })}
         {/* Reference car position (diverges from the knob in pace-sync) */}
         {refLine && compLine && syncMode==="pace" && (
           <div title="Reference car" style={{position:"absolute",left:`${refFrac*100}%`,top:"50%",
@@ -1230,6 +1258,24 @@ export default function DrivingLinesView({
       </div>
     </div>
   );
+
+  // The three costliest segments as jumps (see segLosses). Under the transport on
+  // both layouts.
+  const lossRow = worstLosses.length > 0 ? (
+      <div style={{flex:"none",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",
+        fontFamily:FONT.ui,fontSize:phone?9:10,color:C.textDim}}>
+        <span style={{letterSpacing:1,textTransform:"uppercase"}}>Most time lost</span>
+        {worstLosses.map((s) => (
+          <button key={s.i} type="button" onClick={() => { onSetPlaying?.(false); onSeek?.(s.start + 1e-4); }}
+            title={`Jump to ${s.name}`}
+            style={{...pill(false),display:"inline-flex",alignItems:"center",gap:5,
+              border:`1px solid ${lossColor(s.loss)}55`,...(coarse?{minHeight:44}:{minHeight:0})}}>
+            <span style={{color:C.textBody2}}>{s.name}</span>
+            <span style={{fontFamily:FONT.mono,fontWeight:800,color:lossColor(s.loss)}}>+{s.loss.toFixed(2)}</span>
+          </button>
+        ))}
+      </div>
+  ) : null;
 
   return (
     <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",gap:phone?6:10,overflow:"hidden"}}>
@@ -1370,11 +1416,13 @@ export default function DrivingLinesView({
       {phone && (
         <>
           {transport}
+          {lossRow}
           {phonePanel}
         </>
       )}
 
       {!phone && transport}
+      {!phone && lossRow}
 
     </div>
   );

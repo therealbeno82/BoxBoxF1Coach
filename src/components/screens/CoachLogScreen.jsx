@@ -31,6 +31,10 @@ export default function CoachLogScreen({
   // Manual debrief for the lap on screen. Null when there's no LLM configured or
   // no evidence to ground it in.
   onAskCoach = null, asking = false, llmError = null,
+  // Jump to a point on the analysed lap in Analytics (metres into the lap). Each
+  // insight names a place; this lets the driver go and look at it — the lines,
+  // the traces and the cars, cued to that spot.
+  onShowOnLap = null,
 }) {
   // buildTrends returns a prose block: a header line then "\n- " bullet items.
   // Split off the bullets for a compact recurring-patterns strip.
@@ -209,8 +213,14 @@ export default function CoachLogScreen({
                   {ch.insights.length === 0 && (
                     <div style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.5, padding: "4px 2px" }}>On the reference here — no change needed.</div>
                   )}
-                  {ch.insights.map((ins, i) => (
-                    <div key={i} style={{ background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${ch.color}`, borderRadius: "0 8px 8px 0", padding: "10px 11px" }}>
+                  {ch.insights.map((ins, i) => {
+                    const go = onShowOnLap && typeof ins.d === "number" ? () => onShowOnLap(ins.d) : null;
+                    const Tag = go ? "button" : "div";
+                    return (
+                    <Tag key={i} {...(go && { type: "button", onClick: go, title: `Show ${ins.zone} on the lap in Analytics` })}
+                      style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit",
+                        cursor: go ? "pointer" : "default",
+                        background: C.inset, border: `1px solid ${C.line}`, borderLeft: `3px solid ${ch.color}`, borderRadius: "0 8px 8px 0", padding: "10px 11px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 6 }}>
                         <span style={{ fontFamily: FONT.mono, fontSize: 9, letterSpacing: .5, color: C.textMuted }}>{ins.zone}</span>
                         <span style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
@@ -219,8 +229,10 @@ export default function CoachLogScreen({
                         </span>
                       </div>
                       <div style={{ fontSize: 11.5, lineHeight: 1.5, color: C.textBody }}>{ins.text}</div>
-                    </div>
-                  ))}
+                      {go && <div style={{ fontSize: 9, letterSpacing: 1, color: C.textDim, marginTop: 6, textTransform: "uppercase" }}>Show on lap ›</div>}
+                    </Tag>
+                    );
+                  })}
                 </div>
               </div>
             ))}

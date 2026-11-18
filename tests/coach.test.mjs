@@ -80,3 +80,14 @@ test("OpenRouter failures are described by cause", () => {
   assert.match(describeOpenRouterError(400, { error: { message: "response_format json_schema not supported" } }), /structured/);
   assert.match(describeOpenRouterError(503), /HTTP 503/);
 });
+
+// ── E3: every Coach Log insight carries the distance it's about, for the jump ──
+test("Coach Log insights carry their distance into the lap", async () => {
+  const { buildCoachLog } = await import("../src/lib/coach/coachLog.js");
+  const ref = demoLap(1), lap = demoLap(9);
+  const log = buildCoachLog(lap, ref.samples, ref.lapTime, {});
+  const all = log.channels.flatMap((c) => c.insights);
+  assert.ok(all.length > 0);
+  for (const ins of all) assert.ok(ins.d >= 0 && ins.d <= log.lapLen, `d ${ins.d} within ${log.lapLen}`);
+  assert.ok(log.nextLapFocusD >= 0);
+});

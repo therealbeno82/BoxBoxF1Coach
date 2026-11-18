@@ -28,6 +28,7 @@ import { ERS_MODES } from "../lib/coach/config.js";
 import { cornerLabel } from "../lib/cornerData.js";
 import { useViewport } from "../hooks/useViewport.jsx";
 import { usePlayhead } from "../lib/playheadStore.js";
+import { lapClockAxis, timeAtDist } from "../lib/timeAxis.js";
 
 const W = 1000, VH = 100;          // SVG coordinate system (stretched per panel)
 
@@ -101,6 +102,24 @@ const r0 = (v) => (v == null || Number.isNaN(v) ? "—" : Math.round(v));
 const steerMag = (v) => (v == null || Number.isNaN(v) ? "—" : Math.round(Math.abs(v)));
 const steerDir = (v) => (v == null || Number.isNaN(v) ? "" : v < -2 ? "L" : v > 2 ? "R" : "·");
 const ersName = (v) => ERS_MODES[Math.round(clamp(v ?? 0, 0, 3))] || "None";
+const fmtDt = (v) => (typeof v === "number" && Number.isFinite(v)
+  ? `${v > 0.0005 ? "+" : v < -0.0005 ? "−" : ""}${Math.abs(v).toFixed(2)}` : "—");
+
+// The driven lap's samples with a `delta` channel: seconds behind (+) or ahead (−)
+// of the reference at the same lap distance — the running gap, i.e. MoTeC's time
+// delta trace. Both clocks come from lib/timeAxis.js (the game's own clock where
+// the lap carries it). With no reference, or none at a point, there is no delta.
+// Built once per lap pair; the panel then treats it like any other channel.
+function withDelta(comp, ref, compLapTime, refLapTime) {
+  if (!Array.isArray(comp) || comp.length < 2 || !Array.isArray(ref) || ref.length < 2) return comp;
+  const axC = lapClockAxis({ samples: comp, lapTime: compLapTime });
+  const axR = lapClockAxis({ samples: ref, lapTime: refLapTime });
+  if (!axC || !axR) return comp;
+  return comp.map((s, i) => {
+    const tr = timeAtDist(ref, axR, s.dist);
+    return tr == null ? s : { ...s, delta: axC[i] - tr };
+  });
+}
 
 const cardStyle = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 };
 const panelStyle = { minHeight: 0, position: "relative", background: C.inset, border: `1px solid ${C.line}`, borderRadius: 9, overflow: "hidden" };
@@ -117,6 +136,22 @@ const valStyle = (color, size = 12) => ({ fontFamily: FONT.mono, fontSize: size,
 // the grey ref figure sits directly under its driven counterpart.
 // `ctx` = { units, uLabel, tempUnits, tLabel }.
 const PANELS = [
+  {
+    // The running gap to the reference, first because it is the one trace that
+    // says where on the lap the time actually went; every panel below is why.
+    id: "delta", flex: 0.9, chip: { label: "Δt", color: C.yellow },
+    labelColor: C.textMuted,
+    labelContent: () => (<><span style={{ color: C.yellow }}>Δ Time</span> vs ref · s <span style={{ color: C.textDim }}>(+ behind)</span></>),
+    midline: true,
+    noDataKey: "delta", noDataHint: "needs a reference lap",
+    channels: [
+      { key: "delta", minKey: "deltaLo", maxKey: "deltaHi", stroke: C.yellow, width: 2, join: true, refStroke: C.yellow, refOpacity: 0 },
+    ],
+    values: [
+      // A gap has no reference-side value, so no grey figure under it.
+      { color: C.yellow, size: 13, noRef: true, fmt: (s) => fmtDt(s?.delta) },
+    ],
+  },
   {
     id: "inputs", flex: 1.35, chip: { label: "Thr/Brk", color: "#ffffff" },
     labelColor: C.textMuted,
@@ -210,7 +245,7 @@ function TracePanel({ panel, chPaths, dS, rS, hasRef, ctx, noData }) {
         {panel.values.map((v, i) => (
           <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
             <span style={{ ...valStyle(v.color, v.size || 12), lineHeight: 1 }}>{v.fmt(dS, ctx)}</span>
-            {hasRef && (
+            {hasRef && !v.noRef && (
               <span style={{ ...valStyle(C.textFaint, (v.size || 12) - 2), fontWeight: 700, lineHeight: 1 }}>
                 {v.fmt(rS, ctx)}
               </span>
@@ -280,12 +315,16 @@ function SectorButton({ name, left, zoomed, onClick, slim = false }) {
 }
 
 export default function TelemetryStudio({
-  compareSamples = [], referenceSamples = [], lapLength = 0,
+  compareSamples: compareRaw = [], referenceSamples = [], lapLength = 0,
+  compareLapTime = null, referenceLapTime = null,
   zones = [], sectorDists = [], units = "km/h", tempUnits = "°C", corners: cornerDb = [],
   visibleTraces = null, onToggleTrace = null,
   playing = false, onSetPlaying = null,
 }) {
   const playhead = usePlayhead();
+  const compareSamples = useMemo(
+    () => withDelta(compareRaw, referenceSamples, compareLapTime, referenceLapTime),
+    [compareRaw, referenceSamples, compareLapTime, referenceLapTime]);
   const [zoomSector, setZoomSector] = useState(null); // null = full lap | 0 | 1 | 2
   const [hoverF, setHoverF] = useState(null);         // 0–1 across the visible window, null = not hovering
   const stackRef = useRef(null);
@@ -446,7 +485,12 @@ export default function TelemetryStudio({
     }
     const tyreLo = Number.isFinite(tMin) ? Math.floor((tMin - 5) / 10) * 10 : 60;
     const tyreHi = Number.isFinite(tMax) ? Math.ceil((tMax + 5) / 10) * 10 : 120;
-    return { maxSpeed, maxErs, tyreLo, tyreHi };
+    // Δt: symmetric about zero so the midline IS "level with the reference",
+    // rounded out to the next 0.1 s, never tighter than ±0.2 s.
+    let dMax = 0;
+    for (const s of compareSamples) if (typeof s.delta === "number" && Number.isFinite(s.delta)) dMax = Math.max(dMax, Math.abs(s.delta));
+    const dHi = Math.max(0.2, Math.ceil(dMax * 10) / 10);
+    return { maxSpeed, maxErs, tyreLo, tyreHi, deltaLo: -dHi, deltaHi: dHi };
   }, [compareSamples, referenceSamples]);
 
   // Paths recompute only when the data/scale/window changes — NOT on every

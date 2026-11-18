@@ -40,6 +40,7 @@ import { useAndroidDevice } from "./hooks/useAndroidDevice.js";
 import { useAndroidBack } from "./hooks/useAndroidBack.js";
 import { useTelemetry } from "./hooks/useTelemetry.js";
 import { usePersistentState, readBool01, writeBool01 } from "./hooks/usePersistentState.js";
+import { setPlayhead } from "./lib/playheadStore.js";
 import {
   publishTelemetry, subscribeTelemetry, getTelemetry,
   useLiveTelemetry, useTelemetryIdentity,
@@ -97,7 +98,7 @@ const ScreenFallback = () => <div style={{ flex: 1 }} />;
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // Trace panels on by default (ids match TelemetryStudio's PANELS). A saved
 // selection is merged OVER these, so a panel added later starts visible.
-const TRACE_DEFAULTS = Object.freeze({ inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true });
+const TRACE_DEFAULTS = Object.freeze({ delta: true, inputs: true, speed: true, steer: true, gear: true, ers: true, tyres: true });
 const ERS_COLORS    = { 0: "#444", 1: "#888", 2: "#e040fb", 3: "#2979ff" };
 
 // How many recent comparable same-track laps the coach reasons over. Scopes every
@@ -2696,6 +2697,8 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           onPublishLap={leaderboardEnabled ? requestPublish : undefined}
           labelFor={lapSourceLabel} onOpenSetup={openSetupForLap}
           tracesSlot={<TelemetryStudio compareSamples={compareSamples} referenceSamples={referenceSamples} lapLength={lapLen}
+            compareLapTime={comparisonLap?.lapTime ?? null}
+            referenceLapTime={activeTrace?.lapTime ?? activeTrace?.meta?.lapTime ?? null}
             zones={zones} sectorDists={sectorDists} units={units} tempUnits={tempUnits} corners={trackCorners}
             visibleTraces={visibleTraces} onToggleTrace={toggleTrace}
             playing={anaPlaying} onSetPlaying={setAnaPlaying} />}
@@ -2756,6 +2759,14 @@ export default function BoxBoxApp({ onOpenCalibrator }) {
           llmFocus={forThisLap ? lastAdvice.text : null}
           llmSummary={forThisLap ? lastAdvice.summary : null}
           llmError={errorForThisLap ? lastAdvice.text : null}
+          onShowOnLap={coachLap && coachLog?.lapLen > 0 ? (d) => {
+            // The analysed lap becomes Analytics' driven lap, and the shared
+            // playhead goes to the spot — paused, so it stays there to be read.
+            setAnaPlaying(false);
+            setComparisonLapId(coachLap.id);
+            setPlayhead(d / coachLog.lapLen);
+            setTab("compare");
+          } : null}
         />
         );
       })()}

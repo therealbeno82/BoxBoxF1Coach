@@ -50,7 +50,8 @@ export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
       potential: secs > 0.005 ? `−${secs.toFixed(2)}s` : "—",
       signal: signal > 0 ? `${signal}%` : "—",
       insights: insights.map((i) => ({
-        zone: i.zone, delta: i.delta, text: i.text,
+        // `d` (metres into the lap) lets the screen jump to the spot in Analytics.
+        zone: i.zone, delta: i.delta, text: i.text, d: i.d,
         time: i.timeLost * scale >= 0.005 ? `−${(i.timeLost * scale).toFixed(2)}s` : null,
       })),
     };
@@ -64,6 +65,8 @@ export function buildCoachLog(userLap, refSamples, refLapTime, opts = {}) {
   return {
     channels,
     nextLapFocus,
+    nextLapFocusD: top ? top.d : null,
+    lapLen: a.lapLen,
     estimated,
     totalGain: `${estimated ? "~" : ""}−${totalLost.toFixed(2)}s`,
     lapsAnalysed: opts.lapsAnalysed ?? 1,
