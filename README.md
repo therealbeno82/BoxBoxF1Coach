@@ -18,12 +18,9 @@ on the default livery. Team skins restyle the whole app.</sub>
 
 ---
 
-## What's new in 4.2.0 (beta)
+## What's new in 4.2.0
 
-> **This is a beta.** It has had rough testing, not a full pass, and it is published so the
-> community can find what's left. It is marked as a pre-release on GitHub, so nobody on 4.1.0
-> is prompted to install it. Please report problems on the
-> [Discord](https://discord.gg/2bZGXGBZj9) or the
+> Found a problem? Report it on the [Discord](https://discord.gg/2bZGXGBZj9) or the
 > [issue tracker](https://github.com/therealbeno82/BoxBoxF1Coach/issues). For force feedback,
 > attach an **Export trace** file (see [Tuning the force feedback](#tuning-the-force-feedback)).
 
@@ -582,10 +579,9 @@ The standing summary lives in [CODE_REVIEW.md](CODE_REVIEW.md). Highlights:
 
 ## Status
 
-**v4.2.0 beta.** Live telemetry, reference comparison, Driving Lines with its four cameras,
-online leaderboards, the two-layer coach, force feedback and voice out all work. This
-release is a beta: see [What's new](#whats-new-in-420-beta) for what's changed and what
-to report.
+**v4.2.0.** Live telemetry, reference comparison, Driving Lines with its four cameras,
+online leaderboards, the two-layer coach, force feedback and voice out all work. See
+[What's new](#whats-new-in-420) for what changed in this release.
 
 Known limitations worth stating plainly:
 
